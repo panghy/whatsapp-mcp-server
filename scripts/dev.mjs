@@ -16,13 +16,16 @@ const vite = spawn('npx', ['vite'], {
 let electronProcess = null
 let devServerUrl = null
 
+// Strip ANSI escape codes (colors, cursor movement, etc.)
+const stripAnsi = (str) => str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+
 vite.stdout.on('data', (data) => {
   const text = data.toString()
   process.stdout.write(data)
 
   // Look for Vite's local URL output
   if (!devServerUrl) {
-    const match = text.match(/Local:\s+(https?:\/\/localhost:\d+)/)
+    const match = stripAnsi(text).match(/Local:\s+(https?:\/\/localhost:\d+)/)
     if (match) {
       devServerUrl = match[1]
       console.log(`\n[dev] Detected Vite dev server at: ${devServerUrl}`)
