@@ -50,22 +50,6 @@ function setMcpPortSetting(port: number): void {
 }
 
 /**
- * Get start-on-boot setting from database
- */
-function getStartOnBoot(): boolean {
-  const value = settingOps.get('start_on_boot')
-  return value === 'true'
-}
-
-/**
- * Set start-on-boot setting in database and apply to system
- */
-function setStartOnBoot(enabled: boolean): void {
-  settingOps.set('start_on_boot', enabled ? 'true' : 'false')
-  app.setLoginItemSettings({ openAtLogin: enabled })
-}
-
-/**
  * Start the MCP server with port conflict handling
  */
 async function startMcpServerSafe(): Promise<void> {

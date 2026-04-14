@@ -29,7 +29,14 @@ contextBridge.exposeInMainWorld('electron', {
   getLogs: (_filters?: { levels?: string[], categories?: string[], searchText?: string, limit?: number }) =>
     ipcRenderer.invoke('get-logs', 100),
   clearLogs: () => ipcRenderer.invoke('clear-logs'),
-  exportLogs: (_format?: 'json' | 'text') => Promise.resolve(false) // not implemented yet
+  exportLogs: (_format?: 'json' | 'text') => Promise.resolve(false), // not implemented yet
+  // MCP Server
+  getMcpStatus: () => ipcRenderer.invoke('mcp-get-status'),
+  getMcpPort: () => ipcRenderer.invoke('mcp-get-port'),
+  setMcpPort: (port: number) => ipcRenderer.invoke('mcp-set-port', port),
+  restartMcpServer: () => ipcRenderer.invoke('mcp-restart'),
+  getMcpAutoStart: () => ipcRenderer.invoke('mcp-get-auto-start'),
+  setMcpAutoStart: (enabled: boolean) => ipcRenderer.invoke('mcp-set-auto-start', enabled)
 })
 
 // Expose ipcRenderer for listening to events

@@ -15,6 +15,13 @@ interface SettingsProps {
   onLogoff?: () => void
 }
 
+interface McpStatusData {
+  status: 'stopped' | 'starting' | 'running' | 'port_conflict' | 'error'
+  port: number
+  running: boolean
+  error: string | null
+}
+
 export default function Settings({ onBack, onLogoff }: SettingsProps) {
   const [activeTab, setActiveTab] = useState<'group-sync' | 'interface-system' | 'logs'>('group-sync')
   const [groups, setGroups] = useState<Group[]>([])
@@ -25,6 +32,12 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
   const [minimizeToTray, setMinimizeToTray] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // MCP Server state
+  const [mcpStatus, setMcpStatus] = useState<McpStatusData>({ status: 'stopped', port: 13491, running: false, error: null })
+  const [mcpPort, setMcpPort] = useState('13491')
+  const [mcpPortSaved, setMcpPortSaved] = useState(false)
+  const [mcpAutoStart, setMcpAutoStart] = useState(true)
+  const [mcpRestarting, setMcpRestarting] = useState(false)
 
   useEffect(() => { loadSettings() }, [])
 
@@ -35,11 +48,25 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
       const name = await window.electron.getUserDisplayName(); setDisplayName(name || '')
       const autoLaunchEnabled = await window.electron.getAutoLaunch(); setAutoLaunch(autoLaunchEnabled)
       const minimizeEnabled = await window.electron.getMinimizeToTray(); setMinimizeToTray(minimizeEnabled)
+      // Load MCP settings
+      const mcpStatusData = await window.electron.getMcpStatus(); setMcpStatus(mcpStatusData); setMcpPort(String(mcpStatusData.port))
+      const mcpAutoStartEnabled = await window.electron.getMcpAutoStart(); setMcpAutoStart(mcpAutoStartEnabled)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load settings'
       setError(msg); console.error('Failed to load settings:', err)
     } finally { setLoading(false) }
   }
+
+  // MCP polling for status updates
+  useEffect(() => {
+    const pollMcp = setInterval(async () => {
+      try {
+        const status = await window.electron.getMcpStatus()
+        setMcpStatus(status)
+      } catch (err) { console.error('Failed to poll MCP status:', err) }
+    }, 2000)
+    return () => clearInterval(pollMcp)
+  }, [])
 
   const handleGroupToggle = async (groupId: number, enabled: boolean) => {
     try {
@@ -59,6 +86,22 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
   const handleDisplayNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') { handleDisplayNameSave() } }
   const handleAutoLaunchChange = async (e: React.ChangeEvent<HTMLInputElement>) => { try { await window.electron.setAutoLaunch(e.target.checked); setAutoLaunch(e.target.checked) } catch (err) { console.error('Failed to update auto-launch:', err) } }
   const handleMinimizeToTrayChange = async (e: React.ChangeEvent<HTMLInputElement>) => { try { await window.electron.setMinimizeToTray(e.target.checked); setMinimizeToTray(e.target.checked) } catch (err) { console.error('Failed to update minimize to tray:', err) } }
+
+  // MCP handlers
+  const handleMcpPortSave = async () => {
+    const portNum = parseInt(mcpPort, 10)
+    if (isNaN(portNum) || portNum < 1 || portNum > 65535) { setError('Invalid port number (must be 1-65535)'); return }
+    try { await window.electron.setMcpPort(portNum); setMcpPortSaved(true); setTimeout(() => setMcpPortSaved(false), 2000) }
+    catch (err) { console.error('Failed to save MCP port:', err) }
+  }
+  const handleMcpPortKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') { handleMcpPortSave() } }
+  const handleMcpRestart = async () => {
+    setMcpRestarting(true)
+    try { const result = await window.electron.restartMcpServer(); setMcpStatus({ ...mcpStatus, status: result.status as McpStatusData['status'], error: result.error }) }
+    catch (err) { console.error('Failed to restart MCP server:', err) }
+    finally { setMcpRestarting(false) }
+  }
+  const handleMcpAutoStartChange = async (e: React.ChangeEvent<HTMLInputElement>) => { try { await window.electron.setMcpAutoStart(e.target.checked); setMcpAutoStart(e.target.checked) } catch (err) { console.error('Failed to update MCP auto-start:', err) } }
 
   const handleRelinkWhatsApp = async () => {
     if (window.confirm('This will clear your WhatsApp session and show the QR code again. Your messages will be preserved.')) {
@@ -137,6 +180,33 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
             </div>
             <div className="setting-item"><label className="checkbox-label"><input type="checkbox" checked={autoLaunch} onChange={handleAutoLaunchChange} /><span>Launch on startup</span></label></div>
             <div className="setting-item"><label className="checkbox-label"><input type="checkbox" checked={minimizeToTray} onChange={handleMinimizeToTrayChange} /><span>Minimize to tray on close</span></label></div>
+
+            {/* MCP Server Section */}
+            <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid hsl(var(--border))' }}>
+              <h4 style={{ marginBottom: '1rem' }}>MCP Server</h4>
+              <div className="setting-item">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                  <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: mcpStatus.status === 'running' ? 'hsl(var(--success, 142 76% 36%))' : mcpStatus.status === 'port_conflict' ? 'hsl(var(--warning, 45 93% 47%))' : mcpStatus.status === 'error' ? 'hsl(var(--destructive))' : 'hsl(var(--muted-foreground))' }} />
+                  <span style={{ fontSize: '0.875rem', fontWeight: 500 }}>
+                    {mcpStatus.status === 'running' ? `Running on port ${mcpStatus.port}` : mcpStatus.status === 'starting' ? 'Starting...' : mcpStatus.status === 'port_conflict' ? `Port ${mcpStatus.port} in use` : mcpStatus.status === 'error' ? 'Error' : 'Stopped'}
+                  </span>
+                </div>
+                {mcpStatus.error && mcpStatus.status !== 'running' && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', marginBottom: '0.5rem' }}>{mcpStatus.error}</p>)}
+              </div>
+              <div className="setting-item">
+                <label htmlFor="mcp-port">Server Port</label>
+                <div style={{ position: 'relative' }}>
+                  <input id="mcp-port" type="number" min="1" max="65535" value={mcpPort} onChange={(e) => setMcpPort(e.target.value)} onBlur={handleMcpPortSave} onKeyDown={handleMcpPortKeyDown} placeholder="13491" style={{ maxWidth: '120px' }} />
+                  {mcpPortSaved && (<span style={{ position: 'absolute', right: '-4rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
+                </div>
+                <p className="setting-description">Port for MCP HTTP server (requires restart)</p>
+              </div>
+              <div className="setting-item"><label className="checkbox-label"><input type="checkbox" checked={mcpAutoStart} onChange={handleMcpAutoStartChange} /><span>Start MCP server on app launch</span></label></div>
+              <div className="setting-item">
+                <button className="action-btn" onClick={handleMcpRestart} disabled={mcpRestarting}>{mcpRestarting ? 'Restarting...' : 'Restart MCP Server'}</button>
+              </div>
+            </div>
+
             <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid hsl(var(--border))' }}>
               <h4 style={{ marginBottom: '1rem' }}>Account Actions</h4>
               <div className="action-group"><h5>Re-link WhatsApp</h5><p>Clear your WhatsApp session and scan the QR code again.</p><button className="action-btn" onClick={handleRelinkWhatsApp}>Re-link WhatsApp</button></div>

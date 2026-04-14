@@ -25,6 +25,13 @@ interface ActivityStatus {
   totalMessagesStored: number
 }
 
+interface McpStatus {
+  status: 'stopped' | 'starting' | 'running' | 'port_conflict' | 'error'
+  port: number
+  running: boolean
+  error: string | null
+}
+
 declare global {
   interface Window {
     electron: {
@@ -47,6 +54,13 @@ declare global {
       getLogs: (options: any) => Promise<any[]>
       clearLogs: () => Promise<boolean>
       exportLogs: (format: string) => Promise<boolean>
+      // MCP Server
+      getMcpStatus: () => Promise<McpStatus>
+      getMcpPort: () => Promise<number>
+      setMcpPort: (port: number) => Promise<{ success: boolean }>
+      restartMcpServer: () => Promise<{ status: string; error: string | null }>
+      getMcpAutoStart: () => Promise<boolean>
+      setMcpAutoStart: (enabled: boolean) => Promise<{ success: boolean }>
     }
   }
 }
