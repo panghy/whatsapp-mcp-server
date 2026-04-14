@@ -7,6 +7,15 @@ import { initializeDatabase, chatOps, contactOps, messageOps, logOps, settingOps
 import { initializeSyncOrchestrator, getSyncOrchestrator } from './sync-orchestrator'
 import { MessageTransformer, extractPhoneFromJid, normalizePhoneNumber } from './message-transformer'
 import { initializeGroupMetadataFetcher, getGroupMetadataFetcher } from './group-metadata-fetcher'
+import { startMcpServer, stopMcpServer, isMcpServerRunning, setWhatsAppManager } from './mcp-server'
+
+// MCP server status tracking
+type McpStatus = 'stopped' | 'starting' | 'running' | 'port_conflict' | 'error'
+let mcpStatus: McpStatus = 'stopped'
+let mcpError: string | null = null
+
+// Default MCP port
+const DEFAULT_MCP_PORT = 13491
 
 // Filter out newsletter and status broadcast JIDs
 const _loggedFilteredJids = new Set<string>()
@@ -24,6 +33,94 @@ let lastActivityTime: number | null = null
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[UNHANDLED REJECTION]', reason)
 })
+
+/**
+ * Get the MCP port from database settings
+ */
+function getMcpPort(): number {
+  const portStr = settingOps.get('mcp_port')
+  return portStr ? parseInt(portStr, 10) : DEFAULT_MCP_PORT
+}
+
+/**
+ * Set the MCP port in database settings
+ */
+function setMcpPortSetting(port: number): void {
+  settingOps.set('mcp_port', String(port))
+}
+
+/**
+ * Get start-on-boot setting from database
+ */
+function getStartOnBoot(): boolean {
+  const value = settingOps.get('start_on_boot')
+  return value === 'true'
+}
+
+/**
+ * Set start-on-boot setting in database and apply to system
+ */
+function setStartOnBoot(enabled: boolean): void {
+  settingOps.set('start_on_boot', enabled ? 'true' : 'false')
+  app.setLoginItemSettings({ openAtLogin: enabled })
+}
+
+/**
+ * Start the MCP server with port conflict handling
+ */
+async function startMcpServerSafe(): Promise<void> {
+  if (isMcpServerRunning()) {
+    console.log('[MCP] Server already running')
+    return
+  }
+
+  const port = getMcpPort()
+  mcpStatus = 'starting'
+  mcpError = null
+
+  try {
+    await startMcpServer(port)
+    mcpStatus = 'running'
+    console.log(`[MCP] Server started on port ${port}`)
+    logOps.insert('info', 'mcp', `MCP server started on port ${port}`)
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    if (errMsg.includes('already in use') || errMsg.includes('EADDRINUSE')) {
+      mcpStatus = 'port_conflict'
+      mcpError = `Port ${port} is already in use`
+      console.error(`[MCP] Port conflict: ${mcpError}`)
+      logOps.insert('error', 'mcp', mcpError)
+    } else {
+      mcpStatus = 'error'
+      mcpError = errMsg
+      console.error(`[MCP] Failed to start: ${errMsg}`)
+      logOps.insert('error', 'mcp', `Failed to start MCP server: ${errMsg}`)
+    }
+  }
+}
+
+/**
+ * Stop the MCP server safely
+ */
+async function stopMcpServerSafe(): Promise<void> {
+  if (!isMcpServerRunning()) {
+    mcpStatus = 'stopped'
+    return
+  }
+
+  try {
+    await stopMcpServer()
+    mcpStatus = 'stopped'
+    mcpError = null
+    console.log('[MCP] Server stopped')
+    logOps.insert('info', 'mcp', 'MCP server stopped')
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    console.error(`[MCP] Failed to stop: ${errMsg}`)
+    mcpStatus = 'error'
+    mcpError = errMsg
+  }
+}
 
 const createWindow = () => {
   mainWindow = new BrowserWindow({
@@ -175,6 +272,12 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
         whatsappConnected = true
         updateTrayMenu()
 
+        // Set WhatsApp manager for MCP server and start it
+        if (whatsappManager) {
+          setWhatsAppManager(whatsappManager)
+          await startMcpServerSafe()
+        }
+
         const userJid = socket.user?.id
         if (userJid) {
           const userPhone = extractPhoneFromJid(userJid)
@@ -210,6 +313,8 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
       } else if (update.connection === 'close') {
         whatsappConnected = false
         updateTrayMenu()
+        // Stop MCP server when WhatsApp disconnects
+        await stopMcpServerSafe()
       }
     })
 
@@ -430,3 +535,40 @@ ipcMain.handle('send-message', async (_, jid: string, text: string) => {
   }
 })
 
+// MCP Server IPC handlers
+ipcMain.handle('mcp-get-status', async () => {
+  return {
+    status: mcpStatus,
+    port: getMcpPort(),
+    running: isMcpServerRunning(),
+    error: mcpError
+  }
+})
+
+ipcMain.handle('mcp-get-port', async () => {
+  return getMcpPort()
+})
+
+ipcMain.handle('mcp-set-port', async (_, port: number) => {
+  if (port < 1 || port > 65535) {
+    throw new Error('Port must be between 1 and 65535')
+  }
+  setMcpPortSetting(port)
+  return { success: true }
+})
+
+ipcMain.handle('mcp-restart', async () => {
+  await stopMcpServerSafe()
+  await startMcpServerSafe()
+  return { status: mcpStatus, error: mcpError }
+})
+
+ipcMain.handle('mcp-get-auto-start', async () => {
+  const value = settingOps.get('mcp_auto_start')
+  return value !== 'false' // Default to true
+})
+
+ipcMain.handle('mcp-set-auto-start', async (_, enabled: boolean) => {
+  settingOps.set('mcp_auto_start', enabled ? 'true' : 'false')
+  return { success: true }
+})

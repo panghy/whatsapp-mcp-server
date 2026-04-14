@@ -177,8 +177,13 @@ export const messageOps = {
     return getDatabase().prepare('SELECT * FROM messages WHERE chat_id = ? AND id > ? ORDER BY id ASC').all(chatId, lastPushedMessageId)
   },
 
-  getByChatId: (chatId: number, limit: number = 100) => {
-    return getDatabase().prepare('SELECT * FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?').all(chatId, limit)
+  getByChatId: (chatId: number, limit: number = 100, offset: number = 0) => {
+    return getDatabase().prepare('SELECT * FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ? OFFSET ?').all(chatId, limit, offset)
+  },
+
+  getCountByChatId: (chatId: number) => {
+    const result = getDatabase().prepare('SELECT COUNT(*) as count FROM messages WHERE chat_id = ?').get(chatId) as { count: number }
+    return result.count
   },
 
   delete: (id: number) => {
@@ -408,6 +413,14 @@ export const logOps = {
 
   deleteOlderThan: (days: number) => {
     return getDatabase().prepare(`DELETE FROM logs WHERE timestamp < datetime('now', '-' || ? || ' days')`).run(days)
+  },
+
+  getRecent: (limit: number = 100) => {
+    return getDatabase().prepare('SELECT * FROM logs ORDER BY timestamp DESC LIMIT ?').all(limit)
+  },
+
+  clear: () => {
+    return getDatabase().prepare('DELETE FROM logs').run()
   }
 }
 
