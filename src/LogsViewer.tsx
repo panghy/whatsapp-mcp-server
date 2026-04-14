@@ -27,7 +27,12 @@ export default function LogsViewer() {
     try {
       setLoading(true); setError(null)
       const logsData = await window.electron.getLogs({ levels: Array.from(selectedLevels), categories: Array.from(selectedCategories), searchText: searchText || undefined, limit: 1000 })
+      const scrollEl = scrollContainerRef.current
+      const scrollTop = scrollEl?.scrollTop ?? 0
       setLogs(logsData)
+      requestAnimationFrame(() => {
+        if (scrollEl) { scrollEl.scrollTop = scrollTop }
+      })
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load logs'
       setError(msg); console.error('Failed to load logs:', err)
