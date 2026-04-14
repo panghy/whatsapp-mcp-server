@@ -199,7 +199,7 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
         {activeTab === 'logs' && (<div><LogsViewer /></div>)}
       </div></div>
       <div className="settings-footer">
-        <div className="settings-footer-left"><strong>WhatsApp Bridge</strong><span>v1.0.0</span></div>
+        <div className="settings-footer-left"><strong>WhatsApp MCP Bridge</strong><span>v1.0.0</span></div>
         <div className="settings-footer-right"><a href="#" className="settings-footer-link">Help</a><span className="settings-footer-divider">•</span><a href="#" className="settings-footer-link">About</a></div>
       </div>
     </div>
