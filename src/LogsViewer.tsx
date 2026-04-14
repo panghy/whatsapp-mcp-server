@@ -105,10 +105,10 @@ export default function LogsViewer() {
           <label className="filter-label">Levels:</label>
           <div className="filter-options">
             {LOG_LEVELS.map(level => (
-              <label key={level} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.85rem' }}>
+              <div key={level} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.85rem' }}>
                 <label className="toggle-switch"><input type="checkbox" checked={selectedLevels.has(level)} onChange={() => handleLevelToggle(level)} /><span className="slider"></span></label>
                 <span>{level}</span>
-              </label>
+              </div>
             ))}
           </div>
         </div>
@@ -116,10 +116,10 @@ export default function LogsViewer() {
           <label className="filter-label">Categories:</label>
           <div className="filter-options">
             {LOG_CATEGORIES.map(category => (
-              <label key={category} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.85rem' }}>
+              <div key={category} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.85rem' }}>
                 <label className="toggle-switch"><input type="checkbox" checked={selectedCategories.has(category)} onChange={() => handleCategoryToggle(category)} /><span className="slider"></span></label>
                 <span>{category}</span>
-              </label>
+              </div>
             ))}
           </div>
         </div>
