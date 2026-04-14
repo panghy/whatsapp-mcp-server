@@ -1,0 +1,44 @@
+import { contextBridge, ipcRenderer } from 'electron'
+
+contextBridge.exposeInMainWorld('electron', {
+  // Settings
+  getAutoLaunch: () => ipcRenderer.invoke('get-auto-launch'),
+  setAutoLaunch: (enabled: boolean) => ipcRenderer.invoke('set-auto-launch', enabled),
+  getUserDisplayName: () => ipcRenderer.invoke('get-user-display-name'),
+  setUserDisplayName: (name: string) => ipcRenderer.invoke('set-user-display-name', name),
+  getMinimizeToTray: () => ipcRenderer.invoke('get-minimize-to-tray'),
+  setMinimizeToTray: (enabled: boolean) => ipcRenderer.invoke('set-minimize-to-tray', enabled),
+  // WhatsApp connection
+  whatsappConnect: () => ipcRenderer.invoke('whatsapp-connect'),
+  whatsappGetStatus: () => ipcRenderer.invoke('whatsapp-status'),
+  whatsappDisconnect: () => ipcRenderer.invoke('whatsapp-disconnect'),
+  whatsappClearSession: () => ipcRenderer.invoke('whatsapp-logout'),
+  relinkWhatsApp: () => ipcRenderer.invoke('whatsapp-logout'),
+  logoff: () => ipcRenderer.invoke('whatsapp-logout'),
+  // Sync & Activity
+  getSyncStatus: () => ipcRenderer.invoke('get-sync-status'),
+  getActivityStatus: async () => {
+    const sync = await ipcRenderer.invoke('get-sync-status')
+    const messages = await ipcRenderer.invoke('get-message-count', 0) // placeholder
+    return { lastActivityTime: Date.now(), totalMessagesStored: messages || 0 }
+  },
+  // Chats & Groups
+  getGroups: () => ipcRenderer.invoke('get-chats'),
+  setGroupEnabled: (groupId: number, enabled: boolean) => ipcRenderer.invoke('toggle-chat', groupId, enabled),
+  // Logs
+  getLogs: (_filters?: { levels?: string[], categories?: string[], searchText?: string, limit?: number }) =>
+    ipcRenderer.invoke('get-logs', 100),
+  clearLogs: () => ipcRenderer.invoke('clear-logs'),
+  exportLogs: (_format?: 'json' | 'text') => Promise.resolve(false) // not implemented yet
+})
+
+// Expose ipcRenderer for listening to events
+contextBridge.exposeInMainWorld('ipcRenderer', {
+  on: (channel: string, listener: (...args: any[]) => void) => {
+    ipcRenderer.on(channel, (_, ...args) => listener(...args))
+  },
+  removeListener: (channel: string, listener: (...args: any[]) => void) => {
+    ipcRenderer.removeListener(channel, listener)
+  }
+})
+
