@@ -159,7 +159,7 @@ function applyMigration5(database: Database.Database): void {
 export const messageOps = {
   insert: (chatId: number, whatsappMessageId: string, timestamp: number, senderJid: string, contentJson: string, hasAttachment: boolean = false) => {
     const stmt = getDatabase().prepare(`
-      INSERT INTO messages (chat_id, whatsapp_message_id, timestamp, sender_jid, content_json, has_attachment)
+      INSERT OR IGNORE INTO messages (chat_id, whatsapp_message_id, timestamp, sender_jid, content_json, has_attachment)
       VALUES (?, ?, ?, ?, ?, ?)
     `)
     return stmt.run(chatId, whatsappMessageId, timestamp, senderJid, contentJson, hasAttachment ? 1 : 0)

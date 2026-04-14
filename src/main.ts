@@ -469,6 +469,10 @@ ipcMain.handle('get-message-count', async (_, chatId: number) => {
   try { return messageOps.getCountByChatId(chatId) } catch (error) { console.error('Failed to get message count:', error); throw error }
 })
 
+ipcMain.handle('get-total-message-count', async () => {
+  try { return messageOps.getCount() } catch (error) { console.error('Failed to get total message count:', error); return 0 }
+})
+
 // Contact IPC handlers
 ipcMain.handle('get-contacts', async () => {
   try { return contactOps.getAll() } catch (error) { console.error('Failed to get contacts:', error); throw error }

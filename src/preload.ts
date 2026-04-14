@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('electron', {
   // Sync & Activity
   getSyncStatus: () => ipcRenderer.invoke('get-sync-status'),
   getActivityStatus: async () => {
-    const messages = await ipcRenderer.invoke('get-message-count', 0)
+    const messages = await ipcRenderer.invoke('get-total-message-count')
     return { lastActivityTime: Date.now(), totalMessagesStored: messages || 0 }
   },
   // Chats & Groups
