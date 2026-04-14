@@ -331,14 +331,13 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
             let dbChat = chatOps.getByWhatsappJid(jid) as any
             if (!dbChat) {
               const chatType = jid.includes('@g.us') ? 'group' : 'dm'
-              const enabled = chatType === 'dm' ? 1 : 0
               if (!chatName && chatType === 'dm') {
                 const contact = contactOps.getByJid(jid) as any
                 if (contact?.name) { chatName = contact.name }
               }
               const result = chatOps.insert(jid, chatType, undefined, chatName)
               const chatId = (result as any).lastInsertRowid
-              dbChat = { id: chatId, whatsapp_jid: jid, chat_type: chatType, enabled, name: chatName }
+              dbChat = { id: chatId, whatsapp_jid: jid, chat_type: chatType, name: chatName }
               if (chatType === 'group') { newGroupsToFetch.push({ chatId, jid }) }
             } else if (!dbChat.name && chatName) { chatOps.updateName(dbChat.id, chatName) }
           }
@@ -356,12 +355,10 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
             let chat = chatOps.getByWhatsappJid(jid) as any
             if (!chat) {
               const chatType = jid.includes('@g.us') ? 'group' : 'dm'
-              const enabled = chatType === 'dm' ? 1 : 0
               const result = chatOps.insert(jid, chatType, undefined, undefined)
               const chatId = (result as any).lastInsertRowid
-              chat = { id: chatId, whatsapp_jid: jid, chat_type: chatType, enabled }
+              chat = { id: chatId, whatsapp_jid: jid, chat_type: chatType }
             }
-            if (!chat.enabled) continue
             try { await messageTransformer.processMessage(msg, chat.id) } catch (error) { console.error(`Failed to process history message: ${error}`) }
           }
         }
