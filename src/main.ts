@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } from 'electron'
 import path from 'path'
 import Settings from 'electron-settings'
 import fs from 'fs'
@@ -162,7 +162,11 @@ const updateTrayMenu = () => {
 const createTray = () => {
   try {
     const iconPath = path.join(__dirname, './icon.png')
-    tray = new Tray(iconPath)
+    const icon = nativeImage.createFromPath(iconPath)
+    const trayIcon = icon.resize({ width: 22, height: 22 })
+    trayIcon.setTemplateImage(true) // adapts to dark/light menu bar
+    tray = new Tray(trayIcon)
+    tray.setToolTip('WhatsApp MCP Server')
     tray.on('click', () => {
       if (mainWindow) { mainWindow.isVisible() ? mainWindow.hide() : (mainWindow.show(), mainWindow.focus()) }
       else { createWindow() }
