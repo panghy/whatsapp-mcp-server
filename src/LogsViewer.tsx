@@ -90,11 +90,14 @@ export default function LogsViewer() {
       <div className="logs-header">
         <h3>Application Logs</h3>
         <div className="logs-controls">
-          <label className="checkbox-label"><input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} /><span>Auto-refresh</span></label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <label className="toggle-switch"><input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} /><span className="slider"></span></label>
+            <span style={{ fontSize: '0.85rem' }}>Auto-refresh</span>
+          </div>
           <button className="logs-btn" onClick={() => loadLogs()}>Refresh</button>
           <button className="logs-btn" onClick={() => handleExportLogs('json')}>Export JSON</button>
           <button className="logs-btn" onClick={() => handleExportLogs('text')}>Export Text</button>
-          <button className="logs-btn danger" onClick={handleClearLogs}>Clear Logs</button>
+          <button className="logs-btn danger" style={{ color: 'white' }} onClick={handleClearLogs}>Clear Logs</button>
         </div>
       </div>
 
