@@ -163,7 +163,8 @@ const createTray = () => {
   try {
     const iconPath = path.join(__dirname, './icon.png')
     const icon = nativeImage.createFromPath(iconPath)
-    const trayIcon = icon.resize({ width: 16, height: 16 })
+    const trayIcon = icon.resize({ width: 18, height: 18 })
+    trayIcon.setTemplateImage(true)
     tray = new Tray(trayIcon)
     tray.setToolTip('WhatsApp MCP Server')
     tray.on('click', () => {
