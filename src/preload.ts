@@ -25,8 +25,8 @@ contextBridge.exposeInMainWorld('electron', {
   getGroups: () => ipcRenderer.invoke('get-chats'),
   setGroupEnabled: (groupId: number, enabled: boolean) => ipcRenderer.invoke('toggle-chat', groupId, enabled),
   // Logs
-  getLogs: (_filters?: { levels?: string[], categories?: string[], searchText?: string, limit?: number }) =>
-    ipcRenderer.invoke('get-logs', 100),
+  getLogs: (filters?: { levels?: string[], categories?: string[], searchText?: string, limit?: number }) =>
+    ipcRenderer.invoke('get-logs', filters || {}),
   clearLogs: () => ipcRenderer.invoke('clear-logs'),
   exportLogs: (_format?: 'json' | 'text') => Promise.resolve(false), // not implemented yet
   // MCP Server

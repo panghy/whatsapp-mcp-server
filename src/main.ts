@@ -482,8 +482,42 @@ ipcMain.handle('get-contacts', async () => {
 })
 
 // Logs IPC handlers
-ipcMain.handle('get-logs', async (_, limit = 100) => {
-  try { return logOps.getRecent(limit) } catch (error) { console.error('Failed to get logs:', error); throw error }
+ipcMain.handle('get-logs', async (_, filters: { levels?: string[], categories?: string[], searchText?: string, limit?: number } = {}) => {
+  try {
+    const { levels, categories, searchText, limit = 1000 } = filters
+    const db = getDatabase()
+
+    let query = 'SELECT * FROM logs'
+    const conditions: string[] = []
+    const params: any[] = []
+
+    if (levels && levels.length > 0 && levels.length < 4) {
+      conditions.push(`level IN (${levels.map(() => '?').join(', ')})`)
+      params.push(...levels)
+    }
+
+    if (categories && categories.length > 0) {
+      conditions.push(`category IN (${categories.map(() => '?').join(', ')})`)
+      params.push(...categories)
+    }
+
+    if (searchText) {
+      conditions.push('message LIKE ?')
+      params.push(`%${searchText}%`)
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ')
+    }
+
+    query += ' ORDER BY timestamp DESC LIMIT ?'
+    params.push(limit)
+
+    return db.prepare(query).all(...params)
+  } catch (error) {
+    console.error('Failed to get logs:', error)
+    throw error
+  }
 })
 
 ipcMain.handle('clear-logs', async () => {
