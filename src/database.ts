@@ -245,7 +245,7 @@ export const chatOps = {
   },
 
   updateLastActivity: (chatId: number, timestamp: string) => {
-    return getDatabase().prepare('UPDATE chats SET last_activity = ? WHERE id = ?').run(timestamp, chatId)
+    return getDatabase().prepare('UPDATE chats SET last_activity = ? WHERE id = ? AND (last_activity IS NULL OR last_activity < ?)').run(timestamp, chatId, timestamp)
   },
 
   updateHighestChunkOrder: (chatId: number, order: number) => {
