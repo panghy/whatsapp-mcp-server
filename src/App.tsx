@@ -90,6 +90,7 @@ export default function App() {
   const [isAutoReconnecting, setIsAutoReconnecting] = useState(false)
   const [userName, setUserName] = useState('')
   const [nameConfirmed, setNameConfirmed] = useState(false)
+  const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null)
 
   useEffect(() => {
     const loadStatus = async () => {
@@ -105,6 +106,7 @@ export default function App() {
         setActivityStatus(activitySt)
         const savedName = await window.electron.getUserDisplayName()
         if (savedName && whatsappSt.hasAuth) { setUserName(savedName); setNameConfirmed(true) }
+        const mcpSt = await window.electron.getMcpStatus(); setMcpStatus(mcpSt)
       } catch (error) { console.error('Failed to load status:', error) }
       finally { setLoading(false) }
     }
@@ -124,6 +126,7 @@ export default function App() {
         else if (state === 'disconnected' && currentView === 'loading') { setIsAutoReconnecting(false); setCurrentView('hero') }
         const syncSt = await window.electron.getSyncStatus(); setSyncStatus(syncSt)
         const activitySt = await window.electron.getActivityStatus(); setActivityStatus(activitySt)
+        const mcpSt = await window.electron.getMcpStatus(); setMcpStatus(mcpSt)
       } catch (error) { console.error('Failed to poll status:', error) }
     }, 2000)
     return () => clearInterval(pollInterval)
@@ -204,6 +207,13 @@ export default function App() {
         <div className="activity-stats">
           <div className="activity-stat-row"><span className="activity-stat-label">Last activity:</span><span className="activity-stat-value">{formatRelativeTime(activityStatus.lastActivityTime)}</span></div>
           <div className="activity-stat-row"><span className="activity-stat-label">Messages stored:</span><span className="activity-stat-value">{activityStatus.totalMessagesStored.toLocaleString()}</span></div>
+        </div>
+        <div style={{ marginTop: '1.5rem', padding: '1rem', backgroundColor: 'hsl(var(--muted))', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', flex: 1 }}>
+            <span style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))', textTransform: 'uppercase', letterSpacing: '0.05em' }}>MCP Endpoint</span>
+            <code style={{ fontSize: '0.85rem', color: 'hsl(var(--foreground))' }}>http://localhost:{mcpStatus?.port || 13491}/mcp</code>
+          </div>
+          <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: mcpStatus?.running ? 'hsl(var(--success))' : 'hsl(var(--muted-foreground))' }} />
         </div>
         <button onClick={() => setCurrentView('settings')} style={{ marginTop: '2rem' }}>Settings</button>
       </div></div>
