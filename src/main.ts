@@ -126,9 +126,8 @@ const createWindow = () => {
   mainWindow.on('closed', () => { mainWindow = null })
   mainWindow.on('minimize', () => { mainWindow?.hide() })
 
-  mainWindow.on('close', async (event) => {
-    const minimizeToTray = await Settings.get('minimizeToTray')
-    if (minimizeToTray && mainWindow) {
+  mainWindow.on('close', (event) => {
+    if (mainWindow) {
       event.preventDefault()
       mainWindow.hide()
     }

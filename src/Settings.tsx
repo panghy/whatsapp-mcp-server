@@ -29,15 +29,12 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
   const [displayName, setDisplayName] = useState('')
   const [displayNameSaved, setDisplayNameSaved] = useState(false)
   const [autoLaunch, setAutoLaunch] = useState(false)
-  const [minimizeToTray, setMinimizeToTray] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   // MCP Server state
   const [mcpStatus, setMcpStatus] = useState<McpStatusData>({ status: 'stopped', port: 13491, running: false, error: null })
   const [mcpPort, setMcpPort] = useState('13491')
   const [mcpPortSaved, setMcpPortSaved] = useState(false)
-  const [mcpAutoStart, setMcpAutoStart] = useState(true)
-  const [mcpRestarting, setMcpRestarting] = useState(false)
 
   useEffect(() => { loadSettings() }, [])
 
@@ -47,10 +44,8 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
       const groupsData = await window.electron.getGroups(); setGroups(groupsData)
       const name = await window.electron.getUserDisplayName(); setDisplayName(name || '')
       const autoLaunchEnabled = await window.electron.getAutoLaunch(); setAutoLaunch(autoLaunchEnabled)
-      const minimizeEnabled = await window.electron.getMinimizeToTray(); setMinimizeToTray(minimizeEnabled)
       // Load MCP settings
       const mcpStatusData = await window.electron.getMcpStatus(); setMcpStatus(mcpStatusData); setMcpPort(String(mcpStatusData.port))
-      const mcpAutoStartEnabled = await window.electron.getMcpAutoStart(); setMcpAutoStart(mcpAutoStartEnabled)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load settings'
       setError(msg); console.error('Failed to load settings:', err)
@@ -85,7 +80,6 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
 
   const handleDisplayNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') { handleDisplayNameSave() } }
   const handleAutoLaunchChange = async (e: React.ChangeEvent<HTMLInputElement>) => { try { await window.electron.setAutoLaunch(e.target.checked); setAutoLaunch(e.target.checked) } catch (err) { console.error('Failed to update auto-launch:', err) } }
-  const handleMinimizeToTrayChange = async (e: React.ChangeEvent<HTMLInputElement>) => { try { await window.electron.setMinimizeToTray(e.target.checked); setMinimizeToTray(e.target.checked) } catch (err) { console.error('Failed to update minimize to tray:', err) } }
 
   // MCP handlers
   const handleMcpPortSave = async () => {
@@ -95,13 +89,6 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
     catch (err) { console.error('Failed to save MCP port:', err) }
   }
   const handleMcpPortKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') { handleMcpPortSave() } }
-  const handleMcpRestart = async () => {
-    setMcpRestarting(true)
-    try { const result = await window.electron.restartMcpServer(); setMcpStatus({ ...mcpStatus, status: result.status as McpStatusData['status'], error: result.error }) }
-    catch (err) { console.error('Failed to restart MCP server:', err) }
-    finally { setMcpRestarting(false) }
-  }
-  const handleMcpAutoStartChange = async (e: React.ChangeEvent<HTMLInputElement>) => { try { await window.electron.setMcpAutoStart(e.target.checked); setMcpAutoStart(e.target.checked) } catch (err) { console.error('Failed to update MCP auto-start:', err) } }
 
   const handleRelinkWhatsApp = async () => {
     if (window.confirm('This will clear your WhatsApp session and show the QR code again. Your messages will be preserved.')) {
@@ -178,8 +165,7 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
               </div>
               <p className="setting-description">Your name as it appears in synced messages</p>
             </div>
-            <div className="setting-item"><label className="checkbox-label"><input type="checkbox" checked={autoLaunch} onChange={handleAutoLaunchChange} /><span>Launch on startup</span></label></div>
-            <div className="setting-item"><label className="checkbox-label"><input type="checkbox" checked={minimizeToTray} onChange={handleMinimizeToTrayChange} /><span>Minimize to tray on close</span></label></div>
+            <div className="setting-item" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Launch on startup</span><label className="toggle-switch"><input type="checkbox" checked={autoLaunch} onChange={handleAutoLaunchChange} /><span className="slider"></span></label></div>
 
             {/* MCP Server Section */}
             <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid hsl(var(--border))' }}>
@@ -200,10 +186,6 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
                   {mcpPortSaved && (<span style={{ position: 'absolute', right: '-4rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
                 </div>
                 <p className="setting-description">Port for MCP HTTP server (requires restart)</p>
-              </div>
-              <div className="setting-item"><label className="checkbox-label"><input type="checkbox" checked={mcpAutoStart} onChange={handleMcpAutoStartChange} /><span>Start MCP server on app launch</span></label></div>
-              <div className="setting-item">
-                <button className="action-btn" onClick={handleMcpRestart} disabled={mcpRestarting}>{mcpRestarting ? 'Restarting...' : 'Restart MCP Server'}</button>
               </div>
             </div>
 
