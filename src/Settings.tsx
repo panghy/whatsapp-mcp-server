@@ -157,7 +157,7 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
         {activeTab === 'interface-system' && (
           <div>
             <h3>Interface & System</h3>
-            <div className="setting-item">
+            <div className="setting-item" style={{ marginTop: '1rem' }}>
               <label htmlFor="display-name">Your Name</label>
               <div style={{ position: 'relative' }}>
                 <input id="display-name" type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} onBlur={handleDisplayNameSave} onKeyDown={handleDisplayNameKeyDown} placeholder="Your name" />
@@ -165,7 +165,7 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
               </div>
               <p className="setting-description">Your name as it appears in synced messages</p>
             </div>
-            <div className="setting-item" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Launch on startup</span><label className="toggle-switch"><input type="checkbox" checked={autoLaunch} onChange={handleAutoLaunchChange} /><span className="slider"></span></label></div>
+            <div className="setting-item" style={{ marginTop: '1rem', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Launch on startup</span><label className="toggle-switch"><input type="checkbox" checked={autoLaunch} onChange={handleAutoLaunchChange} /><span className="slider"></span></label></div>
 
             {/* MCP Server Section */}
             <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid hsl(var(--border))' }}>
