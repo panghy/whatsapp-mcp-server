@@ -192,7 +192,7 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
             <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid hsl(var(--border))' }}>
               <h4 style={{ marginBottom: '1rem' }}>Account Actions</h4>
               <div className="action-group"><h5>Re-link WhatsApp</h5><p>Clear your WhatsApp session and scan the QR code again.</p><button className="action-btn" onClick={handleRelinkWhatsApp}>Re-link WhatsApp</button></div>
-              <div className="action-group danger" style={{ marginTop: '1.5rem' }}><h5>Log Off</h5><p>Delete all local data including messages.</p><button className="action-btn danger" onClick={handleLogoff}>Log Off</button></div>
+              <div className="action-group danger" style={{ marginTop: '1.5rem' }}><h5>Log Off</h5><p>Delete all local data including messages.</p><button className="action-btn danger" style={{ color: 'white' }} onClick={handleLogoff}>Log Off</button></div>
             </div>
           </div>
         )}

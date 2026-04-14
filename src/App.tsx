@@ -211,9 +211,11 @@ export default function App() {
         <div style={{ marginTop: '1.5rem', padding: '1rem', backgroundColor: 'hsl(var(--muted))', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', flex: 1 }}>
             <span style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))', textTransform: 'uppercase', letterSpacing: '0.05em' }}>MCP Endpoint</span>
-            <code style={{ fontSize: '0.85rem', color: 'hsl(var(--foreground))' }}>http://localhost:{mcpStatus?.port || 13491}/mcp</code>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <code style={{ fontSize: '0.85rem', color: 'hsl(var(--foreground))' }}>http://localhost:{mcpStatus?.port || 13491}/mcp</code>
+              <button onClick={() => navigator.clipboard.writeText(`http://localhost:${mcpStatus?.port || 13491}/mcp`)} style={{ padding: '4px 8px', fontSize: '0.7rem', cursor: 'pointer' }}>Copy</button>
+            </div>
           </div>
-          <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: mcpStatus?.running ? 'hsl(var(--success))' : 'hsl(var(--muted-foreground))' }} />
         </div>
         <button onClick={() => setCurrentView('settings')} style={{ marginTop: '2rem' }}>Settings</button>
       </div></div>
