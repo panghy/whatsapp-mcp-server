@@ -130,14 +130,9 @@ export class MessageTransformer {
 
   async processMessage(msg: any, chatId: number): Promise<void> {
     try {
-      const msgKey = msg.key?.id || 'no-id'
-      const topLevelKeys = msg.message ? Object.keys(msg.message) : []
-      console.log(`[processMessage] msgKey=${msgKey} topLevelKeys=[${topLevelKeys.join(', ')}]`)
-
       const transformed = await this.transformMessage(msg)
 
       if (transformed) {
-        console.log(`[processMessage] msgKey=${msgKey} transformed.type=${transformed.type}`)
         const contentJson = JSON.stringify(transformed)
         const hasAttachment = transformed.type === 'unsupported_attachment' ||
                              (transformed.type === 'message' && !!transformed.filename)
@@ -146,8 +141,6 @@ export class MessageTransformer {
         const timestamp = extractTimestampMs(msg.messageTimestamp)
         messageOps.insert(chatId, msgId, timestamp, senderJid, contentJson, hasAttachment)
         chatOps.updateLastActivity(chatId, new Date(timestamp).toISOString())
-      } else {
-        console.log(`[processMessage] msgKey=${msgKey} transformMessage returned null`)
       }
     } catch (error) {
       console.error(`[processMessage] Error processing message:`, error)
