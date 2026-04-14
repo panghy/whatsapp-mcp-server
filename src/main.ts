@@ -295,8 +295,8 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
       } else if (update.connection === 'close') {
         whatsappConnected = false
         updateTrayMenu()
-        // Stop MCP server when WhatsApp disconnects
-        await stopMcpServerSafe()
+        // Don't stop MCP server - it handles disconnected state gracefully
+        // and will reconnect when WhatsApp reconnects
       }
     })
 

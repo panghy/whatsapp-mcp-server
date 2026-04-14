@@ -264,45 +264,54 @@ export async function startMcpServer(port: number): Promise<void> {
   mcpServer = createMcpServer()
 
   httpServer = http.createServer(async (req, res) => {
-    // Only handle POST /mcp endpoint
-    if (req.method === 'POST' && req.url === '/mcp') {
-      // Collect request body
-      const chunks: Buffer[] = []
-      for await (const chunk of req) {
-        chunks.push(chunk as Buffer)
-      }
-      const body = Buffer.concat(chunks).toString()
+    try {
+      // Only handle POST /mcp endpoint
+      if (req.method === 'POST' && req.url === '/mcp') {
+        // Collect request body
+        const chunks: Buffer[] = []
+        for await (const chunk of req) {
+          chunks.push(chunk as Buffer)
+        }
+        const body = Buffer.concat(chunks).toString()
 
-      // Create transport for this request (stateless mode)
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined // stateless
-      })
+        // Create transport for this request (stateless mode)
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined // stateless
+        })
 
-      // Connect server to transport
-      await mcpServer!.connect(transport)
+        // Connect server to transport
+        await mcpServer!.connect(transport)
 
-      // Clean up when connection closes
-      res.on('close', () => {
-        transport.close()
-      })
+        // Clean up when connection closes
+        res.on('close', () => {
+          transport.close()
+        })
 
-      // Handle the request
-      try {
-        const parsedBody = JSON.parse(body)
-        await transport.handleRequest(req, res, parsedBody)
-      } catch (error) {
-        res.statusCode = 400
+        // Handle the request
+        try {
+          const parsedBody = JSON.parse(body)
+          await transport.handleRequest(req, res, parsedBody)
+        } catch (error) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'Invalid JSON' }))
+        }
+      } else if (req.method === 'GET' && req.url === '/health') {
+        // Health check endpoint
+        res.statusCode = 200
         res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: 'Invalid JSON' }))
+        res.end(JSON.stringify({ status: 'ok', whatsapp: whatsappManager?.state || 'unknown' }))
+      } else {
+        res.statusCode = 404
+        res.end('Not Found')
       }
-    } else if (req.method === 'GET' && req.url === '/health') {
-      // Health check endpoint
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ status: 'ok', whatsapp: whatsappManager?.state || 'unknown' }))
-    } else {
-      res.statusCode = 404
-      res.end('Not Found')
+    } catch (error) {
+      console.error('[MCP] Unhandled request error:', error)
+      if (!res.headersSent) {
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: 'Internal server error' }))
+      }
     }
   })
 
