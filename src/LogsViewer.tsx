@@ -41,6 +41,7 @@ export default function LogsViewer() {
       autoRefreshIntervalRef.current = setInterval(loadLogs, 2000)
       return () => { if (autoRefreshIntervalRef.current) { clearInterval(autoRefreshIntervalRef.current) } }
     }
+    return undefined
   }, [autoRefresh, loadLogs])
 
   const handleLevelToggle = (level: string) => {

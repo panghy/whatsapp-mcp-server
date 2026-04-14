@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
 import http from 'http'
-import { chatOps, messageOps, contactOps, settingOps, getDatabase } from './database'
+import { chatOps, messageOps, settingOps, getDatabase } from './database'
 import { serializeCompact } from './compact-serializer'
 import { TransformedMessage } from './message-transformer'
 import type { WhatsAppManager } from './whatsapp-manager'
@@ -33,10 +33,12 @@ function createMcpServer(): McpServer {
   // Tool 1: search_chats - Search chats by phone number or name fragment
   server.tool(
     'search_chats',
+    'Search chats by phone number or name fragment',
     {
       query: z.string().describe('Phone number or name fragment to search for')
     },
-    async ({ query }) => {
+    { readOnlyHint: true },
+    async ({ query }: { query: string }) => {
       const allChats = chatOps.getAll() as any[]
       const results = allChats.filter((chat: any) => {
         const name = chat.name?.toLowerCase() || ''
@@ -49,30 +51,31 @@ function createMcpServer(): McpServer {
         type: chat.chat_type,
         lastActivity: chat.last_activity
       }))
-      
+
       return {
         content: [{ type: 'text', text: JSON.stringify(results, null, 2) }]
       }
-    },
-    { annotations: { readOnlyHint: true } }
+    }
   )
 
   // Tool 2: get_chat_history - Get messages for a specific chat
   server.tool(
     'get_chat_history',
+    'Get messages for a specific chat',
     {
       jid: z.string().describe('WhatsApp JID of the chat'),
       limit: z.number().optional().default(100).describe('Maximum number of messages to return'),
       since: z.string().optional().describe('ISO timestamp cutoff - only return messages after this time')
     },
-    async ({ jid, limit, since }) => {
+    { readOnlyHint: true },
+    async ({ jid, limit, since }: { jid: string; limit: number; since?: string }) => {
       const chat = chatOps.getByWhatsappJid(jid) as any
       if (!chat) {
         return { content: [{ type: 'text', text: `Chat not found: ${jid}` }], isError: true }
       }
 
       let messages = messageOps.getByChatId(chat.id, limit || 100) as any[]
-      
+
       // Filter by timestamp if provided
       if (since) {
         const sinceTs = new Date(since).getTime()
@@ -87,18 +90,19 @@ function createMcpServer(): McpServer {
 
       const output = serializeCompact(transformed)
       return { content: [{ type: 'text', text: output || '(no messages)' }] }
-    },
-    { annotations: { readOnlyHint: true } }
+    }
   )
 
   // Tool 3: get_recent_messages - Get messages across all chats since a timestamp
   server.tool(
     'get_recent_messages',
+    'Get messages across all chats since a timestamp',
     {
       since: z.string().describe('ISO timestamp cutoff - return messages after this time'),
       limit: z.number().optional().default(200).describe('Maximum total messages to return')
     },
-    async ({ since, limit }) => {
+    { readOnlyHint: true },
+    async ({ since, limit }: { since: string; limit: number }) => {
       const sinceTs = new Date(since).getTime()
       const db = getDatabase()
       const messages = db.prepare(`
@@ -129,17 +133,18 @@ function createMcpServer(): McpServer {
       }
 
       return { content: [{ type: 'text', text: output || '(no recent messages)' }] }
-    },
-    { annotations: { readOnlyHint: true } }
+    }
   )
 
   // Tool 4: get_unread_messages - Get unread/new messages across all chats
   server.tool(
     'get_unread_messages',
+    'Get unread/new messages across all chats',
     {
       since: z.string().optional().describe('ISO timestamp cutoff (defaults to last check time or 24h ago)')
     },
-    async ({ since }) => {
+    { readOnlyHint: true },
+    async ({ since }: { since?: string }) => {
       // Get last check time from settings, or default to 24h ago
       const lastCheck = settingOps.get('last_unread_check')
       const defaultSince = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
@@ -178,19 +183,20 @@ function createMcpServer(): McpServer {
       }
 
       return { content: [{ type: 'text', text: output || '(no unread messages)' }] }
-    },
-    { annotations: { readOnlyHint: true } }
+    }
   )
 
   // Tool 5: send_message - Send a text message with optional attachment
   server.tool(
     'send_message',
+    'Send a text message with optional attachment',
     {
       jid: z.string().describe('WhatsApp JID to send the message to'),
       text: z.string().describe('Message text to send'),
       attachmentPath: z.string().optional().describe('Optional path to a file to attach')
     },
-    async ({ jid, text, attachmentPath }) => {
+    { readOnlyHint: false, destructiveHint: false },
+    async ({ jid, text, attachmentPath }: { jid: string; text: string; attachmentPath?: string }) => {
       if (!whatsappManager?.socket) {
         return {
           content: [{ type: 'text', text: 'WhatsApp is not connected' }],
@@ -241,8 +247,7 @@ function createMcpServer(): McpServer {
           isError: true
         }
       }
-    },
-    { annotations: { readOnlyHint: false, destructiveHint: false } }
+    }
   )
 
   return server

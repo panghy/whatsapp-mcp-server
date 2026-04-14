@@ -117,10 +117,11 @@ export default function App() {
         const whatsappSt = await window.electron.whatsappGetStatus()
         setWhatsappStatus(whatsappSt)
         if (whatsappSt.qrCode) setConnecting(false)
-        if (whatsappSt.state === 'connected') { setConnecting(false); setIsAutoReconnecting(false); if (currentView !== 'settings') setCurrentView('sync-status') }
-        else if (whatsappSt.state === 'connecting' && isAutoReconnecting && currentView !== 'settings') { setCurrentView('loading') }
-        else if (whatsappSt.state !== 'connected' && currentView === 'sync-status') { setCurrentView('hero') }
-        else if (whatsappSt.state === 'disconnected' && currentView === 'loading') { setIsAutoReconnecting(false); setCurrentView('hero') }
+        const state: ConnectionState = whatsappSt.state
+        if (state === 'connected') { setConnecting(false); setIsAutoReconnecting(false); if (currentView !== 'settings') setCurrentView('sync-status') }
+        else if (state === 'connecting' && isAutoReconnecting && currentView !== 'settings') { setCurrentView('loading') }
+        else if (currentView === 'sync-status') { setCurrentView('hero') }
+        else if (state === 'disconnected' && currentView === 'loading') { setIsAutoReconnecting(false); setCurrentView('hero') }
         const syncSt = await window.electron.getSyncStatus(); setSyncStatus(syncSt)
         const activitySt = await window.electron.getActivityStatus(); setActivityStatus(activitySt)
       } catch (error) { console.error('Failed to poll status:', error) }

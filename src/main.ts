@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, Menu, Tray, ipcMain } from 'electron'
 import path from 'path'
 import Settings from 'electron-settings'
 import fs from 'fs'
@@ -18,7 +18,6 @@ let mcpError: string | null = null
 const DEFAULT_MCP_PORT = 13491
 
 // Filter out newsletter and status broadcast JIDs
-const _loggedFilteredJids = new Set<string>()
 function isNewsletterOrBroadcast(jid: string): boolean {
   return jid.endsWith('@newsletter') || jid === 'status@broadcast'
 }
@@ -27,10 +26,9 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let whatsappManager: WhatsAppManager | null = null
 let whatsappConnected = false
-let lastActivityTime: number | null = null
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason, _promise) => {
   console.error('[UNHANDLED REJECTION]', reason)
 })
 
@@ -304,14 +302,13 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
 
     // Event processing - simplified version without queue-processor
     console.log('Registering event handlers via ev.process()...')
-    socket.ev.process(async (events) => {
+    socket.ev.process(async (events: Record<string, any>) => {
       const eventNames = Object.keys(events)
       if (eventNames.length > 0) { console.log(`[EVENTS] ${eventNames.join(', ')}`) }
 
       if (events['messaging-history.set']) {
         const { chats, contacts, messages, isLatest, syncType, progress } = events['messaging-history.set']
         console.log(`History sync batch: ${chats?.length || 0} chats, ${contacts?.length || 0} contacts, ${messages?.length || 0} messages`)
-        lastActivityTime = Date.now()
 
         // Process contacts
         if (contacts && contacts.length > 0) {

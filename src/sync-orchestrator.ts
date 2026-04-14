@@ -1,4 +1,4 @@
-import { chatOps, contactOps, messageOps, logOps } from './database'
+import { chatOps, contactOps, logOps } from './database'
 import { MessageTransformer } from './message-transformer'
 
 export interface SyncStatus {
@@ -24,7 +24,10 @@ export class SyncOrchestrator {
   private messageTransformer: MessageTransformer | null = null
   private isSyncInProgress = false
 
-  constructor(private socket: any) {}
+  constructor(_socket: any) {
+    // Socket passed for future use
+    void _socket
+  }
 
   setMessageTransformer(transformer: MessageTransformer) {
     this.messageTransformer = transformer
