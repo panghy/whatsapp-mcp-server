@@ -22,17 +22,17 @@ export default function LogsViewer() {
   const [error, setError] = useState<string | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const autoRefreshIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const isInitialLoadRef = useRef(true)
 
   const loadLogs = useCallback(async () => {
     try {
-      setLoading(true); setError(null)
+      if (isInitialLoadRef.current) {
+        setLoading(true)
+      }
+      setError(null)
       const logsData = await window.electron.getLogs({ levels: Array.from(selectedLevels), categories: Array.from(selectedCategories), searchText: searchText || undefined, limit: 1000 })
-      const scrollEl = scrollContainerRef.current
-      const scrollTop = scrollEl?.scrollTop ?? 0
       setLogs(logsData)
-      requestAnimationFrame(() => {
-        if (scrollEl) { scrollEl.scrollTop = scrollTop }
-      })
+      isInitialLoadRef.current = false
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load logs'
       setError(msg); console.error('Failed to load logs:', err)
