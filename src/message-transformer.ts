@@ -1,4 +1,4 @@
-import { messageOps, logOps } from './database'
+import { messageOps, logOps, chatOps } from './database'
 import path from 'path'
 import fs from 'fs'
 import { app } from 'electron'
@@ -145,6 +145,7 @@ export class MessageTransformer {
         const senderJid = msg.key?.participant || msg.key?.remoteJid || 'unknown'
         const timestamp = extractTimestampMs(msg.messageTimestamp)
         messageOps.insert(chatId, msgId, timestamp, senderJid, contentJson, hasAttachment)
+        chatOps.updateLastActivity(chatId, new Date(timestamp).toISOString())
       } else {
         console.log(`[processMessage] msgKey=${msgKey} transformMessage returned null`)
       }
@@ -185,6 +186,7 @@ export class MessageTransformer {
       const contentJson = JSON.stringify(deletedMessageEvent)
       const timestamp = Date.now()
       messageOps.insert(chatId, `del-${key.id}`, timestamp, deletedByJid, contentJson, false)
+      chatOps.updateLastActivity(chatId, new Date(timestamp).toISOString())
     } catch (error) {
       logOps.insert('error', 'transformer', `Failed to process message deletion`, JSON.stringify({ error: String(error) }))
       throw error
@@ -225,6 +227,7 @@ export class MessageTransformer {
       const contentJson = JSON.stringify(editedMessageEvent)
       const timestamp = Date.now()
       messageOps.insert(chatId, `edit-${key.id}-${Date.now()}`, timestamp, editedByJid, contentJson, false)
+      chatOps.updateLastActivity(chatId, new Date(timestamp).toISOString())
 
       if (original) {
         try {
