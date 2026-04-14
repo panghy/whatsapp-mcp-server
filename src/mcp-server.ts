@@ -2,13 +2,255 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
 import http from 'http'
-import { chatOps, messageOps, settingOps, getDatabase } from './database'
-import { serializeCompact } from './compact-serializer'
-import { TransformedMessage } from './message-transformer'
+import { chatOps, messageOps, settingOps, contactOps, getDatabase } from './database'
+import { serializeCompact, MeIdentity } from './compact-serializer'
+import { TransformedMessage, extractPhoneFromJid } from './message-transformer'
 import type { WhatsAppManager } from './whatsapp-manager'
 
 // Store for active transports (for session management)
 const activeTransports = new Map<string, StreamableHTTPServerTransport>()
+
+/**
+ * Get meIdentity from settings (user_display_name, user_phone).
+ */
+function getMeIdentity(): MeIdentity | undefined {
+  const name = settingOps.get('user_display_name')
+  const phone = settingOps.get('user_phone')
+  if (name && phone) {
+    return { name, phone }
+  }
+  return undefined
+}
+
+/**
+ * Resolve sender identity from contacts database.
+ * Uses JID lookup, LID fallback, then phone fallback.
+ */
+function resolveFromContacts(
+  senderJid: string,
+  fallback: { name: string; phone: string | null }
+): { name: string; phone: string | null } {
+  // Always look up contact — don't skip based on current name
+  let contact = contactOps.getByJid(senderJid) as any
+
+  // LID fallback: if JID is a LID and we didn't find a name, try getByLid
+  if ((!contact?.name) && (senderJid.includes('@lid') || senderJid.includes('@hosted.lid'))) {
+    const lidContact = contactOps.getByLid(senderJid) as any
+    if (lidContact) {
+      contact = lidContact
+    }
+  }
+
+  // Phone fallback: if still no name, try phone lookup
+  const phone = fallback.phone || extractPhoneFromJid(senderJid) || contact?.phone_number
+  if ((!contact?.name) && phone) {
+    const phoneContact = contactOps.getByPhone(phone) as any
+    if (phoneContact) {
+      contact = phoneContact
+    }
+  }
+
+  // Use contact data if available, otherwise keep fallback
+  const resolvedName = contact?.name || fallback.name
+  const resolvedPhone = contact?.phone_number || phone || fallback.phone
+
+  // Apply display rules (no bare "Unknown")
+  if ((resolvedName === 'Unknown' || resolvedName.startsWith('Unknown_')) && resolvedPhone) {
+    return { name: resolvedPhone, phone: resolvedPhone }
+  }
+  if (resolvedName === 'Unknown') {
+    return { name: `Unknown_${senderJid}`, phone: null }
+  }
+
+  return { name: resolvedName, phone: resolvedPhone }
+}
+
+/**
+ * Re-resolve @mentions in text using stored mentionedJids array.
+ */
+function reResolveAllMentions(text: string, mentionedJids: string[]): string {
+  let resolvedText = text
+
+  for (const jid of mentionedJids) {
+    let contact = contactOps.getByJid(jid) as any
+
+    if ((!contact || !contact.name) && (jid.includes('@lid') || jid.includes('@hosted.lid'))) {
+      const lidContact = contactOps.getByLid(jid) as any
+      if (lidContact) contact = lidContact
+    }
+
+    const atIndex = jid.indexOf('@')
+    const numberPart = atIndex > 0 ? jid.substring(0, atIndex) : jid
+
+    if ((!contact || !contact.name) && numberPart) {
+      const phoneContact = contactOps.getByPhone(numberPart) as any
+      if (phoneContact) contact = phoneContact
+    }
+
+    const name = contact?.name || null
+    const phone = contact?.phone_number || numberPart || null
+
+    let formattedMention: string
+    if (name && phone && name !== phone) {
+      formattedMention = `@${name}:${phone}`
+    } else if (phone) {
+      formattedMention = `@${phone}`
+    } else if (name) {
+      formattedMention = `@${name}`
+    } else {
+      formattedMention = `@Unknown_${jid}`
+    }
+
+    const unknownPattern = `@Unknown_${jid}`
+    if (resolvedText.includes(unknownPattern)) {
+      resolvedText = resolvedText.replace(unknownPattern, formattedMention)
+      continue
+    }
+
+    const rawPattern = `@${numberPart}`
+    if (resolvedText.includes(rawPattern)) {
+      const rawRegex = new RegExp(`@${numberPart}(?![\\d:])`, 'g')
+      resolvedText = resolvedText.replace(rawRegex, formattedMention)
+      continue
+    }
+
+    if (phone) {
+      const escapedPhone = phone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const stalePatternWithName = new RegExp(`@[^@\\s:]+:${escapedPhone}(?![\\d])`, 'g')
+      const stalePatternPhoneOnly = new RegExp(`@${escapedPhone}(?![\\d:])`, 'g')
+      resolvedText = resolvedText.replace(stalePatternWithName, formattedMention)
+      resolvedText = resolvedText.replace(stalePatternPhoneOnly, formattedMention)
+    }
+  }
+
+  return resolvedText
+}
+
+/**
+ * Re-resolve @Unknown_<jid> patterns in text (backward compat).
+ */
+function reResolveMentionsInText(text: string): string {
+  const mentionPattern = /@Unknown_([^\s@]+@(?:s\.whatsapp\.net|lid|hosted\.lid))/g
+
+  return text.replace(mentionPattern, (match, jid) => {
+    let contact = contactOps.getByJid(jid) as any
+
+    if (!contact && (jid.includes('@lid') || jid.includes('@hosted.lid'))) {
+      contact = contactOps.getByLid(jid) as any
+    }
+
+    if (contact) {
+      const name = contact.name || null
+      const phone = contact.phone_number || null
+
+      if (name && phone && name !== phone) {
+        return `@${name}:${phone}`
+      }
+      if (phone) {
+        return `@${phone}`
+      }
+      if (name) {
+        return `@${name}`
+      }
+    }
+
+    return match
+  })
+}
+
+/**
+ * Resolve all identity fields in a message.
+ * Handles sender, replyTo, deferred replies, deletedBy, editedBy, mentions.
+ */
+function resolveAllIdentities(
+  msg: any,
+  parsed: TransformedMessage,
+  meIdentity?: MeIdentity
+): TransformedMessage {
+  const senderJid = msg.sender_jid
+
+  // 1. Primary sender
+  if (parsed.sender) {
+    parsed.sender = resolveFromContacts(senderJid, parsed.sender)
+  }
+
+  // 1b. Defensive isFromMe
+  if (meIdentity && !parsed.isFromMe) {
+    const senderPhone = extractPhoneFromJid(senderJid)
+    if (senderPhone && senderPhone === meIdentity.phone) {
+      parsed.isFromMe = true
+    }
+  }
+
+  // 1c. Mentions
+  if (parsed.text) {
+    if (parsed.mentionedJids && parsed.mentionedJids.length > 0) {
+      parsed.text = reResolveAllMentions(parsed.text, parsed.mentionedJids)
+    } else {
+      parsed.text = reResolveMentionsInText(parsed.text)
+    }
+  }
+
+  // 2. Reply sender
+  if (parsed.replyTo && parsed.replyTo.messageId) {
+    const originalMsg = messageOps.getByWhatsappMessageId(parsed.replyTo.messageId) as any
+    if (originalMsg) {
+      const resolved = resolveFromContacts(originalMsg.sender_jid, {
+        name: parsed.replyTo.senderName || 'Unknown',
+        phone: parsed.replyTo.senderPhone || null
+      })
+      parsed.replyTo.senderName = resolved.name
+      parsed.replyTo.senderPhone = resolved.phone
+    }
+  }
+
+  // 2b. Deferred reply
+  if (!parsed.replyTo && parsed.replyToMessageId) {
+    const original = messageOps.getByWhatsappMessageId(parsed.replyToMessageId) as any
+    if (original) {
+      try {
+        const content = JSON.parse(original.content_json)
+        const resolved = resolveFromContacts(original.sender_jid, { name: 'Unknown', phone: null })
+        const fullText = content.text || '[Attachment]'
+        parsed.replyTo = {
+          messageId: parsed.replyToMessageId,
+          senderName: resolved.name,
+          senderPhone: resolved.phone,
+          fullText,
+          preview: fullText.substring(0, 50)
+        }
+      } catch { /* skip corrupt content */ }
+    }
+  }
+
+  // 3. deletedBy
+  if (parsed.deletedBy) {
+    parsed.deletedBy = resolveFromContacts(senderJid, parsed.deletedBy)
+  }
+
+  // 4. editedBy
+  if (parsed.editedBy) {
+    parsed.editedBy = resolveFromContacts(senderJid, parsed.editedBy)
+  }
+
+  // 5. deletedMessage.sender
+  if (parsed.deletedMessage?.sender && parsed.deletedMessage.messageId) {
+    const original = messageOps.getByWhatsappMessageId(parsed.deletedMessage.messageId) as any
+    if (original) {
+      parsed.deletedMessage.sender = resolveFromContacts(original.sender_jid, parsed.deletedMessage.sender)
+    }
+  }
+
+  // 6. editedMessage.sender
+  if (parsed.editedMessage?.sender && parsed.editedMessage.messageId) {
+    const original = messageOps.getByWhatsappMessageId(parsed.editedMessage.messageId) as any
+    if (original) {
+      parsed.editedMessage.sender = resolveFromContacts(original.sender_jid, parsed.editedMessage.sender)
+    }
+  }
+
+  return parsed
+}
 
 let mcpServer: McpServer | null = null
 let httpServer: http.Server | null = null
@@ -82,13 +324,18 @@ function createMcpServer(): McpServer {
         messages = messages.filter((m: any) => m.timestamp >= sinceTs)
       }
 
-      // Parse and serialize messages using compact format
+      const meIdentity = getMeIdentity()
+
+      // Parse, resolve identities, and serialize messages
       const transformed = messages.map((m: any) => {
-        try { return JSON.parse(m.content_json) as TransformedMessage }
+        try {
+          const parsed = JSON.parse(m.content_json) as TransformedMessage
+          return resolveAllIdentities(m, parsed, meIdentity)
+        }
         catch { return null }
       }).filter((m): m is TransformedMessage => m !== null).reverse()
 
-      const output = serializeCompact(transformed)
+      const output = serializeCompact(transformed, undefined, meIdentity)
       return { content: [{ type: 'text', text: output || '(no messages)' }] }
     }
   )
@@ -114,6 +361,8 @@ function createMcpServer(): McpServer {
         LIMIT ?
       `).all(sinceTs, limit || 200) as any[]
 
+      const meIdentity = getMeIdentity()
+
       // Group by chat for readable output
       const byChat = new Map<string, any[]>()
       for (const m of messages) {
@@ -126,10 +375,13 @@ function createMcpServer(): McpServer {
       for (const [chatName, msgs] of byChat) {
         output += `\n=== ${chatName} ===\n`
         const transformed = msgs.map((m: any) => {
-          try { return JSON.parse(m.content_json) as TransformedMessage }
+          try {
+            const parsed = JSON.parse(m.content_json) as TransformedMessage
+            return resolveAllIdentities(m, parsed, meIdentity)
+          }
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
-        output += serializeCompact(transformed) + '\n'
+        output += serializeCompact(transformed, undefined, meIdentity) + '\n'
       }
 
       return { content: [{ type: 'text', text: output || '(no recent messages)' }] }
@@ -164,6 +416,8 @@ function createMcpServer(): McpServer {
       // Update last check time
       settingOps.set('last_unread_check', new Date().toISOString())
 
+      const meIdentity = getMeIdentity()
+
       // Group by chat
       const byChat = new Map<string, any[]>()
       for (const m of messages) {
@@ -176,10 +430,13 @@ function createMcpServer(): McpServer {
       for (const [chatName, msgs] of byChat) {
         output += `\n=== ${chatName} ===\n`
         const transformed = msgs.map((m: any) => {
-          try { return JSON.parse(m.content_json) as TransformedMessage }
+          try {
+            const parsed = JSON.parse(m.content_json) as TransformedMessage
+            return resolveAllIdentities(m, parsed, meIdentity)
+          }
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
-        output += serializeCompact(transformed) + '\n'
+        output += serializeCompact(transformed, undefined, meIdentity) + '\n'
       }
 
       return { content: [{ type: 'text', text: output || '(no unread messages)' }] }
