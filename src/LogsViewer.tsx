@@ -140,7 +140,7 @@ export default function LogsViewer() {
                 <div className="log-level" style={{ backgroundColor: getLevelColor(log.level) }}>{log.level}</div>
                 <div className="log-content">
                   <div className="log-header">
-                    <span className="log-timestamp">{new Date(log.timestamp).toLocaleString()}</span>
+                    <span className="log-timestamp">{new Date(log.timestamp + 'Z').toLocaleString()}</span>
                     <span className="log-category">[{log.category}]</span>
                   </div>
                   <div className="log-message">{log.message}</div>
