@@ -130,8 +130,14 @@ export class MessageTransformer {
 
   async processMessage(msg: any, chatId: number): Promise<void> {
     try {
+      const msgKey = msg.key?.id || 'no-id'
+      const topLevelKeys = msg.message ? Object.keys(msg.message) : []
+      console.log(`[processMessage] msgKey=${msgKey} topLevelKeys=[${topLevelKeys.join(', ')}]`)
+
       const transformed = await this.transformMessage(msg)
+
       if (transformed) {
+        console.log(`[processMessage] msgKey=${msgKey} transformed.type=${transformed.type}`)
         const contentJson = JSON.stringify(transformed)
         const hasAttachment = transformed.type === 'unsupported_attachment' ||
                              (transformed.type === 'message' && !!transformed.filename)
@@ -139,8 +145,11 @@ export class MessageTransformer {
         const senderJid = msg.key?.participant || msg.key?.remoteJid || 'unknown'
         const timestamp = extractTimestampMs(msg.messageTimestamp)
         messageOps.insert(chatId, msgId, timestamp, senderJid, contentJson, hasAttachment)
+      } else {
+        console.log(`[processMessage] msgKey=${msgKey} transformMessage returned null`)
       }
     } catch (error) {
+      console.error(`[processMessage] Error processing message:`, error)
       logOps.insert('error', 'transformer', `Failed to process message`, JSON.stringify({ error: String(error) }))
     }
   }
@@ -242,49 +251,91 @@ export class MessageTransformer {
     const phone = extractPhoneFromJid(senderJid)
     const sender = { name: phone || `Unknown_${senderJid}`, phone }
 
-    if (msg.message?.protocolMessage) {
-      return this.handleSystemMessage(messageId, timestamp, msg)
+    // Get initial message content
+    let messageContent = msg.message
+    if (!messageContent) {
+      console.log(`[transformMessage] msgId=${messageId} no message content`)
+      return null
     }
 
-    if (msg.message?.conversation || msg.message?.extendedTextMessage) {
-      const text = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
-      const forwarded = !!msg.message.extendedTextMessage?.contextInfo?.isForwarded
-      const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid
+    const originalKeys = Object.keys(messageContent)
+    console.log(`[transformMessage] msgId=${messageId} originalKeys=[${originalKeys.join(', ')}]`)
+
+    // Unwrap wrapper message types
+    if (messageContent.ephemeralMessage?.message) {
+      messageContent = messageContent.ephemeralMessage.message
+      console.log(`[transformMessage] msgId=${messageId} unwrapped ephemeralMessage`)
+    }
+    if (messageContent.viewOnceMessage?.message) {
+      messageContent = messageContent.viewOnceMessage.message
+      console.log(`[transformMessage] msgId=${messageId} unwrapped viewOnceMessage`)
+    }
+    if (messageContent.viewOnceMessageV2?.message) {
+      messageContent = messageContent.viewOnceMessageV2.message
+      console.log(`[transformMessage] msgId=${messageId} unwrapped viewOnceMessageV2`)
+    }
+    if (messageContent.documentWithCaptionMessage?.message) {
+      messageContent = messageContent.documentWithCaptionMessage.message
+      console.log(`[transformMessage] msgId=${messageId} unwrapped documentWithCaptionMessage`)
+    }
+    if (messageContent.deviceSentMessage?.message) {
+      messageContent = messageContent.deviceSentMessage.message
+      console.log(`[transformMessage] msgId=${messageId} unwrapped deviceSentMessage`)
+    }
+    if (messageContent.editedMessage?.message) {
+      messageContent = messageContent.editedMessage.message
+      console.log(`[transformMessage] msgId=${messageId} unwrapped editedMessage`)
+    }
+
+    const unwrappedKeys = Object.keys(messageContent)
+    if (unwrappedKeys.join(',') !== originalKeys.join(',')) {
+      console.log(`[transformMessage] msgId=${messageId} unwrappedKeys=[${unwrappedKeys.join(', ')}]`)
+    }
+
+    if (messageContent.protocolMessage) {
+      return this.handleSystemMessage(messageId, timestamp, messageContent)
+    }
+
+    if (messageContent.conversation || messageContent.extendedTextMessage) {
+      const text = messageContent.conversation || messageContent.extendedTextMessage?.text || ''
+      const forwarded = !!messageContent.extendedTextMessage?.contextInfo?.isForwarded
+      const mentionedJids = messageContent.extendedTextMessage?.contextInfo?.mentionedJid
       const hasMentions = mentionedJids && Array.isArray(mentionedJids) && mentionedJids.length > 0
 
       const transformed: TransformedMessage = { type: 'message', messageId, sender, timestamp, text, forwarded, isFromMe }
       if (hasMentions) { transformed.mentionedJids = mentionedJids }
-      if (msg.message.extendedTextMessage?.contextInfo?.stanzaId) {
-        transformed.replyToMessageId = msg.message.extendedTextMessage.contextInfo.stanzaId
+      if (messageContent.extendedTextMessage?.contextInfo?.stanzaId) {
+        transformed.replyToMessageId = messageContent.extendedTextMessage.contextInfo.stanzaId
       }
       return transformed
     }
 
-    if (msg.message?.imageMessage || msg.message?.documentMessage ||
-        msg.message?.audioMessage || msg.message?.videoMessage) {
-      return await this.handleAttachment(messageId, timestamp, sender, msg)
+    if (messageContent.imageMessage || messageContent.documentMessage ||
+        messageContent.audioMessage || messageContent.videoMessage) {
+      return await this.handleAttachment(messageId, timestamp, sender, messageContent, msg)
     }
 
+    console.log(`[transformMessage] msgId=${messageId} unrecognized type, keys=[${unwrappedKeys.join(', ')}]`)
     return null
   }
 
-  private handleSystemMessage(messageId: string, timestamp: string, msg: any): TransformedMessage | null {
-    const protocolMsg = msg.message?.protocolMessage
+  private handleSystemMessage(messageId: string, timestamp: string, messageContent: any): TransformedMessage | null {
+    const protocolMsg = messageContent.protocolMessage
     if (!protocolMsg) return null
     if (protocolMsg.type === 5) {
       return {
         type: 'system', messageId, timestamp, systemType: 'number_change',
-        details: { userName: msg.pushName || 'Unknown', oldNumber: msg.key?.participant || 'unknown', newNumber: msg.key?.remoteJid || 'unknown' }
+        details: { userName: 'Unknown', oldNumber: 'unknown', newNumber: 'unknown' }
       }
     }
     return null
   }
 
   private async handleAttachment(
-    messageId: string, timestamp: string, sender: { name: string; phone: string | null }, msg: any
+    messageId: string, timestamp: string, sender: { name: string; phone: string | null }, messageContent: any, originalMsg: any
   ): Promise<TransformedMessage | null> {
-    const attachment = msg.message?.imageMessage || msg.message?.documentMessage ||
-                      msg.message?.audioMessage || msg.message?.videoMessage
+    const attachment = messageContent.imageMessage || messageContent.documentMessage ||
+                      messageContent.audioMessage || messageContent.videoMessage
     if (!attachment) return null
 
     const mimeType = (attachment as any).mimetype || 'application/octet-stream'
@@ -294,8 +345,10 @@ export class MessageTransformer {
       fileSize = fileSize.low + (fileSize.high || 0) * 0x100000000
     }
 
-    const contextInfo = (msg.message?.imageMessage?.contextInfo || msg.message?.documentMessage?.contextInfo ||
-                         msg.message?.audioMessage?.contextInfo || msg.message?.videoMessage?.contextInfo)
+    const contextInfo = (messageContent.imageMessage?.contextInfo || messageContent.documentMessage?.contextInfo ||
+                         messageContent.audioMessage?.contextInfo || messageContent.videoMessage?.contextInfo)
+
+    const isFromMe = originalMsg.key?.fromMe || false
 
     const applyReplyInfo = (result: TransformedMessage): TransformedMessage => {
       if (contextInfo?.stanzaId) { result.replyToMessageId = contextInfo.stanzaId }
@@ -303,19 +356,19 @@ export class MessageTransformer {
     }
 
     if (!SUPPORTED_MIME_TYPES.includes(mimeType)) {
-      return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, reason: 'unsupported_type', isFromMe: msg.key?.fromMe || false })
+      return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, reason: 'unsupported_type', isFromMe })
     }
 
     if (fileSize > MAX_ATTACHMENT_SIZE) {
-      return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, reason: 'exceeds_size_limit', isFromMe: msg.key?.fromMe || false })
+      return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, reason: 'exceeds_size_limit', isFromMe })
     }
 
     try {
-      await this.downloadAttachment(messageId, msg)
-      return applyReplyInfo({ type: 'message', messageId, sender, timestamp, text: `[Attachment: ${filename}]`, filename, mimeType, isFromMe: msg.key?.fromMe || false })
+      await this.downloadAttachment(messageId, originalMsg)
+      return applyReplyInfo({ type: 'message', messageId, sender, timestamp, text: `[Attachment: ${filename}]`, filename, mimeType, isFromMe })
     } catch (error) {
       logOps.insert('error', 'transformer', `Failed to download attachment ${messageId}`, JSON.stringify({ error: String(error) }))
-      return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, reason: 'download_failed', isFromMe: msg.key?.fromMe || false })
+      return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, reason: 'download_failed', isFromMe })
     }
   }
 

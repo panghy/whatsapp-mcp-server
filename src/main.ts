@@ -361,6 +361,8 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
             }
             try { await messageTransformer.processMessage(msg, chat.id) } catch (error) { console.error(`Failed to process history message: ${error}`) }
           }
+          const totalMessageCount = messageOps.getCount()
+          console.log(`[HistorySync] After batch: ${messages.length} messages processed, total in DB: ${totalMessageCount}`)
         }
 
         if (!contactSyncComplete && syncType === 2 && progress != null && progress >= 100) {
