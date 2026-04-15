@@ -51,6 +51,7 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let whatsappManager: WhatsAppManager | null = null
 let whatsappConnected = false
+let isQuitting = false
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (reason, _promise) => {
@@ -145,14 +146,14 @@ const createWindow = () => {
     mainWindow.loadURL(isDev)
     mainWindow.webContents.openDevTools()
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../index.html'))
+    mainWindow.loadFile(path.join(__dirname, 'index.html'))
   }
 
   mainWindow.on('closed', () => { mainWindow = null })
   mainWindow.on('minimize', () => { mainWindow?.hide() })
 
   mainWindow.on('close', (event) => {
-    if (mainWindow) {
+    if (!isQuitting && mainWindow) {
       event.preventDefault()
       mainWindow.hide()
     }
@@ -257,6 +258,10 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') { app.quit() }
+})
+
+app.on('before-quit', () => {
+  isQuitting = true
 })
 
 /**
