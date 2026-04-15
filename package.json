@@ -9,7 +9,7 @@
     "start": "npm run dev",
     "dev": "npm run build:main && node scripts/dev.mjs",
     "build": "npm run build:main && npm run build:renderer && electron-builder",
-    "build:main": "tsc --project tsconfig.main.json && esbuild 'dist/**/*.js' --platform=node --format=cjs --outdir=dist --allow-overwrite && cp assets/icon.png dist/icon.png && electron-rebuild -f -w better-sqlite3",
+    "build:main": "tsc --project tsconfig.main.json && esbuild dist/**/*.js --platform=node --format=cjs --outdir=dist --allow-overwrite && node -e \"require('fs').copyFileSync('assets/icon.png','dist/icon.png')\" && electron-rebuild -f -w better-sqlite3",
     "build:renderer": "vite build",
     "type-check": "tsc --noEmit",
     "pretest": "npm rebuild better-sqlite3",
