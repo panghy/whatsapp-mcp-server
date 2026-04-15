@@ -1,3 +1,11 @@
+## [1.0.1](https://github.com/panghy/whatsapp-mcp-server/compare/v1.0.0...v1.0.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* **build:** quote esbuild glob pattern for cross-platform compatibility ([517ac2e](https://github.com/panghy/whatsapp-mcp-server/commit/517ac2e377961bdd65c32df690edb024eb4730c4))
+* fix blank screen in packaged app and quit not working ([dba4784](https://github.com/panghy/whatsapp-mcp-server/commit/dba4784eec85b11605c6876ec4559e7719268b21))
+
 # 1.0.0 (2026-04-15)
 
 
