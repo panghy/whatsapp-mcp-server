@@ -135,7 +135,7 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
 
         {activeTab === 'group-sync' && (
           <div className="groups-tab">
-            <h3>Select Groups to Sync</h3><p className="tab-description">Turning off a chat hides it from all MCP operations. Messages are still synced in the background, so re-enabling restores full history.</p>
+            <h3>Group Visibility</h3><p className="tab-description">Turning off a chat hides it from all MCP operations. Messages are still synced in the background, so re-enabling restores full history.</p>
             <div className="search-box"><input type="text" placeholder="Search groups..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
             {loading ? (<p className="loading">Loading groups...</p>) : filteredGroups.length === 0 ? (<p className="no-groups">No groups found</p>) : (
               <div className="groups-list">
