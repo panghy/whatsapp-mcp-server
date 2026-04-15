@@ -6,6 +6,12 @@ on:
       - main
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g., v1.0.1)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -69,7 +75,7 @@ jobs:
       - name: Check out Git repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.semantic-release.result == 'skipped' && github.ref || format('v{0}', needs.semantic-release.outputs.new-release-version) }}
+          ref: ${{ inputs.tag || (needs.semantic-release.result == 'skipped' && github.ref || format('v{0}', needs.semantic-release.outputs.new-release-version)) }}
 
       - name: Install Node.js
         uses: actions/setup-node@v4
