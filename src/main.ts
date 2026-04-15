@@ -628,3 +628,5 @@ ipcMain.handle('mcp-set-auto-start', async (_, enabled: boolean) => {
   settingOps.set('mcp_auto_start', enabled ? 'true' : 'false')
   return { success: true }
 })
+
+ipcMain.handle('get-app-version', () => app.getVersion())

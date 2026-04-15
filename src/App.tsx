@@ -61,6 +61,7 @@ declare global {
       restartMcpServer: () => Promise<{ status: string; error: string | null }>
       getMcpAutoStart: () => Promise<boolean>
       setMcpAutoStart: (enabled: boolean) => Promise<{ success: boolean }>
+      getAppVersion: () => Promise<string>
     }
   }
 }

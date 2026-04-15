@@ -35,7 +35,8 @@ contextBridge.exposeInMainWorld('electron', {
   setMcpPort: (port: number) => ipcRenderer.invoke('mcp-set-port', port),
   restartMcpServer: () => ipcRenderer.invoke('mcp-restart'),
   getMcpAutoStart: () => ipcRenderer.invoke('mcp-get-auto-start'),
-  setMcpAutoStart: (enabled: boolean) => ipcRenderer.invoke('mcp-set-auto-start', enabled)
+  setMcpAutoStart: (enabled: boolean) => ipcRenderer.invoke('mcp-set-auto-start', enabled),
+  getAppVersion: () => ipcRenderer.invoke('get-app-version')
 })
 
 // Expose ipcRenderer for listening to events

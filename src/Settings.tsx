@@ -35,8 +35,20 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
   const [mcpStatus, setMcpStatus] = useState<McpStatusData>({ status: 'stopped', port: 13491, running: false, error: null })
   const [mcpPort, setMcpPort] = useState('13491')
   const [mcpPortSaved, setMcpPortSaved] = useState(false)
+  // App version
+  const [appVersion, setAppVersion] = useState('1.0.0')
 
   useEffect(() => { loadSettings() }, [])
+
+  useEffect(() => {
+    const loadAppVersion = async () => {
+      try {
+        const ver = await window.electron.getAppVersion()
+        setAppVersion(ver)
+      } catch (err) { console.error('Failed to get app version:', err) }
+    }
+    loadAppVersion()
+  }, [])
 
   const loadSettings = async () => {
     try {
@@ -199,8 +211,8 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
         {activeTab === 'logs' && (<div><LogsViewer /></div>)}
       </div></div>
       <div className="settings-footer">
-        <div className="settings-footer-left"><strong>WhatsApp MCP Bridge</strong><span>v1.0.0</span></div>
-        <div className="settings-footer-right"><a href="#" className="settings-footer-link">Help</a><span className="settings-footer-divider">•</span><a href="#" className="settings-footer-link">About</a></div>
+        <div className="settings-footer-left"><strong>WhatsApp MCP Bridge</strong><span>v{appVersion}</span></div>
+        <div className="settings-footer-right"><a href="https://github.com/panghy/whatsapp-mcp-server/issues" className="settings-footer-link" target="_blank" rel="noopener noreferrer">Help</a><span className="settings-footer-divider">•</span><a href="https://github.com/panghy/whatsapp-mcp-server" className="settings-footer-link" target="_blank" rel="noopener noreferrer">About</a></div>
       </div>
     </div>
   )
