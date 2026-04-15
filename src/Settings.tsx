@@ -183,7 +183,7 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
                 <label htmlFor="mcp-port">Server Port</label>
                 <div style={{ position: 'relative' }}>
                   <input id="mcp-port" type="text" inputMode="numeric" pattern="[0-9]*" value={mcpPort} onChange={(e) => setMcpPort(e.target.value)} onBlur={handleMcpPortSave} onKeyDown={handleMcpPortKeyDown} placeholder="13491" />
-                  {mcpPortSaved && (<span style={{ position: 'absolute', right: '-4rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
+                  {mcpPortSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
                 </div>
                 <p className="setting-description">Port for MCP HTTP server (requires restart)</p>
               </div>
