@@ -283,6 +283,7 @@ function createMcpServer(): McpServer {
     async ({ query }: { query: string }) => {
       const allChats = chatOps.getAll() as any[]
       const results = allChats.filter((chat: any) => {
+        if (!chat.enabled) return false
         const name = chat.name?.toLowerCase() || ''
         const jid = chat.whatsapp_jid?.toLowerCase() || ''
         const q = query.toLowerCase()
@@ -314,6 +315,9 @@ function createMcpServer(): McpServer {
       const chat = chatOps.getByWhatsappJid(jid) as any
       if (!chat) {
         return { content: [{ type: 'text', text: `Chat not found: ${jid}` }], isError: true }
+      }
+      if (!chat.enabled) {
+        return { content: [{ type: 'text', text: `Chat is disabled: ${jid}` }], isError: true }
       }
 
       let messages = messageOps.getByChatId(chat.id, limit || 100) as any[]
@@ -356,7 +360,7 @@ function createMcpServer(): McpServer {
         SELECT m.*, c.whatsapp_jid, c.name as chat_name, c.chat_type
         FROM messages m
         JOIN chats c ON m.chat_id = c.id
-        WHERE m.timestamp >= ?
+        WHERE m.timestamp >= ? AND c.enabled = 1
         ORDER BY m.timestamp DESC
         LIMIT ?
       `).all(sinceTs, limit || 200) as any[]
@@ -408,7 +412,7 @@ function createMcpServer(): McpServer {
         SELECT m.*, c.whatsapp_jid, c.name as chat_name, c.chat_type
         FROM messages m
         JOIN chats c ON m.chat_id = c.id
-        WHERE m.timestamp >= ?
+        WHERE m.timestamp >= ? AND c.enabled = 1
         ORDER BY m.timestamp DESC
         LIMIT 500
       `).all(sinceTs) as any[]
