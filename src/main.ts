@@ -2,12 +2,37 @@ import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } from 'electron'
 import path from 'path'
 import Settings from 'electron-settings'
 import fs from 'fs'
+import { autoUpdater } from 'electron-updater'
 import { initializeWhatsApp, disconnectWhatsApp, clearWhatsAppSession, WhatsAppManager } from './whatsapp-manager'
 import { initializeDatabase, chatOps, contactOps, messageOps, logOps, settingOps, getDatabase } from './database'
 import { initializeSyncOrchestrator, getSyncOrchestrator } from './sync-orchestrator'
 import { MessageTransformer, extractPhoneFromJid, normalizePhoneNumber } from './message-transformer'
 import { initializeGroupMetadataFetcher, getGroupMetadataFetcher } from './group-metadata-fetcher'
 import { startMcpServer, stopMcpServer, isMcpServerRunning, setWhatsAppManager } from './mcp-server'
+
+// Auto-updater configuration
+autoUpdater.autoDownload = true
+autoUpdater.autoInstallOnAppQuit = true
+
+autoUpdater.on('checking-for-update', () => {
+  console.log('[AutoUpdater] Checking for updates...')
+})
+
+autoUpdater.on('update-available', (info) => {
+  console.log('[AutoUpdater] Update available:', info.version)
+})
+
+autoUpdater.on('update-not-available', (info) => {
+  console.log('[AutoUpdater] No update available:', info.version)
+})
+
+autoUpdater.on('update-downloaded', (info) => {
+  console.log('[AutoUpdater] Update downloaded:', info.version)
+})
+
+autoUpdater.on('error', (err) => {
+  console.log('[AutoUpdater] Error:', err.message)
+})
 
 // MCP server status tracking
 type McpStatus = 'stopped' | 'starting' | 'running' | 'port_conflict' | 'error'
@@ -208,6 +233,9 @@ app.whenReady().then(async () => {
   initializeDatabase()
   createTray()
   createWindow()
+
+  // Check for updates after window is shown
+  autoUpdater.checkForUpdatesAndNotify()
 
   // Auto-connect if we have saved auth
   const authDir = path.join(app.getPath('userData'), 'whatsapp-auth')
