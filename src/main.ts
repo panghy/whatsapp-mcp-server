@@ -132,6 +132,9 @@ const createWindow = () => {
       mainWindow.hide()
     }
   })
+
+  mainWindow.on('show', () => { updateTrayMenu() })
+  mainWindow.on('hide', () => { updateTrayMenu() })
 }
 
 const updateTrayMenu = () => {
