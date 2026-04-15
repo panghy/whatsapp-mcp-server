@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-mcp-server",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "WhatsApp MCP Server - Electron app exposing WhatsApp messaging via Model Context Protocol",
   "main": "dist/main.js",
   "homepage": "./",
@@ -21,6 +21,7 @@
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "better-sqlite3": "^12.6.2",
     "electron-settings": "^4.0.2",
+    "electron-updater": "^6.8.3",
     "qrcode": "^1.5.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -45,7 +46,7 @@
     "wait-on": "^7.0.1"
   },
   "build": {
-    "appId": "com.whatsapp-mcp-server",
+    "appId": "com.clementpang.whatsapp-mcp-server",
     "productName": "WhatsApp MCP Server",
     "files": [
       "dist/**/*",
@@ -54,12 +55,26 @@
     "directories": {
       "buildResources": "assets"
     },
+    "publish": {
+      "provider": "github",
+      "owner": "panghy",
+      "repo": "whatsapp-mcp-server"
+    },
     "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "icon": "assets/icon.png"
+      "target": ["dmg", "zip"],
+      "icon": "assets/icon.png",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": {
+        "teamId": "6947A73B2N"
+      }
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "icon": "assets/icon.png",
+      "category": "Network"
     },
     "win": {
       "target": [
@@ -77,4 +92,3 @@
     "glob": "^13.0.0"
   }
 }
-
