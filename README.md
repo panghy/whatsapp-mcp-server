@@ -2,6 +2,17 @@
 
 An Electron desktop app that connects to WhatsApp, syncs messages to a local SQLite database, and exposes them through a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server. Enables AI assistants to read and send WhatsApp messages.
 
+## ⚠️ Disclaimer
+
+**This software is provided as-is, without warranty of any kind.** By using this software, you acknowledge and accept the following:
+
+- This project uses [Baileys](https://github.com/WhiskeySockets/Baileys), an **unofficial, reverse-engineered WhatsApp Web API**. It is **not endorsed, supported, or affiliated with WhatsApp or Meta** in any way.
+- **Using unofficial WhatsApp clients may violate WhatsApp's Terms of Service** and could result in your account being **temporarily or permanently banned**.
+- The authors are not responsible for any account bans, data loss, or other consequences resulting from the use of this software.
+- Use this software **at your own risk** and preferably with a secondary phone number.
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+
 ## Features
 
 - **WhatsApp Connection** — Connect via QR code scan, just like WhatsApp Web
