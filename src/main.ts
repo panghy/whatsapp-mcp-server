@@ -170,8 +170,12 @@ const createTray = () => {
     tray = new Tray(trayIcon)
     tray.setToolTip('WhatsApp MCP Server')
     tray.on('click', () => {
-      if (mainWindow) { mainWindow.isVisible() ? mainWindow.hide() : (mainWindow.show(), mainWindow.focus()) }
-      else { createWindow() }
+      if (mainWindow) {
+        mainWindow.show()
+        mainWindow.focus()
+      } else {
+        createWindow()
+      }
     })
     updateTrayMenu()
   } catch (e) {
