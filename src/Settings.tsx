@@ -126,7 +126,7 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
         <h1>Settings</h1>
       </div>
       <div className="settings-tabs">
-        <button className={`tab-btn ${activeTab === 'group-sync' ? 'active' : ''}`} onClick={() => setActiveTab('group-sync')}>Group Sync</button>
+        <button className={`tab-btn ${activeTab === 'group-sync' ? 'active' : ''}`} onClick={() => setActiveTab('group-sync')}>Group Visibility</button>
         <button className={`tab-btn ${activeTab === 'interface-system' ? 'active' : ''}`} onClick={() => setActiveTab('interface-system')}>Interface & System</button>
         <button className={`tab-btn ${activeTab === 'logs' ? 'active' : ''}`} onClick={() => setActiveTab('logs')}>Logs</button>
       </div>
