@@ -1,20 +1,74 @@
-name: Build/Release
+name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
 jobs:
-  release:
+  semantic-release:
+    if: startsWith(github.ref, 'refs/heads/')
+    runs-on: ubuntu-latest
+    outputs:
+      new-release-published: ${{ steps.semantic.outputs.new-release-published }}
+      new-release-version: ${{ steps.semantic.outputs.new-release-version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run semantic-release
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OUTPUT=$(npx semantic-release 2>&1) || true
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -q "Published release"; then
+            VERSION=$(echo "$OUTPUT" | grep -oP 'Published release \K[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+            echo "new-release-published=true" >> "$GITHUB_OUTPUT"
+            echo "new-release-version=$VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "new-release-published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: [semantic-release]
+    if: |
+      always() &&
+      (
+        (needs.semantic-release.result == 'success' && needs.semantic-release.outputs.new-release-published == 'true') ||
+        (needs.semantic-release.result == 'skipped')
+      )
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
-    
+
     steps:
       - name: Check out Git repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.semantic-release.result == 'skipped' && github.ref || format('v{0}', needs.semantic-release.outputs.new-release-version) }}
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -48,4 +102,3 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: "6947A73B2N"
         run: npm run build -- --publish always
-
