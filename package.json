@@ -1,6 +1,7 @@
 {
   "name": "whatsapp-mcp-server",
   "version": "1.0.0",
+  "license": "MIT",
   "description": "WhatsApp MCP Server - Electron app exposing WhatsApp messaging via Model Context Protocol",
   "main": "dist/main.js",
   "homepage": "./",
@@ -29,6 +30,12 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.3",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^12.0.6",
+    "@semantic-release/npm": "^13.1.5",
+    "@semantic-release/release-notes-generator": "^14.1.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.10.0",
     "@types/qrcode": "^1.5.6",
@@ -40,6 +47,7 @@
     "electron": "^38.0.0",
     "electron-builder": "^26.7.0",
     "esbuild": "^0.27.3",
+    "semantic-release": "^25.0.3",
     "typescript": "^5.3.0",
     "vite": "^5.0.0",
     "vitest": "^4.0.18",
@@ -61,7 +69,10 @@
       "repo": "whatsapp-mcp-server"
     },
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "icon": "assets/icon.png",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -72,7 +83,9 @@
       }
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "icon": "assets/icon.png",
       "category": "Network"
     },

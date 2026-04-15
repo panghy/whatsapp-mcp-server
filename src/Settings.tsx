@@ -214,6 +214,9 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
         <div className="settings-footer-left"><strong>WhatsApp MCP Bridge</strong><span>v{appVersion}</span></div>
         <div className="settings-footer-right"><a href="https://github.com/panghy/whatsapp-mcp-server/issues" className="settings-footer-link" target="_blank" rel="noopener noreferrer">Help</a><span className="settings-footer-divider">•</span><a href="https://github.com/panghy/whatsapp-mcp-server" className="settings-footer-link" target="_blank" rel="noopener noreferrer">About</a></div>
       </div>
+      <div style={{ textAlign: 'center', padding: '0.5rem 1rem', fontSize: '0.65rem', color: 'hsl(var(--muted-foreground))', opacity: 0.6 }}>
+        This software is provided as-is, without warranty. Not affiliated with WhatsApp or Meta.
+      </div>
     </div>
   )
 }
