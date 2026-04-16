@@ -71,7 +71,8 @@
     "publish": {
       "provider": "github",
       "owner": "panghy",
-      "repo": "whatsapp-mcp-server"
+      "repo": "whatsapp-mcp-server",
+      "releaseType": "release"
     },
     "mac": {
       "target": [
