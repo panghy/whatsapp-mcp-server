@@ -94,18 +94,21 @@ jobs:
 
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Set version from semantic-release
         if: "!startsWith(github.ref, 'refs/tags/v') && needs.semantic-release.outputs.new-release-version != ''"
+        shell: bash
         run: |
           VERSION="${{ needs.semantic-release.outputs.new-release-version }}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Set version from workflow input
         if: inputs.tag != ''
+        shell: bash
         run: |
           VERSION="${{ inputs.tag }}"
           VERSION="${VERSION#v}"
