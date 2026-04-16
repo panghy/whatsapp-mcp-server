@@ -189,8 +189,14 @@ const createWindow = () => {
     }
   })
 
-  mainWindow.on('show', () => { updateTrayMenu() })
-  mainWindow.on('hide', () => { updateTrayMenu() })
+  mainWindow.on('show', () => {
+    if (process.platform === 'darwin') app.dock.show()
+    updateTrayMenu()
+  })
+  mainWindow.on('hide', () => {
+    if (process.platform === 'darwin') app.dock.hide()
+    updateTrayMenu()
+  })
 }
 
 const updateTrayMenu = () => {
@@ -258,6 +264,12 @@ ipcMain.handle('set-auto-launch', async (_, enabled: boolean) => {
 app.whenReady().then(async () => {
   initializeDatabase()
   createTray()
+
+  // Hide dock on macOS - app should be menu bar only when window is hidden
+  if (process.platform === 'darwin') {
+    app.dock.hide()
+  }
+
   createWindow()
 
   // Check for updates after window is shown
@@ -283,7 +295,12 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) { createWindow() }
+    if (mainWindow) {
+      mainWindow.show()
+      mainWindow.focus()
+    } else {
+      createWindow()
+    }
   })
 })
 
