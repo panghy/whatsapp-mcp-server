@@ -1,3 +1,10 @@
+## [1.0.3](https://github.com/panghy/whatsapp-mcp-server/compare/v1.0.2...v1.0.3) (2026-04-16)
+
+
+### Bug Fixes
+
+* rename vite.config.ts to vite.config.mts for ESM compatibility ([57f6f86](https://github.com/panghy/whatsapp-mcp-server/commit/57f6f86d964a036f2b1090ff444528028b3b23df))
+
 ## [1.0.2](https://github.com/panghy/whatsapp-mcp-server/compare/v1.0.1...v1.0.2) (2026-04-16)
 
 
