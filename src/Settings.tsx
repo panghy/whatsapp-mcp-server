@@ -62,7 +62,7 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
     // Load initial update status
     const loadUpdateStatus = async () => {
       try {
-        const status = await window.electron.getUpdateStatus()
+        const status = await window.electron.getUpdateStatus() as UpdateStatusData
         setUpdateStatus(status)
       } catch (err) { console.error('Failed to get update status:', err) }
     }

@@ -190,11 +190,11 @@ const createWindow = () => {
   })
 
   mainWindow.on('show', () => {
-    if (process.platform === 'darwin') app.dock.show()
+    if (process.platform === 'darwin') app.dock?.show()
     updateTrayMenu()
   })
   mainWindow.on('hide', () => {
-    if (process.platform === 'darwin') app.dock.hide()
+    if (process.platform === 'darwin') app.dock?.hide()
     updateTrayMenu()
   })
 }
@@ -267,7 +267,7 @@ app.whenReady().then(async () => {
 
   // Hide dock on macOS - app should be menu bar only when window is hidden
   if (process.platform === 'darwin') {
-    app.dock.hide()
+    app.dock?.hide()
   }
 
   createWindow()
