@@ -14,24 +14,54 @@ import { startMcpServer, stopMcpServer, isMcpServerRunning, setWhatsAppManager }
 autoUpdater.autoDownload = true
 autoUpdater.autoInstallOnAppQuit = true
 
+// Auto-update state tracking
+type UpdateStatus = 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
+interface UpdateState {
+  status: UpdateStatus
+  version: string | null
+  error: string | null
+  progress: number | null
+}
+let updateState: UpdateState = { status: 'idle', version: null, error: null, progress: null }
+
+function sendUpdateStatus() {
+  mainWindow?.webContents.send('update-status', updateState)
+}
+
 autoUpdater.on('checking-for-update', () => {
   console.log('[AutoUpdater] Checking for updates...')
+  updateState = { status: 'checking', version: null, error: null, progress: null }
+  sendUpdateStatus()
 })
 
 autoUpdater.on('update-available', (info) => {
   console.log('[AutoUpdater] Update available:', info.version)
+  updateState = { status: 'available', version: info.version, error: null, progress: null }
+  sendUpdateStatus()
 })
 
 autoUpdater.on('update-not-available', (info) => {
   console.log('[AutoUpdater] No update available:', info.version)
+  updateState = { status: 'not-available', version: info.version, error: null, progress: null }
+  sendUpdateStatus()
+})
+
+autoUpdater.on('download-progress', (progressObj) => {
+  console.log('[AutoUpdater] Download progress:', progressObj.percent)
+  updateState = { ...updateState, status: 'downloading', progress: progressObj.percent }
+  sendUpdateStatus()
 })
 
 autoUpdater.on('update-downloaded', (info) => {
   console.log('[AutoUpdater] Update downloaded:', info.version)
+  updateState = { status: 'downloaded', version: info.version, error: null, progress: 100 }
+  sendUpdateStatus()
 })
 
 autoUpdater.on('error', (err) => {
   console.log('[AutoUpdater] Error:', err.message)
+  updateState = { status: 'error', version: null, error: err.message, progress: null }
+  sendUpdateStatus()
 })
 
 // MCP server status tracking
@@ -195,14 +225,8 @@ const createTray = () => {
     trayIcon.setTemplateImage(true)
     tray = new Tray(trayIcon)
     tray.setToolTip('WhatsApp MCP Server')
-    tray.on('click', () => {
-      if (mainWindow) {
-        mainWindow.show()
-        mainWindow.focus()
-      } else {
-        createWindow()
-      }
-    })
+    // On macOS, Tray with setContextMenu already opens the menu on click
+    // No separate click handler needed - it causes the window to pop up unexpectedly
     updateTrayMenu()
   } catch (e) {
     console.log('Tray icon not found, continuing without tray')
@@ -210,7 +234,8 @@ const createTray = () => {
 }
 
 ipcMain.handle('get-auto-launch', async () => {
-  return await Settings.get('autoLaunch') || false
+  // Return the actual OS-level login item state, not the stored setting
+  return app.getLoginItemSettings().openAtLogin
 })
 
 ipcMain.handle('get-user-display-name', async () => {
@@ -237,6 +262,12 @@ app.whenReady().then(async () => {
 
   // Check for updates after window is shown
   autoUpdater.checkForUpdatesAndNotify()
+
+  // Set up periodic update checks every 4 hours
+  const FOUR_HOURS = 4 * 60 * 60 * 1000
+  setInterval(() => {
+    autoUpdater.checkForUpdates()
+  }, FOUR_HOURS)
 
   // Auto-connect if we have saved auth
   const authDir = path.join(app.getPath('userData'), 'whatsapp-auth')
@@ -635,3 +666,22 @@ ipcMain.handle('mcp-set-auto-start', async (_, enabled: boolean) => {
 })
 
 ipcMain.handle('get-app-version', () => app.getVersion())
+
+// Auto-update IPC handlers
+ipcMain.handle('check-for-updates', async () => {
+  try {
+    await autoUpdater.checkForUpdates()
+    return { success: true }
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error)
+    return { success: false, error: errMsg }
+  }
+})
+
+ipcMain.handle('get-update-status', async () => {
+  return updateState
+})
+
+ipcMain.handle('quit-and-install', async () => {
+  autoUpdater.quitAndInstall()
+})

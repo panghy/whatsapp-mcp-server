@@ -62,6 +62,11 @@ declare global {
       getMcpAutoStart: () => Promise<boolean>
       setMcpAutoStart: (enabled: boolean) => Promise<{ success: boolean }>
       getAppVersion: () => Promise<string>
+      // Auto-update
+      checkForUpdates: () => Promise<{ success: boolean; error?: string }>
+      getUpdateStatus: () => Promise<{ status: string; version: string | null; error: string | null; progress: number | null }>
+      quitAndInstall: () => Promise<void>
+      onUpdateStatus: (callback: (status: any) => void) => void
     }
   }
 }

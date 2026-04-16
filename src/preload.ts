@@ -36,7 +36,14 @@ contextBridge.exposeInMainWorld('electron', {
   restartMcpServer: () => ipcRenderer.invoke('mcp-restart'),
   getMcpAutoStart: () => ipcRenderer.invoke('mcp-get-auto-start'),
   setMcpAutoStart: (enabled: boolean) => ipcRenderer.invoke('mcp-set-auto-start', enabled),
-  getAppVersion: () => ipcRenderer.invoke('get-app-version')
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  // Auto-update
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
+  quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
+  onUpdateStatus: (callback: (status: any) => void) => {
+    ipcRenderer.on('update-status', (_, status) => callback(status))
+  }
 })
 
 // Expose ipcRenderer for listening to events

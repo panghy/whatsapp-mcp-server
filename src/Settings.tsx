@@ -22,6 +22,13 @@ interface McpStatusData {
   error: string | null
 }
 
+interface UpdateStatusData {
+  status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
+  version: string | null
+  error: string | null
+  progress: number | null
+}
+
 export default function Settings({ onBack, onLogoff }: SettingsProps) {
   const [activeTab, setActiveTab] = useState<'group-sync' | 'interface-system' | 'logs'>('group-sync')
   const [groups, setGroups] = useState<Group[]>([])
@@ -37,6 +44,9 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
   const [mcpPortSaved, setMcpPortSaved] = useState(false)
   // App version
   const [appVersion, setAppVersion] = useState('1.0.0')
+  // Update state
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatusData>({ status: 'idle', version: null, error: null, progress: null })
+  const [checkingUpdates, setCheckingUpdates] = useState(false)
 
   useEffect(() => { loadSettings() }, [])
 
@@ -48,6 +58,21 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
       } catch (err) { console.error('Failed to get app version:', err) }
     }
     loadAppVersion()
+
+    // Load initial update status
+    const loadUpdateStatus = async () => {
+      try {
+        const status = await window.electron.getUpdateStatus()
+        setUpdateStatus(status)
+      } catch (err) { console.error('Failed to get update status:', err) }
+    }
+    loadUpdateStatus()
+
+    // Listen for update status events
+    window.electron.onUpdateStatus((status: UpdateStatusData) => {
+      setUpdateStatus(status)
+      setCheckingUpdates(false)
+    })
   }, [])
 
   const loadSettings = async () => {
@@ -112,6 +137,18 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
     if (window.confirm('This will delete ALL local data including messages and attachments. This action cannot be undone. Continue?')) {
       try { await window.electron.logoff(); setError(null); if (onLogoff) { onLogoff() } } catch (err) { setError(err instanceof Error ? err.message : 'Failed to log off') }
     }
+  }
+
+  // Update handlers
+  const handleCheckForUpdates = async () => {
+    setCheckingUpdates(true)
+    try { await window.electron.checkForUpdates() }
+    catch (err) { console.error('Failed to check for updates:', err); setCheckingUpdates(false) }
+  }
+
+  const handleQuitAndInstall = async () => {
+    try { await window.electron.quitAndInstall() }
+    catch (err) { console.error('Failed to quit and install:', err) }
   }
 
   const filteredGroups = groups.filter(g => (g.name || g.whatsapp_jid).toLowerCase().includes(searchQuery.toLowerCase()))
@@ -198,6 +235,33 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
                   {mcpPortSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
                 </div>
                 <p className="setting-description">Port for MCP HTTP server (requires restart)</p>
+              </div>
+            </div>
+
+            {/* Updates Section */}
+            <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid hsl(var(--border))' }}>
+              <h4 style={{ marginBottom: '1rem' }}>Updates</h4>
+              <div className="setting-item">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                  <span style={{ fontSize: '0.875rem' }}>Current version: <strong>v{appVersion}</strong></span>
+                  {updateStatus.status === 'downloaded' && updateStatus.version && (
+                    <span style={{ fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))' }}>v{updateStatus.version} ready to install</span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  {updateStatus.status === 'downloaded' ? (
+                    <button className="action-btn" onClick={handleQuitAndInstall} style={{ backgroundColor: 'hsl(var(--success, 142 76% 36%))', color: 'white' }}>
+                      Restart Now
+                    </button>
+                  ) : (
+                    <button className="action-btn" onClick={handleCheckForUpdates} disabled={checkingUpdates || updateStatus.status === 'checking' || updateStatus.status === 'downloading'}>
+                      {checkingUpdates || updateStatus.status === 'checking' ? 'Checking...' : updateStatus.status === 'downloading' ? `Downloading... ${updateStatus.progress ? Math.round(updateStatus.progress) + '%' : ''}` : 'Check for Updates'}
+                    </button>
+                  )}
+                </div>
+                {updateStatus.status === 'not-available' && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))', marginTop: '0.5rem' }}>You're on the latest version</p>)}
+                {updateStatus.status === 'available' && updateStatus.version && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', marginTop: '0.5rem' }}>Update v{updateStatus.version} is downloading...</p>)}
+                {updateStatus.status === 'error' && updateStatus.error && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', marginTop: '0.5rem' }}>{updateStatus.error}</p>)}
               </div>
             </div>
 
