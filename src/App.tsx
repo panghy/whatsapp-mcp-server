@@ -105,6 +105,7 @@ export default function App() {
         setWhatsappStatus(whatsappSt)
         if (whatsappSt.state === 'connected') { setCurrentView('sync-status') }
         else if (whatsappSt.state === 'connecting') { setIsAutoReconnecting(true); setCurrentView('loading') }
+        else if (whatsappSt.hasAuth) { setIsAutoReconnecting(true); setCurrentView('loading') }
         else { setCurrentView('hero') }
         const syncSt = await window.electron.getSyncStatus()
         setSyncStatus(syncSt)
@@ -163,13 +164,13 @@ export default function App() {
   }
 
   if (loading) {
-    return (<div className="hero-layout"><div className="hero-content"><h1 className="hero-title">WhatsApp MCP Bridge</h1><p className="hero-subtitle">Loading...</p></div></div>)
+    return (<div className="hero-layout"><div className="hero-content"><h1 className="hero-title">WhatsApp MCP Server</h1><p className="hero-subtitle">Loading...</p></div></div>)
   }
 
   if (currentView === 'loading') {
     return (
       <div className="hero-layout"><div className="hero-content">
-        <h1 className="hero-title">WhatsApp MCP Bridge</h1><p className="hero-subtitle">Reconnecting to WhatsApp...</p>
+        <h1 className="hero-title">WhatsApp MCP Server</h1><p className="hero-subtitle">Reconnecting to WhatsApp...</p>
         <div className="loading-spinner" />
         <p className="hero-status" style={{ fontSize: '0.875rem', color: 'hsl(var(--muted-foreground))' }}>Restoring your session</p>
         <div style={{ display: 'flex', gap: '1rem', marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid hsl(var(--border) / 0.3)' }}>
@@ -182,11 +183,11 @@ export default function App() {
 
   if (currentView === 'hero') {
     if (nameConfirmed && connecting && !whatsappStatus.qrCode) {
-      return (<div className="hero-layout"><div className="hero-content"><h1 className="hero-title">WhatsApp MCP Bridge</h1><p className="hero-subtitle">Connecting to WhatsApp...</p><div className="loading-spinner" /><p className="hero-status" style={{ fontSize: '0.875rem', color: 'hsl(var(--muted-foreground))' }}>Waiting for QR code</p></div></div>)
+      return (<div className="hero-layout"><div className="hero-content"><h1 className="hero-title">WhatsApp MCP Server</h1><p className="hero-subtitle">Connecting to WhatsApp...</p><div className="loading-spinner" /><p className="hero-status" style={{ fontSize: '0.875rem', color: 'hsl(var(--muted-foreground))' }}>Waiting for QR code</p></div></div>)
     }
     return (
       <div className="hero-layout"><div className="hero-content">
-        <h1 className="hero-title">WhatsApp MCP Bridge</h1><p className="hero-subtitle">Connect your WhatsApp account to get started</p>
+        <h1 className="hero-title">WhatsApp MCP Server</h1><p className="hero-subtitle">Connect your WhatsApp account to get started</p>
         {nameConfirmed && whatsappStatus.qrCode && (<div className="qr-display"><img src={whatsappStatus.qrCode} alt="WhatsApp QR Code" /><p className="hero-status">Scan with WhatsApp to connect</p></div>)}
         {!nameConfirmed && (<>
           <div style={{ marginBottom: '1rem', width: '100%', maxWidth: '300px' }}>
