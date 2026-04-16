@@ -1,3 +1,11 @@
+## [1.0.2](https://github.com/panghy/whatsapp-mcp-server/compare/v1.0.1...v1.0.2) (2026-04-16)
+
+
+### Bug Fixes
+
+* upgrade @vitejs/plugin-react to v5 for Vite 8 compatibility ([7696142](https://github.com/panghy/whatsapp-mcp-server/commit/7696142e5b58a96a1e93c97cdb05b6935cc0369f))
+* use relative base path in Vite for Electron file:// compatibility ([c7f87d5](https://github.com/panghy/whatsapp-mcp-server/commit/c7f87d5162fd713191ff6c72fdad6672af19bf1d))
+
 ## [1.0.1](https://github.com/panghy/whatsapp-mcp-server/compare/v1.0.0...v1.0.1) (2026-04-15)
 
 

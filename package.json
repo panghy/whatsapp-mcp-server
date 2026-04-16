@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-mcp-server",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "license": "MIT",
   "description": "WhatsApp MCP Server - Electron app exposing WhatsApp messaging via Model Context Protocol",
   "main": "dist/main.js",
