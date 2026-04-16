@@ -16,7 +16,7 @@
 Two trigger methods:
 
 1. **Manual (preferred)**: Go to GitHub Actions → "Release" workflow → "Run workflow". Optionally provide a tag (e.g. `v1.2.3`) to rebuild a specific version, or leave empty to let semantic-release auto-determine version.
-2. **Tag push**: Pushing a `v*` tag triggers the build job directly (skips semantic-release).
+2. **Rebuild existing tag**: Use the workflow_dispatch with a specific tag input (e.g. `v1.2.3`) to rebuild and re-upload artifacts for an existing release.
 
 **IMPORTANT**: Do NOT add push-to-main triggers — this caused race conditions in the past where two parallel runs (push + tag) uploaded conflicting assets with mismatched SHA512 checksums, breaking the auto-updater.
 
