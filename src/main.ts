@@ -764,5 +764,6 @@ ipcMain.handle('get-update-status', async () => {
 })
 
 ipcMain.handle('quit-and-install', async () => {
+  isQuitting = true
   autoUpdater.quitAndInstall()
 })
