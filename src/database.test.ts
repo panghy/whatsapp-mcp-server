@@ -1,7 +1,6 @@
 import { vi, describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import path from 'path'
 import fs from 'fs'
-import os from 'os'
 
 // Create a unique temp directory - hoisted so mock can access it
 // Must use require inside vi.hoisted since imports are hoisted after vi.hoisted
@@ -90,7 +89,7 @@ describe('Database Integration Tests', () => {
 
     it('should get chat by JID', () => {
       const jid = '9876543210@s.whatsapp.net'
-      chatOps.insert(jid, 'group', null, 'My Group')
+      chatOps.insert(jid, 'group', undefined, 'My Group')
       
       const chat = chatOps.getByWhatsappJid(jid) as any
       expect(chat).toBeDefined()
@@ -110,7 +109,7 @@ describe('Database Integration Tests', () => {
     })
 
     it('should get chat by JID and type', () => {
-      chatOps.insert('group@g.us', 'group', null, 'Group Chat')
+      chatOps.insert('group@g.us', 'group', undefined, 'Group Chat')
       
       const chat = chatOps.getByJidAndType('group@g.us', 'group') as any
       expect(chat).toBeDefined()
@@ -123,7 +122,7 @@ describe('Database Integration Tests', () => {
 
   describe('messageOps', () => {
     it('should insert and retrieve messages', () => {
-      chatOps.insert('chat@s.whatsapp.net', 'dm', null, 'Chat')
+      chatOps.insert('chat@s.whatsapp.net', 'dm', undefined, 'Chat')
       const chat = chatOps.getByWhatsappJid('chat@s.whatsapp.net') as any
       
       messageOps.insert(chat.id, 'msg-001', 1700000000, 'sender@s.whatsapp.net', '{"text":"Hello"}', false)
