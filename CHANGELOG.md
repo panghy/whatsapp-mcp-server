@@ -1,3 +1,16 @@
+# [1.1.0](https://github.com/panghy/whatsapp-mcp-server/compare/v1.0.4...v1.1.0) (2026-04-16)
+
+
+### Bug Fixes
+
+* **ci:** allow workflow_dispatch to run build job ([d40c393](https://github.com/panghy/whatsapp-mcp-server/commit/d40c393973e2bfbe6b1bd14b716803f5cecd65b6))
+* fix tray click, auto-launch toggle, and add auto-update UI ([b7ee462](https://github.com/panghy/whatsapp-mcp-server/commit/b7ee46279aa7f2e1f7fa7e39d719bc66f4a9171f))
+
+
+### Features
+
+* **ci:** add workflow_dispatch trigger to Release workflow ([00246a0](https://github.com/panghy/whatsapp-mcp-server/commit/00246a0a9cf285bf5d3811c21600b8683f214088))
+
 ## [1.0.4](https://github.com/panghy/whatsapp-mcp-server/compare/v1.0.3...v1.0.4) (2026-04-16)
 
 
