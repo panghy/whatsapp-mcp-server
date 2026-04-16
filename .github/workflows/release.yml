@@ -42,8 +42,9 @@ jobs:
         run: |
           OUTPUT=$(npx semantic-release 2>&1) || true
           echo "$OUTPUT"
-          if echo "$OUTPUT" | grep -q "Published release"; then
-            VERSION=$(echo "$OUTPUT" | grep -oP 'Published release \K[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+          # Look for "Created tag" since we no longer create GitHub releases
+          if echo "$OUTPUT" | grep -q "Created tag"; then
+            VERSION=$(echo "$OUTPUT" | grep -oE 'Created tag v?[0-9]+\.[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "")
             echo "new-release-published=true" >> "$GITHUB_OUTPUT"
             echo "new-release-version=$VERSION" >> "$GITHUB_OUTPUT"
           else
@@ -102,3 +103,38 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: "6947A73B2N"
         run: npm run build -- --publish always
+
+  publish-release:
+    needs: [semantic-release, build]
+    runs-on: ubuntu-latest
+    if: |
+      always() &&
+      needs.build.result == 'success' &&
+      (
+        (needs.semantic-release.result == 'success' && needs.semantic-release.outputs.new-release-published == 'true') ||
+        (needs.semantic-release.result == 'skipped') ||
+        (inputs.tag != '')
+      )
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            # workflow_dispatch with explicit tag
+            VERSION="${{ inputs.tag }}"
+            VERSION="${VERSION#v}"
+          elif [ "${{ needs.semantic-release.result }}" = "skipped" ]; then
+            # Triggered by tag push (e.g., refs/tags/v1.0.0 -> 1.0.0)
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            # Triggered by semantic-release creating a new version
+            VERSION="${{ needs.semantic-release.outputs.new-release-version }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Publishing release v${{ steps.version.outputs.version }}"
+          gh release edit "v${{ steps.version.outputs.version }}" --repo panghy/whatsapp-mcp-server --draft=false
