@@ -1,3 +1,10 @@
+## [1.0.4](https://github.com/panghy/whatsapp-mcp-server/compare/v1.0.3...v1.0.4) (2026-04-16)
+
+
+### Bug Fixes
+
+* disable GitHub releases in semantic-release and add explicit publis ([adc1452](https://github.com/panghy/whatsapp-mcp-server/commit/adc14528d9fbcea04a940d32dee2914c4be8a064))
+
 ## [1.0.3](https://github.com/panghy/whatsapp-mcp-server/compare/v1.0.2...v1.0.3) (2026-04-16)
 
 
