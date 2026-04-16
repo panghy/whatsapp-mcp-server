@@ -49,8 +49,12 @@ jobs:
         run: |
           OUTPUT=$(npx semantic-release 2>&1) || true
           echo "$OUTPUT"
-          # Look for "Created tag" since we no longer create GitHub releases
-          if echo "$OUTPUT" | grep -q "Created tag"; then
+          # Check for published release
+          if echo "$OUTPUT" | grep -q "Published release"; then
+            VERSION=$(echo "$OUTPUT" | grep -oE 'Published release [0-9]+\.[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+            echo "new-release-published=true" >> "$GITHUB_OUTPUT"
+            echo "new-release-version=$VERSION" >> "$GITHUB_OUTPUT"
+          elif echo "$OUTPUT" | grep -q "Created tag"; then
             VERSION=$(echo "$OUTPUT" | grep -oE 'Created tag v?[0-9]+\.[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "")
             echo "new-release-published=true" >> "$GITHUB_OUTPUT"
             echo "new-release-version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -145,4 +149,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Publishing release v${{ steps.version.outputs.version }}"
-          gh release edit "v${{ steps.version.outputs.version }}" --repo panghy/whatsapp-mcp-server --draft=false
+          gh release edit "v${{ steps.version.outputs.version }}" --repo panghy/whatsapp-mcp-server --draft=false 2>/dev/null || echo "Release already published or not found as draft"
