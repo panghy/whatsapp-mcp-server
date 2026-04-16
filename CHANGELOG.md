@@ -1,3 +1,10 @@
+## [1.1.1](https://github.com/panghy/whatsapp-mcp-server/compare/v1.1.0...v1.1.1) (2026-04-16)
+
+
+### Bug Fixes
+
+* make app a proper macOS menu bar app with dock hiding ([#6](https://github.com/panghy/whatsapp-mcp-server/issues/6)) ([c72be3a](https://github.com/panghy/whatsapp-mcp-server/commit/c72be3a519c7126a55cd8ece4454c043bc532d6e))
+
 # [1.1.0](https://github.com/panghy/whatsapp-mcp-server/compare/v1.0.4...v1.1.0) (2026-04-16)
 
 
