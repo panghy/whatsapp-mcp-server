@@ -2,15 +2,13 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to build (e.g., v1.0.1)'
-        required: true
+        description: 'Optional: specific tag to build (e.g., v1.0.1). Leave empty to let semantic-release determine the version.'
+        required: false
         type: string
 
 permissions:
