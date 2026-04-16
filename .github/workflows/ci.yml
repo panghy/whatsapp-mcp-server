@@ -15,10 +15,12 @@ jobs:
           node-version: 22
           cache: 'npm'
       - run: npm ci
+      - name: Lint
+        run: npm run lint
       - name: Type check
         run: npm run type-check
       - name: Build renderer
         run: npm run build:renderer
       - name: Run tests
-        run: npm test -- --run --passWithNoTests
+        run: npm test -- --run --coverage --passWithNoTests
 
