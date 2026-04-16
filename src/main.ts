@@ -475,6 +475,70 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
           }
         }
       }
+
+      // Real-time message handling
+      if (events['messages.upsert']) {
+        const { messages: newMessages } = events['messages.upsert']
+        if (newMessages && newMessages.length > 0) {
+          for (const msg of newMessages) {
+            const jid = msg.key?.remoteJid
+            if (!jid || isNewsletterOrBroadcast(jid)) continue
+            let chat = chatOps.getByWhatsappJid(jid) as any
+            if (!chat) {
+              const chatType = jid.includes('@g.us') ? 'group' : 'dm'
+              const chatName = chatType === 'dm' ? (contactOps.getByJid(jid) as any)?.name : undefined
+              const result = chatOps.insert(jid, chatType, undefined, chatName)
+              const chatId = (result as any).lastInsertRowid
+              chat = { id: chatId, whatsapp_jid: jid, chat_type: chatType, enabled: chatType === 'dm' ? 1 : 0 }
+            }
+            if (chat.enabled) {
+              try {
+                await messageTransformer.processMessage(msg, chat.id)
+              } catch (error) {
+                console.error(`Failed to process real-time message: ${error}`)
+              }
+            }
+          }
+          console.log(`[RealTime] Processed ${newMessages.length} new message(s)`)
+        }
+      }
+
+      // Message edit handling
+      if (events['messages.update']) {
+        for (const update of events['messages.update']) {
+          if (update.update?.message) {
+            const jid = update.key?.remoteJid
+            if (!jid || isNewsletterOrBroadcast(jid)) continue
+            const chat = chatOps.getByWhatsappJid(jid) as any
+            if (chat?.enabled) {
+              try {
+                await messageTransformer.processMessageEdit(update.key, update.update, chat.id, update.key?.participant)
+              } catch (error) {
+                console.error(`Failed to process message edit: ${error}`)
+              }
+            }
+          }
+        }
+      }
+
+      // Message deletion handling
+      if (events['messages.delete']) {
+        const deleteEvent = events['messages.delete']
+        if (deleteEvent && 'keys' in deleteEvent) {
+          for (const key of deleteEvent.keys) {
+            const jid = key.remoteJid
+            if (!jid || isNewsletterOrBroadcast(jid)) continue
+            const chat = chatOps.getByWhatsappJid(jid) as any
+            if (chat?.enabled) {
+              try {
+                await messageTransformer.processMessageDeletion(key, chat.id, deleteEvent.participant || key.participant)
+              } catch (error) {
+                console.error(`Failed to process message deletion: ${error}`)
+              }
+            }
+          }
+        }
+      }
     })
   }
 
