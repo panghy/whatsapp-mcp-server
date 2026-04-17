@@ -529,6 +529,20 @@ describe('MCP Server Tests', () => {
       expect(chats[0].type).toBe('group')
       expect(chats[0]).toHaveProperty('lastActivity')
     })
+
+    it('should show JID instead of Unknown for unnamed chats', async () => {
+      await startMcpServer(testPort)
+
+      // Insert a chat without a name (null name)
+      chatOps.insert('unnamed-group@g.us', 'group', undefined, undefined as any)
+
+      const result = await callMcpTool(testPort, 'search_chats', { query: 'unnamed-group' })
+
+      const chats = JSON.parse(result.result.content[0].text)
+      expect(chats).toHaveLength(1)
+      expect(chats[0].name).toBe('unnamed-group@g.us')
+      expect(chats[0].name).not.toBe('Unknown')
+    })
   })
 
   describe('get_chat_history Tool', () => {
