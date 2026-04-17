@@ -291,7 +291,7 @@ function createMcpServer(): McpServer {
         return name.includes(q) || jid.includes(q)
       }).map((chat: any) => ({
         jid: chat.whatsapp_jid,
-        name: chat.name || 'Unknown',
+        name: chat.name || chat.whatsapp_jid,
         type: chat.chat_type,
         lastActivity: chat.last_activity
       }))
