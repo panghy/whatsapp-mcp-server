@@ -12,7 +12,11 @@ interface LogEntry {
 const LOG_LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR']
 const LOG_CATEGORIES = ['connection', 'sync', 'api', 'transformer', 'error', 'group-metadata']
 
-export default function LogsViewer() {
+interface LogsViewerProps {
+  slug: string
+}
+
+export default function LogsViewer({ slug }: LogsViewerProps) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [selectedLevels, setSelectedLevels] = useState<Set<string>>(new Set(LOG_LEVELS))
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set(LOG_CATEGORIES))
@@ -24,20 +28,23 @@ export default function LogsViewer() {
   const autoRefreshIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const isInitialLoadRef = useRef(true)
 
+  // Reset initial-load flag when the slug changes so the loading indicator shows again.
+  useEffect(() => { isInitialLoadRef.current = true; setLogs([]) }, [slug])
+
   const loadLogs = useCallback(async () => {
     try {
       if (isInitialLoadRef.current) {
         setLoading(true)
       }
       setError(null)
-      const logsData = await window.electron.getLogs({ levels: Array.from(selectedLevels), categories: Array.from(selectedCategories), searchText: searchText || undefined, limit: 1000 })
-      setLogs(logsData)
+      const logsData = await window.electron.getLogs(slug, { levels: Array.from(selectedLevels), categories: Array.from(selectedCategories), searchText: searchText || undefined, limit: 1000 })
+      setLogs(logsData as unknown as LogEntry[])
       isInitialLoadRef.current = false
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load logs'
       setError(msg); console.error('Failed to load logs:', err)
     } finally { setLoading(false) }
-  }, [selectedLevels, selectedCategories, searchText])
+  }, [slug, selectedLevels, selectedCategories, searchText])
 
   useEffect(() => { loadLogs() }, [loadLogs])
 
@@ -62,15 +69,15 @@ export default function LogsViewer() {
   }
 
   const handleClearLogs = async () => {
-    if (window.confirm('Are you sure you want to clear all logs? This action cannot be undone.')) {
-      try { await window.electron.clearLogs(); setLogs([]); setError(null) }
+    if (window.confirm(`Clear all logs for account "${slug}"? This cannot be undone.`)) {
+      try { await window.electron.clearLogs(slug); setLogs([]); setError(null) }
       catch (err) { setError(err instanceof Error ? err.message : 'Failed to clear logs') }
     }
   }
 
   const handleExportLogs = async (format: 'json' | 'text') => {
     try {
-      const success = await window.electron.exportLogs(format)
+      const success = await window.electron.exportLogs(slug, format)
       if (success) { alert(`Logs exported successfully as ${format.toUpperCase()}`) }
     } catch (err) { setError(err instanceof Error ? err.message : 'Failed to export logs') }
   }
@@ -88,7 +95,7 @@ export default function LogsViewer() {
   return (
     <div className="logs-viewer">
       <div className="logs-header">
-        <h3>Application Logs</h3>
+        <h3>Application Logs <span style={{ fontSize: '0.8rem', color: 'hsl(var(--muted-foreground))', fontWeight: 400 }}>— {slug}</span></h3>
         <div className="logs-controls">
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <label className="toggle-switch"><input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} /><span className="slider"></span></label>
