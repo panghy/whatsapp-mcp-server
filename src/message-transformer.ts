@@ -1,7 +1,7 @@
 import { messageOps, logOps, chatOps } from './database'
 import path from 'path'
 import fs from 'fs'
-import { app } from 'electron'
+import { accountDir } from './accounts'
 
 // Dynamic imports for ESM modules
 let proto: any
@@ -19,7 +19,6 @@ async function loadBaileysModules() {
 // Re-export messageOps for use in processMessage
 export { messageOps }
 
-const ATTACHMENTS_DIR = path.join(app.getPath('userData'), 'nodexa-whatsapp', 'attachments')
 const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024 // 5MB
 const SUPPORTED_MIME_TYPES = [
   'image/png', 'image/jpeg', 'image/gif', 'image/webp',
@@ -27,6 +26,10 @@ const SUPPORTED_MIME_TYPES = [
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 ]
+
+function attachmentsDirFor(slug: string): string {
+  return path.join(accountDir(slug), 'attachments')
+}
 
 /**
  * Extract timestamp in milliseconds from a Baileys message timestamp.
@@ -113,17 +116,21 @@ export interface TransformedMessage {
 }
 
 export class MessageTransformer {
-  constructor(private socket: any) {}
+  constructor(private slug: string, private socket: any) {}
 
   getSocket(): any {
     return this.socket
   }
 
+  getSlug(): string {
+    return this.slug
+  }
+
   async fetchChatHistory(jid: string): Promise<void> {
     try {
-      logOps.insert('info', 'transformer', `History fetch requested for chat ${jid}`)
+      logOps.insert(this.slug, 'info', 'transformer', `History fetch requested for chat ${jid}`)
     } catch (error) {
-      logOps.insert('error', 'transformer', `Failed to fetch history for ${jid}`, JSON.stringify({ error: String(error) }))
+      logOps.insert(this.slug, 'error', 'transformer', `Failed to fetch history for ${jid}`, JSON.stringify({ error: String(error) }))
       throw error
     }
   }
@@ -139,18 +146,18 @@ export class MessageTransformer {
         const msgId = msg.key?.id || `msg-${Date.now()}`
         const senderJid = msg.key?.participant || msg.key?.remoteJid || 'unknown'
         const timestamp = extractTimestampMs(msg.messageTimestamp)
-        messageOps.insert(chatId, msgId, timestamp, senderJid, contentJson, hasAttachment)
-        chatOps.updateLastActivity(chatId, new Date(timestamp).toISOString())
+        messageOps.insert(this.slug, chatId, msgId, timestamp, senderJid, contentJson, hasAttachment)
+        chatOps.updateLastActivity(this.slug, chatId, new Date(timestamp).toISOString())
       }
     } catch (error) {
       console.error(`[processMessage] Error processing message:`, error)
-      logOps.insert('error', 'transformer', `Failed to process message`, JSON.stringify({ error: String(error) }))
+      logOps.insert(this.slug, 'error', 'transformer', `Failed to process message`, JSON.stringify({ error: String(error) }))
     }
   }
 
   async processMessageDeletion(key: any, chatId: number, participant?: string): Promise<void> {
     try {
-      const original = messageOps.getByWhatsappMessageId(key.id) as any
+      const original = messageOps.getByWhatsappMessageId(this.slug, key.id) as any
       let originalText: string | null = null
       let originalSender: { name: string; phone: string | null } | undefined = undefined
       let originalTimestamp: string | undefined = undefined
@@ -178,17 +185,17 @@ export class MessageTransformer {
 
       const contentJson = JSON.stringify(deletedMessageEvent)
       const timestamp = Date.now()
-      messageOps.insert(chatId, `del-${key.id}`, timestamp, deletedByJid, contentJson, false)
-      chatOps.updateLastActivity(chatId, new Date(timestamp).toISOString())
+      messageOps.insert(this.slug, chatId, `del-${key.id}`, timestamp, deletedByJid, contentJson, false)
+      chatOps.updateLastActivity(this.slug, chatId, new Date(timestamp).toISOString())
     } catch (error) {
-      logOps.insert('error', 'transformer', `Failed to process message deletion`, JSON.stringify({ error: String(error) }))
+      logOps.insert(this.slug, 'error', 'transformer', `Failed to process message deletion`, JSON.stringify({ error: String(error) }))
       throw error
     }
   }
 
   async processMessageEdit(key: any, update: any, chatId: number, participant?: string): Promise<void> {
     try {
-      const original = messageOps.getByWhatsappMessageId(key.id) as any
+      const original = messageOps.getByWhatsappMessageId(this.slug, key.id) as any
       let originalText: string | null = null
       let originalSender: { name: string; phone: string | null } | undefined
       let originalTimestamp: string | undefined
@@ -219,18 +226,18 @@ export class MessageTransformer {
 
       const contentJson = JSON.stringify(editedMessageEvent)
       const timestamp = Date.now()
-      messageOps.insert(chatId, `edit-${key.id}-${Date.now()}`, timestamp, editedByJid, contentJson, false)
-      chatOps.updateLastActivity(chatId, new Date(timestamp).toISOString())
+      messageOps.insert(this.slug, chatId, `edit-${key.id}-${Date.now()}`, timestamp, editedByJid, contentJson, false)
+      chatOps.updateLastActivity(this.slug, chatId, new Date(timestamp).toISOString())
 
       if (original) {
         try {
           const parsed = JSON.parse(original.content_json)
           parsed.text = newText
-          messageOps.updateContentJson(key.id, JSON.stringify(parsed))
+          messageOps.updateContentJson(this.slug, key.id, JSON.stringify(parsed))
         } catch (e) { }
       }
     } catch (error) {
-      logOps.insert('error', 'transformer', 'Failed to process message edit', JSON.stringify({ error: String(error) }))
+      logOps.insert(this.slug, 'error', 'transformer', 'Failed to process message edit', JSON.stringify({ error: String(error) }))
       throw error
     }
   }
@@ -247,7 +254,6 @@ export class MessageTransformer {
     const phone = extractPhoneFromJid(senderJid)
     const sender = { name: phone || `Unknown_${senderJid}`, phone }
 
-    // Get initial message content
     let messageContent = msg.message
     if (!messageContent) {
       console.log(`[transformMessage] msgId=${messageId} no message content`)
@@ -257,7 +263,6 @@ export class MessageTransformer {
     const originalKeys = Object.keys(messageContent)
     console.log(`[transformMessage] msgId=${messageId} originalKeys=[${originalKeys.join(', ')}]`)
 
-    // Unwrap wrapper message types
     if (messageContent.ephemeralMessage?.message) {
       messageContent = messageContent.ephemeralMessage.message
       console.log(`[transformMessage] msgId=${messageId} unwrapped ephemeralMessage`)
@@ -363,7 +368,7 @@ export class MessageTransformer {
       await this.downloadAttachment(messageId, originalMsg)
       return applyReplyInfo({ type: 'message', messageId, sender, timestamp, text: `[Attachment: ${filename}]`, filename, mimeType, isFromMe })
     } catch (error) {
-      logOps.insert('error', 'transformer', `Failed to download attachment ${messageId}`, JSON.stringify({ error: String(error) }))
+      logOps.insert(this.slug, 'error', 'transformer', `Failed to download attachment ${messageId}`, JSON.stringify({ error: String(error) }))
       return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, reason: 'download_failed', isFromMe })
     }
   }
@@ -372,7 +377,7 @@ export class MessageTransformer {
     await loadBaileysModules()
     const attachment = msg.message?.imageMessage || msg.message?.documentMessage ||
                       msg.message?.audioMessage || msg.message?.videoMessage
-    const attachmentDir = path.join(ATTACHMENTS_DIR, messageId)
+    const attachmentDir = path.join(attachmentsDirFor(this.slug), messageId)
     if (!fs.existsSync(attachmentDir)) { fs.mkdirSync(attachmentDir, { recursive: true }) }
 
     const filename = attachment?.filename || `attachment_${messageId}`
@@ -395,7 +400,7 @@ export class MessageTransformer {
   }
 }
 
-export async function initializeMessageTransformer(socket: any): Promise<MessageTransformer> {
-  return new MessageTransformer(socket)
+export async function initializeMessageTransformer(slug: string, socket: any): Promise<MessageTransformer> {
+  return new MessageTransformer(slug, socket)
 }
 
