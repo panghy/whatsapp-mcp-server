@@ -5,68 +5,53 @@ import http from 'http'
 import { chatOps, messageOps, settingOps, contactOps, getDatabase } from './database'
 import { serializeCompact, MeIdentity } from './compact-serializer'
 import { TransformedMessage, extractPhoneFromJid } from './message-transformer'
-import type { WhatsAppManager } from './whatsapp-manager'
-import { getDefaultSlug, DEFAULT_SLUG } from './accounts'
+import { getAccount, getDefaultSlug } from './accounts'
+import { getManager } from './whatsapp-manager'
 import { getMcpPort as getGlobalMcpPort, setMcpPort as setGlobalMcpPort } from './global-settings'
 
-// Store for active transports (for session management)
+// Per-account MCP server registry. Lazy-initialized on first request.
+const mcpServers = new Map<string, McpServer>()
+
+// Active transports keyed by "<slug>::<sessionId-or-unique-id>" so concurrent
+// requests across slugs cannot collide and per-account teardown is possible.
 const activeTransports = new Map<string, StreamableHTTPServerTransport>()
 
-/**
- * Bridge: return the active account slug for MCP calls while the per-request
- * slug routing (based on path/session) is still pending.
- */
-function currentSlug(): string {
-  return whatsappManager?.slug ?? getDefaultSlug() ?? DEFAULT_SLUG
-}
+let httpServer: http.Server | null = null
 
 /**
- * Get meIdentity from settings (user_display_name, user_phone).
+ * Read meIdentity from the given account's settings.
  */
-function getMeIdentity(): MeIdentity | undefined {
-  const slug = currentSlug()
+function getMeIdentity(slug: string): MeIdentity | undefined {
   const name = settingOps.get(slug, 'user_display_name')
   const phone = settingOps.get(slug, 'user_phone')
-  if (name && phone) {
-    return { name, phone }
-  }
+  if (name && phone) return { name, phone }
   return undefined
 }
 
 /**
  * Resolve sender identity from contacts database.
- * Uses JID lookup, LID fallback, then phone fallback.
  */
 function resolveFromContacts(
+  slug: string,
   senderJid: string,
   fallback: { name: string; phone: string | null }
 ): { name: string; phone: string | null } {
-  const slug = currentSlug()
-  // Always look up contact — don't skip based on current name
   let contact = contactOps.getByJid(slug, senderJid) as any
 
-  // LID fallback: if JID is a LID and we didn't find a name, try getByLid
   if ((!contact?.name) && (senderJid.includes('@lid') || senderJid.includes('@hosted.lid'))) {
     const lidContact = contactOps.getByLid(slug, senderJid) as any
-    if (lidContact) {
-      contact = lidContact
-    }
+    if (lidContact) contact = lidContact
   }
 
-  // Phone fallback: if still no name, try phone lookup
   const phone = fallback.phone || extractPhoneFromJid(senderJid) || contact?.phone_number
   if ((!contact?.name) && phone) {
     const phoneContact = contactOps.getByPhone(slug, phone) as any
-    if (phoneContact) {
-      contact = phoneContact
-    }
+    if (phoneContact) contact = phoneContact
   }
 
-  // Use contact data if available, otherwise keep fallback
   const resolvedName = contact?.name || fallback.name
   const resolvedPhone = contact?.phone_number || phone || fallback.phone
 
-  // Apply display rules (no bare "Unknown")
   if ((resolvedName === 'Unknown' || resolvedName.startsWith('Unknown_')) && resolvedPhone) {
     return { name: resolvedPhone, phone: resolvedPhone }
   }
@@ -80,9 +65,8 @@ function resolveFromContacts(
 /**
  * Re-resolve @mentions in text using stored mentionedJids array.
  */
-function reResolveAllMentions(text: string, mentionedJids: string[]): string {
+function reResolveAllMentions(slug: string, text: string, mentionedJids: string[]): string {
   let resolvedText = text
-  const slug = currentSlug()
 
   for (const jid of mentionedJids) {
     let contact = contactOps.getByJid(slug, jid) as any
@@ -142,9 +126,8 @@ function reResolveAllMentions(text: string, mentionedJids: string[]): string {
 /**
  * Re-resolve @Unknown_<jid> patterns in text (backward compat).
  */
-function reResolveMentionsInText(text: string): string {
+function reResolveMentionsInText(slug: string, text: string): string {
   const mentionPattern = /@Unknown_([^\s@]+@(?:s\.whatsapp\.net|lid|hosted\.lid))/g
-  const slug = currentSlug()
 
   return text.replace(mentionPattern, (match, jid) => {
     let contact = contactOps.getByJid(slug, jid) as any
@@ -157,15 +140,9 @@ function reResolveMentionsInText(text: string): string {
       const name = contact.name || null
       const phone = contact.phone_number || null
 
-      if (name && phone && name !== phone) {
-        return `@${name}:${phone}`
-      }
-      if (phone) {
-        return `@${phone}`
-      }
-      if (name) {
-        return `@${name}`
-      }
+      if (name && phone && name !== phone) return `@${name}:${phone}`
+      if (phone) return `@${phone}`
+      if (name) return `@${name}`
     }
 
     return match
@@ -174,22 +151,19 @@ function reResolveMentionsInText(text: string): string {
 
 /**
  * Resolve all identity fields in a message.
- * Handles sender, replyTo, deferred replies, deletedBy, editedBy, mentions.
  */
 function resolveAllIdentities(
+  slug: string,
   msg: any,
   parsed: TransformedMessage,
   meIdentity?: MeIdentity
 ): TransformedMessage {
-  const slug = currentSlug()
   const senderJid = msg.sender_jid
 
-  // 1. Primary sender
   if (parsed.sender) {
-    parsed.sender = resolveFromContacts(senderJid, parsed.sender)
+    parsed.sender = resolveFromContacts(slug, senderJid, parsed.sender)
   }
 
-  // 1b. Defensive isFromMe
   if (meIdentity && !parsed.isFromMe) {
     const senderPhone = extractPhoneFromJid(senderJid)
     if (senderPhone && senderPhone === meIdentity.phone) {
@@ -197,20 +171,18 @@ function resolveAllIdentities(
     }
   }
 
-  // 1c. Mentions
   if (parsed.text) {
     if (parsed.mentionedJids && parsed.mentionedJids.length > 0) {
-      parsed.text = reResolveAllMentions(parsed.text, parsed.mentionedJids)
+      parsed.text = reResolveAllMentions(slug, parsed.text, parsed.mentionedJids)
     } else {
-      parsed.text = reResolveMentionsInText(parsed.text)
+      parsed.text = reResolveMentionsInText(slug, parsed.text)
     }
   }
 
-  // 2. Reply sender
   if (parsed.replyTo && parsed.replyTo.messageId) {
     const originalMsg = messageOps.getByWhatsappMessageId(slug, parsed.replyTo.messageId) as any
     if (originalMsg) {
-      const resolved = resolveFromContacts(originalMsg.sender_jid, {
+      const resolved = resolveFromContacts(slug, originalMsg.sender_jid, {
         name: parsed.replyTo.senderName || 'Unknown',
         phone: parsed.replyTo.senderPhone || null
       })
@@ -219,13 +191,12 @@ function resolveAllIdentities(
     }
   }
 
-  // 2b. Deferred reply
   if (!parsed.replyTo && parsed.replyToMessageId) {
     const original = messageOps.getByWhatsappMessageId(slug, parsed.replyToMessageId) as any
     if (original) {
       try {
         const content = JSON.parse(original.content_json)
-        const resolved = resolveFromContacts(original.sender_jid, { name: 'Unknown', phone: null })
+        const resolved = resolveFromContacts(slug, original.sender_jid, { name: 'Unknown', phone: null })
         const fullText = content.text || '[Attachment]'
         parsed.replyTo = {
           messageId: parsed.replyToMessageId,
@@ -238,65 +209,47 @@ function resolveAllIdentities(
     }
   }
 
-  // 3. deletedBy
   if (parsed.deletedBy) {
-    parsed.deletedBy = resolveFromContacts(senderJid, parsed.deletedBy)
+    parsed.deletedBy = resolveFromContacts(slug, senderJid, parsed.deletedBy)
   }
 
-  // 4. editedBy
   if (parsed.editedBy) {
-    parsed.editedBy = resolveFromContacts(senderJid, parsed.editedBy)
+    parsed.editedBy = resolveFromContacts(slug, senderJid, parsed.editedBy)
   }
 
-  // 5. deletedMessage.sender
   if (parsed.deletedMessage?.sender && parsed.deletedMessage.messageId) {
     const original = messageOps.getByWhatsappMessageId(slug, parsed.deletedMessage.messageId) as any
     if (original) {
-      parsed.deletedMessage.sender = resolveFromContacts(original.sender_jid, parsed.deletedMessage.sender)
+      parsed.deletedMessage.sender = resolveFromContacts(slug, original.sender_jid, parsed.deletedMessage.sender)
     }
   }
 
-  // 6. editedMessage.sender
   if (parsed.editedMessage?.sender && parsed.editedMessage.messageId) {
     const original = messageOps.getByWhatsappMessageId(slug, parsed.editedMessage.messageId) as any
     if (original) {
-      parsed.editedMessage.sender = resolveFromContacts(original.sender_jid, parsed.editedMessage.sender)
+      parsed.editedMessage.sender = resolveFromContacts(slug, original.sender_jid, parsed.editedMessage.sender)
     }
   }
 
   return parsed
 }
 
-let mcpServer: McpServer | null = null
-let httpServer: http.Server | null = null
-let whatsappManager: WhatsAppManager | null = null
-
 /**
- * Set the WhatsApp manager instance for sending messages
+ * Build an McpServer whose tool handlers are bound to the given account slug.
  */
-export function setWhatsAppManager(manager: WhatsAppManager): void {
-  whatsappManager = manager
-}
-
-/**
- * Initialize and configure the MCP server with all tools
- */
-function createMcpServer(): McpServer {
+export function createMcpServer(slug: string): McpServer {
   const server = new McpServer({
-    name: 'whatsapp-mcp-server',
+    name: `whatsapp-mcp-server:${slug}`,
     version: '1.0.0'
   })
 
-  // Tool 1: search_chats - Search chats by phone number or name fragment
   server.tool(
     'search_chats',
     'Search chats by phone number or name fragment',
-    {
-      query: z.string().describe('Phone number or name fragment to search for')
-    },
+    { query: z.string().describe('Phone number or name fragment to search for') },
     { readOnlyHint: true },
     async ({ query }: { query: string }) => {
-      const allChats = chatOps.getAll(currentSlug()) as any[]
+      const allChats = chatOps.getAll(slug) as any[]
       const results = allChats.filter((chat: any) => {
         if (!chat.enabled) return false
         const name = chat.name?.toLowerCase() || ''
@@ -310,13 +263,10 @@ function createMcpServer(): McpServer {
         lastActivity: chat.last_activity
       }))
 
-      return {
-        content: [{ type: 'text', text: JSON.stringify(results, null, 2) }]
-      }
+      return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] }
     }
   )
 
-  // Tool 2: get_chat_history - Get messages for a specific chat
   server.tool(
     'get_chat_history',
     'Get messages for a specific chat',
@@ -327,7 +277,6 @@ function createMcpServer(): McpServer {
     },
     { readOnlyHint: true },
     async ({ jid, limit, since }: { jid: string; limit: number; since?: string }) => {
-      const slug = currentSlug()
       const chat = chatOps.getByWhatsappJid(slug, jid) as any
       if (!chat) {
         return { content: [{ type: 'text', text: `Chat not found: ${jid}` }], isError: true }
@@ -338,19 +287,17 @@ function createMcpServer(): McpServer {
 
       let messages = messageOps.getByChatId(slug, chat.id, limit || 100) as any[]
 
-      // Filter by timestamp if provided
       if (since) {
         const sinceTs = new Date(since).getTime()
         messages = messages.filter((m: any) => m.timestamp >= sinceTs)
       }
 
-      const meIdentity = getMeIdentity()
+      const meIdentity = getMeIdentity(slug)
 
-      // Parse, resolve identities, and serialize messages
       const transformed = messages.map((m: any) => {
         try {
           const parsed = JSON.parse(m.content_json) as TransformedMessage
-          return resolveAllIdentities(m, parsed, meIdentity)
+          return resolveAllIdentities(slug, m, parsed, meIdentity)
         }
         catch { return null }
       }).filter((m): m is TransformedMessage => m !== null).reverse()
@@ -360,7 +307,6 @@ function createMcpServer(): McpServer {
     }
   )
 
-  // Tool 3: get_recent_messages - Get messages across all chats since a timestamp
   server.tool(
     'get_recent_messages',
     'Get messages across all chats since a timestamp',
@@ -371,7 +317,7 @@ function createMcpServer(): McpServer {
     { readOnlyHint: true },
     async ({ since, limit }: { since: string; limit: number }) => {
       const sinceTs = new Date(since).getTime()
-      const db = getDatabase(currentSlug())
+      const db = getDatabase(slug)
       const messages = db.prepare(`
         SELECT m.*, c.whatsapp_jid, c.name as chat_name, c.chat_type
         FROM messages m
@@ -381,9 +327,8 @@ function createMcpServer(): McpServer {
         LIMIT ?
       `).all(sinceTs, limit || 200) as any[]
 
-      const meIdentity = getMeIdentity()
+      const meIdentity = getMeIdentity(slug)
 
-      // Group by chat for readable output
       const byChat = new Map<string, any[]>()
       for (const m of messages) {
         const key = m.chat_name || m.whatsapp_jid
@@ -397,7 +342,7 @@ function createMcpServer(): McpServer {
         const transformed = msgs.map((m: any) => {
           try {
             const parsed = JSON.parse(m.content_json) as TransformedMessage
-            return resolveAllIdentities(m, parsed, meIdentity)
+            return resolveAllIdentities(slug, m, parsed, meIdentity)
           }
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
@@ -408,17 +353,12 @@ function createMcpServer(): McpServer {
     }
   )
 
-  // Tool 4: get_unread_messages - Get unread/new messages across all chats
   server.tool(
     'get_unread_messages',
     'Get unread/new messages across all chats',
-    {
-      since: z.string().optional().describe('ISO timestamp cutoff (defaults to last check time or 24h ago)')
-    },
+    { since: z.string().optional().describe('ISO timestamp cutoff (defaults to last check time or 24h ago)') },
     { readOnlyHint: true },
     async ({ since }: { since?: string }) => {
-      const slug = currentSlug()
-      // Get last check time from settings, or default to 24h ago
       const lastCheck = settingOps.get(slug, 'last_unread_check')
       const defaultSince = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
       const sinceStr = since || lastCheck || defaultSince
@@ -434,12 +374,10 @@ function createMcpServer(): McpServer {
         LIMIT 500
       `).all(sinceTs) as any[]
 
-      // Update last check time
       settingOps.set(slug, 'last_unread_check', new Date().toISOString())
 
-      const meIdentity = getMeIdentity()
+      const meIdentity = getMeIdentity(slug)
 
-      // Group by chat
       const byChat = new Map<string, any[]>()
       for (const m of messages) {
         const key = m.chat_name || m.whatsapp_jid
@@ -453,7 +391,7 @@ function createMcpServer(): McpServer {
         const transformed = msgs.map((m: any) => {
           try {
             const parsed = JSON.parse(m.content_json) as TransformedMessage
-            return resolveAllIdentities(m, parsed, meIdentity)
+            return resolveAllIdentities(slug, m, parsed, meIdentity)
           }
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
@@ -464,7 +402,6 @@ function createMcpServer(): McpServer {
     }
   )
 
-  // Tool 5: send_message - Send a text message with optional attachment
   server.tool(
     'send_message',
     'Send a text message with optional attachment',
@@ -475,18 +412,13 @@ function createMcpServer(): McpServer {
     },
     { readOnlyHint: false, destructiveHint: false },
     async ({ jid, text, attachmentPath }: { jid: string; text: string; attachmentPath?: string }) => {
-      if (!whatsappManager?.socket) {
-        return {
-          content: [{ type: 'text', text: 'WhatsApp is not connected' }],
-          isError: true
-        }
+      const socket = getManager(slug)?.socket
+      if (!socket) {
+        return { content: [{ type: 'text', text: 'WhatsApp is not connected' }], isError: true }
       }
 
       try {
-        const socket = whatsappManager.socket
-
         if (attachmentPath) {
-          // Send with attachment
           const fs = await import('fs')
           const path = await import('path')
 
@@ -501,7 +433,6 @@ function createMcpServer(): McpServer {
           const filename = path.basename(attachmentPath)
           const ext = path.extname(attachmentPath).toLowerCase()
 
-          // Determine message type based on extension
           const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
           const docExts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx']
 
@@ -513,7 +444,6 @@ function createMcpServer(): McpServer {
             await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
           }
         } else {
-          // Send text only
           await socket.sendMessage(jid, { text })
         }
 
@@ -532,68 +462,175 @@ function createMcpServer(): McpServer {
 }
 
 /**
- * Start the MCP HTTP server on the specified port
+ * Lazy-init and return the McpServer for a given slug.
+ */
+function getOrCreateMcpServer(slug: string): McpServer {
+  let server = mcpServers.get(slug)
+  if (!server) {
+    server = createMcpServer(slug)
+    mcpServers.set(slug, server)
+  }
+  return server
+}
+
+/**
+ * Evict any cached McpServer + active transports for a slug. Call this when
+ * the account's enabled flag flips or the account is removed so the next
+ * request will re-check the account registry.
+ */
+export function refreshAccount(slug: string): void {
+  mcpServers.delete(slug)
+  const prefix = `${slug}::`
+  for (const [key, transport] of activeTransports) {
+    if (key.startsWith(prefix)) {
+      transport.close().catch(() => { /* ignore */ })
+      activeTransports.delete(key)
+    }
+  }
+}
+
+// Match /mcp or /mcp/<slug> with optional trailing slash; capture the slug.
+const MCP_PATH_RE = /^\/mcp(?:\/([^/]+))?\/?$/
+
+interface RouteResolution {
+  ok: true
+  slug: string
+}
+interface RouteFailure {
+  ok: false
+  status: number
+  body: { error: string }
+}
+
+function resolveRoute(pathname: string): RouteResolution | RouteFailure | null {
+  const match = MCP_PATH_RE.exec(pathname)
+  if (!match) return null
+
+  const rawSlug = match[1]
+  let slug: string | null
+  if (!rawSlug) {
+    slug = getDefaultSlug()
+    if (!slug) {
+      return { ok: false, status: 404, body: { error: 'No default account configured' } }
+    }
+  } else {
+    slug = rawSlug
+  }
+
+  const account = getAccount(slug)
+  if (!account) {
+    return { ok: false, status: 404, body: { error: `Unknown account: ${slug}` } }
+  }
+  if (account.mcpEnabled === false) {
+    return { ok: false, status: 503, body: { error: `Account ${slug} is disabled (re-link required)` } }
+  }
+
+  return { ok: true, slug }
+}
+
+function sendJson(res: http.ServerResponse, status: number, payload: unknown): void {
+  res.statusCode = status
+  res.setHeader('Content-Type', 'application/json')
+  res.end(JSON.stringify(payload))
+}
+
+let transportCounter = 0
+
+async function handleMcpRequest(
+  slug: string,
+  req: http.IncomingMessage,
+  res: http.ServerResponse
+): Promise<void> {
+  const chunks: Buffer[] = []
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer)
+  }
+  const body = Buffer.concat(chunks).toString()
+
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+
+  // Key by slug + a monotonic id; stateless transports have no sessionId.
+  const transportKey = `${slug}::${transport.sessionId ?? `req-${++transportCounter}`}`
+  activeTransports.set(transportKey, transport)
+
+  const server = getOrCreateMcpServer(slug)
+  await server.connect(transport)
+
+  const cleanup = () => {
+    activeTransports.delete(transportKey)
+    transport.close().catch(() => { /* ignore */ })
+  }
+  res.on('close', cleanup)
+
+  try {
+    const parsedBody = body ? JSON.parse(body) : undefined
+    await transport.handleRequest(req, res, parsedBody)
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON' })
+  }
+}
+
+/**
+ * Start the MCP HTTP server on the specified port.
  */
 export async function startMcpServer(port: number): Promise<void> {
   if (httpServer) {
     throw new Error('MCP server is already running')
   }
 
-  mcpServer = createMcpServer()
-
   httpServer = http.createServer(async (req, res) => {
     try {
-      // Only handle POST /mcp endpoint
-      if (req.method === 'POST' && req.url === '/mcp') {
-        // Collect request body
-        const chunks: Buffer[] = []
-        for await (const chunk of req) {
-          chunks.push(chunk as Buffer)
-        }
-        const body = Buffer.concat(chunks).toString()
+      const method = req.method || 'GET'
+      const url = req.url || '/'
+      const pathname = url.split('?')[0] ?? '/'
 
-        // Create transport for this request (stateless mode)
-        const transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: undefined // stateless
-        })
-
-        // Connect server to transport
-        await mcpServer!.connect(transport)
-
-        // Clean up when connection closes
-        res.on('close', () => {
-          transport.close()
-        })
-
-        // Handle the request
-        try {
-          const parsedBody = JSON.parse(body)
-          await transport.handleRequest(req, res, parsedBody)
-        } catch (error) {
-          res.statusCode = 400
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: 'Invalid JSON' }))
-        }
-      } else if (req.method === 'GET' && req.url === '/health') {
-        // Health check endpoint
+      if (method === 'GET' && pathname === '/health') {
         res.statusCode = 200
         res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ status: 'ok', whatsapp: whatsappManager?.state || 'unknown' }))
-      } else {
+        const managers: Record<string, string> = {}
+        const defaultSlug = getDefaultSlug()
+        if (defaultSlug) {
+          managers[defaultSlug] = getManager(defaultSlug)?.state || 'unknown'
+        }
+        res.end(JSON.stringify({ status: 'ok', whatsapp: defaultSlug ? managers[defaultSlug] : 'unknown' }))
+        return
+      }
+
+      if (method !== 'POST' && method !== 'GET' && method !== 'DELETE') {
         res.statusCode = 404
         res.end('Not Found')
+        return
       }
+
+      const route = resolveRoute(pathname)
+      if (route === null) {
+        res.statusCode = 404
+        res.end('Not Found')
+        return
+      }
+      if (!route.ok) {
+        sendJson(res, route.status, route.body)
+        return
+      }
+
+      // Only POST is currently handled end-to-end (matches existing behavior).
+      // GET/DELETE on known /mcp paths fall through as 404 until streaming
+      // session support is added.
+      if (method !== 'POST') {
+        res.statusCode = 404
+        res.end('Not Found')
+        return
+      }
+
+      await handleMcpRequest(route.slug, req, res)
     } catch (error) {
       console.error('[MCP] Unhandled request error:', error)
       if (!res.headersSent) {
-        res.statusCode = 500
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: 'Internal server error' }))
+        sendJson(res, 500, { error: 'Internal server error' })
       }
     }
   })
 
-  // Bind to localhost only (security: no external access)
   return new Promise((resolve, reject) => {
     httpServer!.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
@@ -611,46 +648,40 @@ export async function startMcpServer(port: number): Promise<void> {
 }
 
 /**
- * Stop the MCP HTTP server
+ * Stop the MCP HTTP server and tear down all per-account state.
  */
 export async function stopMcpServer(): Promise<void> {
-  if (httpServer) {
-    return new Promise((resolve) => {
-      // Close all active transports
-      for (const transport of activeTransports.values()) {
-        transport.close()
-      }
-      activeTransports.clear()
+  if (!httpServer) return
 
-      httpServer!.close(() => {
-        httpServer = null
-        mcpServer = null
-        console.log('MCP server stopped')
-        resolve()
-      })
+  return new Promise((resolve) => {
+    for (const transport of activeTransports.values()) {
+      transport.close().catch(() => { /* ignore */ })
+    }
+    activeTransports.clear()
+    mcpServers.clear()
+
+    httpServer!.close(() => {
+      httpServer = null
+      console.log('MCP server stopped')
+      resolve()
     })
-  }
+  })
 }
 
 /**
- * Check if MCP server is running
+ * Check if MCP server is running.
  */
 export function isMcpServerRunning(): boolean {
   return httpServer !== null && httpServer.listening
 }
 
 /**
- * Get the current MCP server port (from global settings or default).
- * Kept for backward compatibility; delegates to global-settings.
+ * Get/set the global MCP port (thin wrappers over global-settings).
  */
 export function getMcpPort(): number {
   return getGlobalMcpPort()
 }
 
-/**
- * Set the MCP server port (in global settings).
- * Kept for backward compatibility; delegates to global-settings.
- */
 export function setMcpPort(port: number): void {
   setGlobalMcpPort(port)
 }
