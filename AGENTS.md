@@ -83,3 +83,15 @@ There's also a CI workflow (`.github/workflows/ci.yml`) that runs on PRs to main
 - `npm run build` for production build
 - `npm test` for tests (vitest)
 
+### Multi-account testing
+
+The multi-account feature is covered by a set of unit tests under `src/`. When changing multi-account behavior, run the full suite (`npm test`) and pay attention to these files:
+
+- `src/accounts.test.ts` — accounts registry (`accounts.json`), slug validation, add/rename/remove, default slug handling, legacy-layout migration into `accounts/default/`.
+- `src/global-settings.test.ts` — global MCP settings (`mcp_port`, `mcp_auto_start`) stored in `electron-settings` outside any per-account SQLite database.
+- `src/database.test.ts` — per-account SQLite file isolation (`accounts/<slug>/nodexa.db`), schema bootstrap, and close/reopen behavior.
+- `src/mcp-server.test.ts` — HTTP path routing (`/mcp/<slug>`, `/mcp` alias to the default account), 404 for unknown slugs, 503 when `mcpEnabled === false`, and per-account `McpServer` instance isolation.
+- `src/main-ipc.test.ts` — IPC handlers for account management (`accounts-add`, `accounts-rename`, `accounts-remove`, `accounts-set-default`) including the "must be disconnected" guards.
+
+Run `npm test` to execute the whole vitest suite; these files are part of the standard CI run.
+
