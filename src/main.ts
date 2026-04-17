@@ -9,6 +9,24 @@ import { initializeSyncOrchestrator, getSyncOrchestrator } from './sync-orchestr
 import { MessageTransformer, extractPhoneFromJid, normalizePhoneNumber } from './message-transformer'
 import { initializeGroupMetadataFetcher, getGroupMetadataFetcher } from './group-metadata-fetcher'
 import { startMcpServer, stopMcpServer, isMcpServerRunning, setWhatsAppManager } from './mcp-server'
+import {
+  migrateLegacyLayoutIfNeeded,
+  getDefaultSlug,
+  listAccounts,
+  addAccount,
+  accountAuthDir,
+  DEFAULT_SLUG as FALLBACK_SLUG
+} from './accounts'
+import {
+  getMcpPort as getGlobalMcpPort,
+  setMcpPort as setGlobalMcpPort
+} from './global-settings'
+
+// Bridge slug for single-account operation until multi-account UI lands.
+// Evaluates lazily so callers always see the currently-configured default.
+function currentSlug(): string {
+  return getDefaultSlug() ?? FALLBACK_SLUG
+}
 
 // Auto-updater configuration
 autoUpdater.autoDownload = true
@@ -69,9 +87,6 @@ type McpStatus = 'stopped' | 'starting' | 'running' | 'port_conflict' | 'error'
 let mcpStatus: McpStatus = 'stopped'
 let mcpError: string | null = null
 
-// Default MCP port
-const DEFAULT_MCP_PORT = 13491
-
 // Filter out newsletter and status broadcast JIDs
 function isNewsletterOrBroadcast(jid: string): boolean {
   return jid.endsWith('@newsletter') || jid === 'status@broadcast'
@@ -89,18 +104,17 @@ process.on('unhandledRejection', (reason, _promise) => {
 })
 
 /**
- * Get the MCP port from database settings
+ * Get the MCP port (now stored in electron-settings globally).
  */
 function getMcpPort(): number {
-  const portStr = settingOps.get('mcp_port')
-  return portStr ? parseInt(portStr, 10) : DEFAULT_MCP_PORT
+  return getGlobalMcpPort()
 }
 
 /**
- * Set the MCP port in database settings
+ * Set the MCP port (now stored in electron-settings globally).
  */
 function setMcpPortSetting(port: number): void {
-  settingOps.set('mcp_port', String(port))
+  setGlobalMcpPort(port)
 }
 
 /**
@@ -120,19 +134,19 @@ async function startMcpServerSafe(): Promise<void> {
     await startMcpServer(port)
     mcpStatus = 'running'
     console.log(`[MCP] Server started on port ${port}`)
-    logOps.insert('info', 'mcp', `MCP server started on port ${port}`)
+    logOps.insert(currentSlug(), 'info', 'mcp', `MCP server started on port ${port}`)
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error)
     if (errMsg.includes('already in use') || errMsg.includes('EADDRINUSE')) {
       mcpStatus = 'port_conflict'
       mcpError = `Port ${port} is already in use`
       console.error(`[MCP] Port conflict: ${mcpError}`)
-      logOps.insert('error', 'mcp', mcpError)
+      logOps.insert(currentSlug(), 'error', 'mcp', mcpError)
     } else {
       mcpStatus = 'error'
       mcpError = errMsg
       console.error(`[MCP] Failed to start: ${errMsg}`)
-      logOps.insert('error', 'mcp', `Failed to start MCP server: ${errMsg}`)
+      logOps.insert(currentSlug(), 'error', 'mcp', `Failed to start MCP server: ${errMsg}`)
     }
   }
 }
@@ -151,7 +165,7 @@ async function stopMcpServerSafe(): Promise<void> {
     mcpStatus = 'stopped'
     mcpError = null
     console.log('[MCP] Server stopped')
-    logOps.insert('info', 'mcp', 'MCP server stopped')
+    logOps.insert(currentSlug(), 'info', 'mcp', 'MCP server stopped')
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error)
     console.error(`[MCP] Failed to stop: ${errMsg}`)
@@ -245,12 +259,12 @@ ipcMain.handle('get-auto-launch', async () => {
 })
 
 ipcMain.handle('get-user-display-name', async () => {
-  try { return settingOps.get('user_display_name') || '' }
+  try { return settingOps.get(currentSlug(), 'user_display_name') || '' }
   catch (error) { console.error('Failed to get user display name:', error); return '' }
 })
 
 ipcMain.handle('set-user-display-name', async (_, name: string) => {
-  try { settingOps.set('user_display_name', name); return true }
+  try { settingOps.set(currentSlug(), 'user_display_name', name); return true }
   catch (error) { console.error('Failed to set user display name:', error); throw error }
 })
 
@@ -262,7 +276,23 @@ ipcMain.handle('set-auto-launch', async (_, enabled: boolean) => {
 
 // Initialize database on app ready
 app.whenReady().then(async () => {
-  initializeDatabase()
+  // Migrate legacy single-account layout into accounts/<slug>/ if needed.
+  try {
+    migrateLegacyLayoutIfNeeded()
+  } catch (error) {
+    console.error('[migration] Failed to migrate legacy layout:', error)
+  }
+
+  // Ensure a default account exists so we can key DB/session by slug.
+  if (listAccounts().length === 0) {
+    try {
+      addAccount(FALLBACK_SLUG)
+    } catch (error) {
+      console.error('[accounts] Failed to create default account:', error)
+    }
+  }
+
+  initializeDatabase(currentSlug())
   createTray()
 
   // Hide dock on macOS - app should be menu bar only when window is hidden
@@ -281,11 +311,12 @@ app.whenReady().then(async () => {
     autoUpdater.checkForUpdates()
   }, FOUR_HOURS)
 
-  // Auto-connect if we have saved auth
-  const authDir = path.join(app.getPath('userData'), 'whatsapp-auth')
+  // Auto-connect if we have saved auth for the current slug.
+  const slug = currentSlug()
+  const authDir = accountAuthDir(slug)
   if (fs.existsSync(authDir) && fs.readdirSync(authDir).length > 0) {
     try {
-      whatsappManager = await initializeWhatsApp()
+      whatsappManager = await initializeWhatsApp(slug)
       if (whatsappManager.socket) {
         await setupWhatsAppConnection(whatsappManager)
       }
@@ -318,13 +349,15 @@ app.on('before-quit', () => {
 async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> {
   if (!manager.socket) { throw new Error('WhatsApp socket not initialized') }
 
+  const slug = manager.slug
+
   function registerHandlers(socket: any) {
     console.log('[SETUP] Registering event handlers on socket...')
-    const syncOrchestrator = initializeSyncOrchestrator(socket)
-    const messageTransformer = new MessageTransformer(socket)
+    const syncOrchestrator = initializeSyncOrchestrator(slug, socket)
+    const messageTransformer = new MessageTransformer(slug, socket)
     syncOrchestrator.setMessageTransformer(messageTransformer)
 
-    const groupMetadataFetcher = initializeGroupMetadataFetcher()
+    const groupMetadataFetcher = initializeGroupMetadataFetcher(slug)
     groupMetadataFetcher.setSocket(socket)
 
     let contactSyncComplete = false
@@ -354,15 +387,15 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
         const userJid = socket.user?.id
         if (userJid) {
           const userPhone = extractPhoneFromJid(userJid)
-          if (userPhone) { settingOps.set('user_phone', userPhone); console.log('[Connection] Stored user phone:', userPhone) }
+          if (userPhone) { settingOps.set(slug, 'user_phone', userPhone); console.log('[Connection] Stored user phone:', userPhone) }
         }
 
-        const initialSyncDone = settingOps.get('initial_sync_complete')
+        const initialSyncDone = settingOps.get(slug, 'initial_sync_complete')
         if (initialSyncDone === 'true') {
           console.log('Initial history sync already completed, skipping sync state')
-          logOps.insert('info', 'connection', 'WhatsApp reconnected, history already synced')
+          logOps.insert(slug, 'info', 'connection', 'WhatsApp reconnected, history already synced')
           try {
-            const groupsNeedingMetadata = chatOps.getGroupsNeedingMetadata() as any[]
+            const groupsNeedingMetadata = chatOps.getGroupsNeedingMetadata(slug) as any[]
             if (groupsNeedingMetadata.length > 0) {
               console.log(`[GroupMetadata] Found ${groupsNeedingMetadata.length} groups needing metadata on reconnect`)
               const groupsToQueue = groupsNeedingMetadata.map(g => ({ chatId: g.id, jid: g.whatsapp_jid }))
@@ -372,16 +405,16 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
           } catch (error) { console.error('Failed to check for groups needing metadata:', error) }
 
           try {
-            const crossResolvedLid = contactOps.crossResolveLidNames()
-            const crossResolvedDm = contactOps.crossResolveDmNames()
-            const chatBackfill = chatOps.backfillDmNames()
+            const crossResolvedLid = contactOps.crossResolveLidNames(slug)
+            const crossResolvedDm = contactOps.crossResolveDmNames(slug)
+            const chatBackfill = chatOps.backfillDmNames(slug)
             if (crossResolvedLid.changes > 0 || crossResolvedDm.changes > 0 || chatBackfill.changes > 0) {
               console.log(`[Reconnect] Resolve pass: ${crossResolvedLid.changes} LID names, ${crossResolvedDm.changes} DM names, ${chatBackfill.changes} chat names`)
             }
           } catch (error) { console.error('[Reconnect] Cross-resolve/backfill failed:', error) }
         } else {
           syncOrchestrator.markSyncInProgress()
-          logOps.insert('info', 'connection', 'WhatsApp connected, waiting for history sync...')
+          logOps.insert(slug, 'info', 'connection', 'WhatsApp connected, waiting for history sync...')
         }
       } else if (update.connection === 'close') {
         whatsappConnected = false
@@ -408,7 +441,7 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
             const name = contact.name || contact.notify || undefined
             const phone = contact.phoneNumber ? normalizePhoneNumber(contact.phoneNumber) ?? undefined : (jid ? extractPhoneFromJid(jid) ?? undefined : undefined)
             const lid = contact.lid || undefined
-            if (jid && (name || phone || lid)) { contactOps.insert(jid, name, phone, lid) }
+            if (jid && (name || phone || lid)) { contactOps.insert(slug, jid, name, phone, lid) }
           }
         }
 
@@ -419,18 +452,18 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
             const jid = chat.id
             if (!jid || isNewsletterOrBroadcast(jid)) continue
             let chatName = chat.name || chat.subject || undefined
-            let dbChat = chatOps.getByWhatsappJid(jid) as any
+            let dbChat = chatOps.getByWhatsappJid(slug, jid) as any
             if (!dbChat) {
               const chatType = jid.includes('@g.us') ? 'group' : 'dm'
               if (!chatName && chatType === 'dm') {
-                const contact = contactOps.getByJid(jid) as any
+                const contact = contactOps.getByJid(slug, jid) as any
                 if (contact?.name) { chatName = contact.name }
               }
-              const result = chatOps.insert(jid, chatType, undefined, chatName)
+              const result = chatOps.insert(slug, jid, chatType, undefined, chatName)
               const chatId = (result as any).lastInsertRowid
               dbChat = { id: chatId, whatsapp_jid: jid, chat_type: chatType, name: chatName }
               if (chatType === 'group') { newGroupsToFetch.push({ chatId, jid }) }
-            } else if (!dbChat.name && chatName) { chatOps.updateName(dbChat.id, chatName) }
+            } else if (!dbChat.name && chatName) { chatOps.updateName(slug, dbChat.id, chatName) }
           }
           if (newGroupsToFetch.length > 0) {
             if (contactSyncComplete) { groupMetadataFetcher.queueGroups(newGroupsToFetch); groupMetadataFetcher.start() }
@@ -443,34 +476,34 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
           for (const msg of messages) {
             const jid = msg.key?.remoteJid
             if (!jid || isNewsletterOrBroadcast(jid)) continue
-            let chat = chatOps.getByWhatsappJid(jid) as any
+            let chat = chatOps.getByWhatsappJid(slug, jid) as any
             if (!chat) {
               const chatType = jid.includes('@g.us') ? 'group' : 'dm'
-              const result = chatOps.insert(jid, chatType, undefined, undefined)
+              const result = chatOps.insert(slug, jid, chatType, undefined, undefined)
               const chatId = (result as any).lastInsertRowid
               chat = { id: chatId, whatsapp_jid: jid, chat_type: chatType }
             }
             try { await messageTransformer.processMessage(msg, chat.id) } catch (error) { console.error(`Failed to process history message: ${error}`) }
           }
-          const totalMessageCount = messageOps.getCount()
+          const totalMessageCount = messageOps.getCount(slug)
           console.log(`[HistorySync] After batch: ${messages.length} messages processed, total in DB: ${totalMessageCount}`)
         }
 
         if (!contactSyncComplete && syncType === 2 && progress != null && progress >= 100) {
           console.log(`[ContactSync] Contact sync complete (progress: ${progress}%)`)
           contactSyncComplete = true
-          contactOps.crossResolveLidNames(); contactOps.crossResolveDmNames(); chatOps.backfillDmNames()
+          contactOps.crossResolveLidNames(slug); contactOps.crossResolveDmNames(slug); chatOps.backfillDmNames(slug)
           flushPendingGroups()
         }
 
         if (isLatest) {
           console.log('History sync complete!')
-          logOps.insert('info', 'sync', 'History sync complete')
+          logOps.insert(slug, 'info', 'sync', 'History sync complete')
           syncOrchestrator.markSyncComplete()
-          settingOps.set('initial_sync_complete', 'true')
+          settingOps.set(slug, 'initial_sync_complete', 'true')
           if (!contactSyncComplete && syncType !== 5) {
             contactSyncComplete = true
-            contactOps.crossResolveLidNames(); contactOps.crossResolveDmNames(); chatOps.backfillDmNames()
+            contactOps.crossResolveLidNames(slug); contactOps.crossResolveDmNames(slug); chatOps.backfillDmNames(slug)
             flushPendingGroups()
           }
         }
@@ -483,11 +516,11 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
           for (const msg of newMessages) {
             const jid = msg.key?.remoteJid
             if (!jid || isNewsletterOrBroadcast(jid)) continue
-            let chat = chatOps.getByWhatsappJid(jid) as any
+            let chat = chatOps.getByWhatsappJid(slug, jid) as any
             if (!chat) {
               const chatType = jid.includes('@g.us') ? 'group' : 'dm'
-              const chatName = chatType === 'dm' ? (contactOps.getByJid(jid) as any)?.name : undefined
-              const result = chatOps.insert(jid, chatType, undefined, chatName)
+              const chatName = chatType === 'dm' ? (contactOps.getByJid(slug, jid) as any)?.name : undefined
+              const result = chatOps.insert(slug, jid, chatType, undefined, chatName)
               const chatId = (result as any).lastInsertRowid
               chat = { id: chatId, whatsapp_jid: jid, chat_type: chatType, enabled: chatType === 'dm' ? 1 : 0 }
             }
@@ -509,7 +542,7 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
           if (update.update?.message) {
             const jid = update.key?.remoteJid
             if (!jid || isNewsletterOrBroadcast(jid)) continue
-            const chat = chatOps.getByWhatsappJid(jid) as any
+            const chat = chatOps.getByWhatsappJid(slug, jid) as any
             if (chat?.enabled) {
               try {
                 await messageTransformer.processMessageEdit(update.key, update.update, chat.id, update.key?.participant)
@@ -528,7 +561,7 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
           for (const key of deleteEvent.keys) {
             const jid = key.remoteJid
             if (!jid || isNewsletterOrBroadcast(jid)) continue
-            const chat = chatOps.getByWhatsappJid(jid) as any
+            const chat = chatOps.getByWhatsappJid(slug, jid) as any
             if (chat?.enabled) {
               try {
                 await messageTransformer.processMessageDeletion(key, chat.id, deleteEvent.participant || key.participant)
@@ -549,7 +582,7 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
 // WhatsApp connection IPC handlers
 ipcMain.handle('whatsapp-connect', async () => {
   try {
-    whatsappManager = await initializeWhatsApp()
+    whatsappManager = await initializeWhatsApp(currentSlug())
     if (whatsappManager.socket) { await setupWhatsAppConnection(whatsappManager) }
     return { state: whatsappManager.state, qrCode: whatsappManager.qrCode, error: whatsappManager.error }
   } catch (error) {
@@ -569,16 +602,17 @@ ipcMain.handle('whatsapp-disconnect', async () => {
 })
 
 ipcMain.handle('whatsapp-logout', async () => {
+  const slug = whatsappManager?.slug ?? currentSlug()
   if (whatsappManager) {
     await disconnectWhatsApp(whatsappManager)
-    await clearWhatsAppSession()
+    await clearWhatsAppSession(whatsappManager.slug)
     whatsappManager = null
   }
   try {
-    settingOps.delete('initial_sync_complete')
-    settingOps.delete('user_display_name')
-    settingOps.delete('user_phone')
-    const db = getDatabase()
+    settingOps.delete(slug, 'initial_sync_complete')
+    settingOps.delete(slug, 'user_display_name')
+    settingOps.delete(slug, 'user_phone')
+    const db = getDatabase(slug)
     db.exec('DELETE FROM messages'); db.exec('DELETE FROM chats'); db.exec('DELETE FROM contacts'); db.exec('DELETE FROM logs')
   } catch (error) { console.error('Failed to clear database on logout:', error) }
   whatsappConnected = false
@@ -587,7 +621,8 @@ ipcMain.handle('whatsapp-logout', async () => {
 })
 
 ipcMain.handle('whatsapp-status', async () => {
-  const authDir = path.join(app.getPath('userData'), 'whatsapp-auth')
+  const slug = whatsappManager?.slug ?? currentSlug()
+  const authDir = accountAuthDir(slug)
   const hasAuth = fs.existsSync(authDir) && fs.readdirSync(authDir).length > 0
   if (!whatsappManager) { return { state: 'disconnected', qrCode: null, error: null, hasAuth } }
   return { state: whatsappManager.state, qrCode: whatsappManager.qrCode, error: whatsappManager.error, hasAuth }
@@ -595,20 +630,21 @@ ipcMain.handle('whatsapp-status', async () => {
 
 // Chat management IPC handlers
 ipcMain.handle('get-chats', async () => {
-  try { return chatOps.getAll() } catch (error) { console.error('Failed to get chats:', error); throw error }
+  try { return chatOps.getAll(currentSlug()) } catch (error) { console.error('Failed to get chats:', error); throw error }
 })
 
 ipcMain.handle('get-chat', async (_, chatId: number) => {
-  try { return chatOps.getById(chatId) } catch (error) { console.error('Failed to get chat:', error); throw error }
+  try { return chatOps.getById(currentSlug(), chatId) } catch (error) { console.error('Failed to get chat:', error); throw error }
 })
 
 ipcMain.handle('toggle-chat', async (_, chatId: number, enabled: boolean) => {
   try {
-    chatOps.updateEnabled(chatId, enabled)
+    const slug = currentSlug()
+    chatOps.updateEnabled(slug, chatId, enabled)
     if (enabled) {
-      const chat = chatOps.getById(chatId) as any
+      const chat = chatOps.getById(slug, chatId) as any
       if (chat && chat.chat_type === 'group') {
-        try { await getSyncOrchestrator().syncEnabledGroup(chatId) } catch (e) { console.error('Failed to sync enabled group:', e) }
+        try { await getSyncOrchestrator(slug).syncEnabledGroup(chatId) } catch (e) { console.error('Failed to sync enabled group:', e) }
       }
     }
     return { success: true }
@@ -617,27 +653,27 @@ ipcMain.handle('toggle-chat', async (_, chatId: number, enabled: boolean) => {
 
 // Message IPC handlers
 ipcMain.handle('get-messages', async (_, chatId: number, limit = 100, offset = 0) => {
-  try { return { messages: messageOps.getByChatId(chatId, limit, offset) } } catch (error) { console.error('Failed to get messages:', error); throw error }
+  try { return { messages: messageOps.getByChatId(currentSlug(), chatId, limit, offset) } } catch (error) { console.error('Failed to get messages:', error); throw error }
 })
 
 ipcMain.handle('get-message-count', async (_, chatId: number) => {
-  try { return messageOps.getCountByChatId(chatId) } catch (error) { console.error('Failed to get message count:', error); throw error }
+  try { return messageOps.getCountByChatId(currentSlug(), chatId) } catch (error) { console.error('Failed to get message count:', error); throw error }
 })
 
 ipcMain.handle('get-total-message-count', async () => {
-  try { return messageOps.getCount() } catch (error) { console.error('Failed to get total message count:', error); return 0 }
+  try { return messageOps.getCount(currentSlug()) } catch (error) { console.error('Failed to get total message count:', error); return 0 }
 })
 
 // Contact IPC handlers
 ipcMain.handle('get-contacts', async () => {
-  try { return contactOps.getAll() } catch (error) { console.error('Failed to get contacts:', error); throw error }
+  try { return contactOps.getAll(currentSlug()) } catch (error) { console.error('Failed to get contacts:', error); throw error }
 })
 
 // Logs IPC handlers
 ipcMain.handle('get-logs', async (_, filters: { levels?: string[], categories?: string[], searchText?: string, limit?: number } = {}) => {
   try {
     const { levels, categories, searchText, limit = 1000 } = filters
-    const db = getDatabase()
+    const db = getDatabase(currentSlug())
 
     let query = 'SELECT * FROM logs'
     const conditions: string[] = []
@@ -673,17 +709,17 @@ ipcMain.handle('get-logs', async (_, filters: { levels?: string[], categories?: 
 })
 
 ipcMain.handle('clear-logs', async () => {
-  try { logOps.clear(); return { success: true } } catch (error) { console.error('Failed to clear logs:', error); throw error }
+  try { logOps.clear(currentSlug()); return { success: true } } catch (error) { console.error('Failed to clear logs:', error); throw error }
 })
 
 // Sync status
 ipcMain.handle('get-sync-status', async () => {
-  try { return getSyncOrchestrator().getStatus() } catch (error) { return { isSyncing: false, totalChats: 0, completedChats: 0, currentChat: null, messageCount: 0, lastError: null } }
+  try { return getSyncOrchestrator(currentSlug()).getStatus() } catch (error) { return { isSyncing: false, totalChats: 0, completedChats: 0, currentChat: null, messageCount: 0, lastError: null } }
 })
 
 // Group metadata status
 ipcMain.handle('get-group-metadata-status', async () => {
-  try { return getGroupMetadataFetcher().getStatus() } catch (error) { return { isRunning: false, totalGroups: 0, fetchedCount: 0, currentGroup: null, lastError: null, nextRetryTime: null } }
+  try { return getGroupMetadataFetcher(currentSlug()).getStatus() } catch (error) { return { isRunning: false, totalGroups: 0, fetchedCount: 0, currentGroup: null, lastError: null, nextRetryTime: null } }
 })
 
 // Settings IPC handlers
@@ -737,12 +773,12 @@ ipcMain.handle('mcp-restart', async () => {
 })
 
 ipcMain.handle('mcp-get-auto-start', async () => {
-  const value = settingOps.get('mcp_auto_start')
+  const value = settingOps.get(currentSlug(), 'mcp_auto_start')
   return value !== 'false' // Default to true
 })
 
 ipcMain.handle('mcp-set-auto-start', async (_, enabled: boolean) => {
-  settingOps.set('mcp_auto_start', enabled ? 'true' : 'false')
+  settingOps.set(currentSlug(), 'mcp_auto_start', enabled ? 'true' : 'false')
   return { success: true }
 })
 

@@ -27,6 +27,8 @@ vi.mock('./message-transformer', () => ({
 import { initializeDatabase, closeDatabase, chatOps, contactOps } from './database'
 import { GroupMetadataFetcher } from './group-metadata-fetcher'
 
+const SLUG = 'default'
+
 const createMockSocket = (metadata?: any) => ({
   groupMetadata: vi.fn().mockResolvedValue(metadata || {
     id: 'group@g.us',
@@ -43,7 +45,7 @@ describe('GroupMetadataFetcher', () => {
   })
 
   afterAll(() => {
-    closeDatabase()
+    closeDatabase(SLUG)
     if (fs.existsSync(testDir)) {
       fs.rmSync(testDir, { recursive: true, force: true })
     }
@@ -51,29 +53,29 @@ describe('GroupMetadataFetcher', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
-    closeDatabase()
-    const dbDir = path.join(testDir, 'nodexa-whatsapp')
+    closeDatabase(SLUG)
+    const dbDir = path.join(testDir, 'accounts', SLUG)
     if (fs.existsSync(dbDir)) {
       fs.rmSync(dbDir, { recursive: true, force: true })
     }
     fs.mkdirSync(dbDir, { recursive: true })
-    initializeDatabase()
+    initializeDatabase(SLUG)
   })
 
   afterEach(() => {
     vi.useRealTimers()
-    closeDatabase()
+    closeDatabase(SLUG)
   })
 
   describe('Constructor & basic methods', () => {
     it('creates instance with isRunning=false', () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const status = fetcher.getStatus()
       expect(status.isRunning).toBe(false)
     })
 
     it('getStatus() returns correct initial status', () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const status = fetcher.getStatus()
       expect(status).toEqual({
         isRunning: false,
@@ -86,21 +88,21 @@ describe('GroupMetadataFetcher', () => {
     })
 
     it('getRemainingCount() returns 0 initially', () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       expect(fetcher.getRemainingCount()).toBe(0)
     })
 
     it('getCachedMetadata() returns undefined for unknown JID', () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       expect(fetcher.getCachedMetadata('unknown@g.us')).toBeUndefined()
     })
 
     it('setSocket() sets the socket', () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = createMockSocket()
       fetcher.setSocket(mockSocket)
-      chatOps.insert('group@g.us', 'group', undefined, 'Test Group')
-      const chat = chatOps.getByWhatsappJid('group@g.us') as any
+      chatOps.insert(SLUG, 'group@g.us', 'group', undefined, 'Test Group')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'group@g.us') as any
       fetcher.queueGroups([{ chatId: chat.id, jid: 'group@g.us' }])
       fetcher.start()
       expect(fetcher.getStatus().isRunning).toBe(true)
@@ -110,7 +112,7 @@ describe('GroupMetadataFetcher', () => {
 
   describe('queueGroups()', () => {
     it('queues new groups', () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       fetcher.queueGroups([
         { chatId: 1, jid: 'group1@g.us' },
         { chatId: 2, jid: 'group2@g.us' }
@@ -119,7 +121,7 @@ describe('GroupMetadataFetcher', () => {
     })
 
     it('deduplicates groups with same JID', () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       fetcher.queueGroups([
         { chatId: 1, jid: 'group@g.us' },
         { chatId: 2, jid: 'group@g.us' }
@@ -128,7 +130,7 @@ describe('GroupMetadataFetcher', () => {
     })
 
     it('adds to existing queue (does not replace)', () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       fetcher.queueGroups([{ chatId: 1, jid: 'group1@g.us' }])
       fetcher.queueGroups([{ chatId: 2, jid: 'group2@g.us' }])
       expect(fetcher.getRemainingCount()).toBe(2)
@@ -137,7 +139,7 @@ describe('GroupMetadataFetcher', () => {
 
   describe('start() / stop()', () => {
     it('start() without socket does not crash (logs error)', () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       fetcher.start()
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('no socket'))
@@ -146,11 +148,11 @@ describe('GroupMetadataFetcher', () => {
     })
 
     it('stop() sets isRunning=false', () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = createMockSocket()
       fetcher.setSocket(mockSocket)
-      chatOps.insert('group@g.us', 'group')
-      const chat = chatOps.getByWhatsappJid('group@g.us') as any
+      chatOps.insert(SLUG, 'group@g.us', 'group')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'group@g.us') as any
       fetcher.queueGroups([{ chatId: chat.id, jid: 'group@g.us' }])
       fetcher.start()
       expect(fetcher.getStatus().isRunning).toBe(true)
@@ -161,12 +163,12 @@ describe('GroupMetadataFetcher', () => {
 
   describe('processNextGroup() (via start())', () => {
     it('successfully fetches metadata and increments fetchedCount', async () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = createMockSocket()
       fetcher.setSocket(mockSocket)
 
-      chatOps.insert('group@g.us', 'group')
-      const chat = chatOps.getByWhatsappJid('group@g.us') as any
+      chatOps.insert(SLUG, 'group@g.us', 'group')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'group@g.us') as any
       fetcher.queueGroups([{ chatId: chat.id, jid: 'group@g.us' }])
 
       fetcher.start()
@@ -179,7 +181,7 @@ describe('GroupMetadataFetcher', () => {
     })
 
     it('stores participant contacts in DB', async () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = createMockSocket({
         id: 'group@g.us',
         participants: [
@@ -189,14 +191,14 @@ describe('GroupMetadataFetcher', () => {
       })
       fetcher.setSocket(mockSocket)
 
-      chatOps.insert('group@g.us', 'group')
-      const chat = chatOps.getByWhatsappJid('group@g.us') as any
+      chatOps.insert(SLUG, 'group@g.us', 'group')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'group@g.us') as any
       fetcher.queueGroups([{ chatId: chat.id, jid: 'group@g.us' }])
 
       fetcher.start()
       await vi.advanceTimersByTimeAsync(100)
 
-      const alice = contactOps.getByJid('1111@s.whatsapp.net') as any
+      const alice = contactOps.getByJid(SLUG, '1111@s.whatsapp.net') as any
       expect(alice).toBeDefined()
       expect(alice.name).toBe('Alice')
       fetcher.stop()
@@ -205,14 +207,14 @@ describe('GroupMetadataFetcher', () => {
 
   describe('Error handling in processNextGroup()', () => {
     it('rate limit error (429) applies exponential backoff', async () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = {
         groupMetadata: vi.fn().mockRejectedValue(new Error('rate-overlimit 429'))
       }
       fetcher.setSocket(mockSocket)
 
-      chatOps.insert('group@g.us', 'group')
-      const chat = chatOps.getByWhatsappJid('group@g.us') as any
+      chatOps.insert(SLUG, 'group@g.us', 'group')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'group@g.us') as any
       fetcher.queueGroups([{ chatId: chat.id, jid: 'group@g.us' }])
 
       fetcher.start()
@@ -224,14 +226,14 @@ describe('GroupMetadataFetcher', () => {
     })
 
     it('forbidden error skips group', async () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = {
         groupMetadata: vi.fn().mockRejectedValue(new Error('forbidden'))
       }
       fetcher.setSocket(mockSocket)
 
-      chatOps.insert('group@g.us', 'group')
-      const chat = chatOps.getByWhatsappJid('group@g.us') as any
+      chatOps.insert(SLUG, 'group@g.us', 'group')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'group@g.us') as any
       fetcher.queueGroups([{ chatId: chat.id, jid: 'group@g.us' }])
 
       fetcher.start()
@@ -243,14 +245,14 @@ describe('GroupMetadataFetcher', () => {
     })
 
     it('generic error retries up to 3 times then skips', async () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = {
         groupMetadata: vi.fn().mockRejectedValue(new Error('network error'))
       }
       fetcher.setSocket(mockSocket)
 
-      chatOps.insert('group@g.us', 'group')
-      const chat = chatOps.getByWhatsappJid('group@g.us') as any
+      chatOps.insert(SLUG, 'group@g.us', 'group')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'group@g.us') as any
       fetcher.queueGroups([{ chatId: chat.id, jid: 'group@g.us' }])
 
       fetcher.start()
@@ -268,7 +270,7 @@ describe('GroupMetadataFetcher', () => {
 
   describe('handleGroupUpdate()', () => {
     it('fetches and caches metadata for updated groups', async () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = createMockSocket({
         id: 'updated-group@g.us',
         participants: [{ id: '3333@s.whatsapp.net', notify: 'Charlie' }]
@@ -282,7 +284,7 @@ describe('GroupMetadataFetcher', () => {
     })
 
     it('skips events without id', async () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = createMockSocket()
       fetcher.setSocket(mockSocket)
 
@@ -292,7 +294,7 @@ describe('GroupMetadataFetcher', () => {
     })
 
     it('handles fetch errors gracefully', async () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = {
         groupMetadata: vi.fn().mockRejectedValue(new Error('fetch failed'))
       }
@@ -308,7 +310,7 @@ describe('GroupMetadataFetcher', () => {
 
   describe('handleParticipantsUpdate()', () => {
     it('fetches and caches participant metadata', async () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = createMockSocket({
         id: 'participant-group@g.us',
         participants: [{ id: '4444@s.whatsapp.net', notify: 'Dave', phoneNumber: '+4444' }]
@@ -322,7 +324,7 @@ describe('GroupMetadataFetcher', () => {
     })
 
     it('stores contacts from participants', async () => {
-      const fetcher = new GroupMetadataFetcher()
+      const fetcher = new GroupMetadataFetcher(SLUG)
       const mockSocket = createMockSocket({
         id: 'contacts-group@g.us',
         participants: [{ id: '5555@s.whatsapp.net', notify: 'Eve', phoneNumber: '+5555' }]
@@ -331,7 +333,7 @@ describe('GroupMetadataFetcher', () => {
 
       await fetcher.handleParticipantsUpdate({ id: 'contacts-group@g.us' })
 
-      const eve = contactOps.getByJid('5555@s.whatsapp.net') as any
+      const eve = contactOps.getByJid(SLUG, '5555@s.whatsapp.net') as any
       expect(eve).toBeDefined()
       expect(eve.name).toBe('Eve')
     })
@@ -343,16 +345,16 @@ describe('Global singleton', () => {
     vi.resetModules()
   })
 
-  it('getGroupMetadataFetcher() throws before init', async () => {
+  it('getGroupMetadataFetcher(SLUG) throws before init', async () => {
     const { getGroupMetadataFetcher: getFetcher } = await import('./group-metadata-fetcher')
-    expect(() => getFetcher()).toThrow('GroupMetadataFetcher not initialized')
+    expect(() => getFetcher(SLUG)).toThrow('GroupMetadataFetcher not initialized')
   })
 
-  it('initializeGroupMetadataFetcher() creates singleton', async () => {
+  it('initializeGroupMetadataFetcher(SLUG) creates singleton', async () => {
     const { initializeGroupMetadataFetcher: initFetcher, getGroupMetadataFetcher: getFetcher } = await import('./group-metadata-fetcher')
-    const fetcher1 = initFetcher()
-    const fetcher2 = initFetcher()
+    const fetcher1 = initFetcher(SLUG)
+    const fetcher2 = initFetcher(SLUG)
     expect(fetcher1).toBe(fetcher2)
-    expect(getFetcher()).toBe(fetcher1)
+    expect(getFetcher(SLUG)).toBe(fetcher1)
   })
 })

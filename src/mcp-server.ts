@@ -6,16 +6,27 @@ import { chatOps, messageOps, settingOps, contactOps, getDatabase } from './data
 import { serializeCompact, MeIdentity } from './compact-serializer'
 import { TransformedMessage, extractPhoneFromJid } from './message-transformer'
 import type { WhatsAppManager } from './whatsapp-manager'
+import { getDefaultSlug, DEFAULT_SLUG } from './accounts'
+import { getMcpPort as getGlobalMcpPort, setMcpPort as setGlobalMcpPort } from './global-settings'
 
 // Store for active transports (for session management)
 const activeTransports = new Map<string, StreamableHTTPServerTransport>()
 
 /**
+ * Bridge: return the active account slug for MCP calls while the per-request
+ * slug routing (based on path/session) is still pending.
+ */
+function currentSlug(): string {
+  return whatsappManager?.slug ?? getDefaultSlug() ?? DEFAULT_SLUG
+}
+
+/**
  * Get meIdentity from settings (user_display_name, user_phone).
  */
 function getMeIdentity(): MeIdentity | undefined {
-  const name = settingOps.get('user_display_name')
-  const phone = settingOps.get('user_phone')
+  const slug = currentSlug()
+  const name = settingOps.get(slug, 'user_display_name')
+  const phone = settingOps.get(slug, 'user_phone')
   if (name && phone) {
     return { name, phone }
   }
@@ -30,12 +41,13 @@ function resolveFromContacts(
   senderJid: string,
   fallback: { name: string; phone: string | null }
 ): { name: string; phone: string | null } {
+  const slug = currentSlug()
   // Always look up contact — don't skip based on current name
-  let contact = contactOps.getByJid(senderJid) as any
+  let contact = contactOps.getByJid(slug, senderJid) as any
 
   // LID fallback: if JID is a LID and we didn't find a name, try getByLid
   if ((!contact?.name) && (senderJid.includes('@lid') || senderJid.includes('@hosted.lid'))) {
-    const lidContact = contactOps.getByLid(senderJid) as any
+    const lidContact = contactOps.getByLid(slug, senderJid) as any
     if (lidContact) {
       contact = lidContact
     }
@@ -44,7 +56,7 @@ function resolveFromContacts(
   // Phone fallback: if still no name, try phone lookup
   const phone = fallback.phone || extractPhoneFromJid(senderJid) || contact?.phone_number
   if ((!contact?.name) && phone) {
-    const phoneContact = contactOps.getByPhone(phone) as any
+    const phoneContact = contactOps.getByPhone(slug, phone) as any
     if (phoneContact) {
       contact = phoneContact
     }
@@ -70,12 +82,13 @@ function resolveFromContacts(
  */
 function reResolveAllMentions(text: string, mentionedJids: string[]): string {
   let resolvedText = text
+  const slug = currentSlug()
 
   for (const jid of mentionedJids) {
-    let contact = contactOps.getByJid(jid) as any
+    let contact = contactOps.getByJid(slug, jid) as any
 
     if ((!contact || !contact.name) && (jid.includes('@lid') || jid.includes('@hosted.lid'))) {
-      const lidContact = contactOps.getByLid(jid) as any
+      const lidContact = contactOps.getByLid(slug, jid) as any
       if (lidContact) contact = lidContact
     }
 
@@ -83,7 +96,7 @@ function reResolveAllMentions(text: string, mentionedJids: string[]): string {
     const numberPart = atIndex > 0 ? jid.substring(0, atIndex) : jid
 
     if ((!contact || !contact.name) && numberPart) {
-      const phoneContact = contactOps.getByPhone(numberPart) as any
+      const phoneContact = contactOps.getByPhone(slug, numberPart) as any
       if (phoneContact) contact = phoneContact
     }
 
@@ -131,12 +144,13 @@ function reResolveAllMentions(text: string, mentionedJids: string[]): string {
  */
 function reResolveMentionsInText(text: string): string {
   const mentionPattern = /@Unknown_([^\s@]+@(?:s\.whatsapp\.net|lid|hosted\.lid))/g
+  const slug = currentSlug()
 
   return text.replace(mentionPattern, (match, jid) => {
-    let contact = contactOps.getByJid(jid) as any
+    let contact = contactOps.getByJid(slug, jid) as any
 
     if (!contact && (jid.includes('@lid') || jid.includes('@hosted.lid'))) {
-      contact = contactOps.getByLid(jid) as any
+      contact = contactOps.getByLid(slug, jid) as any
     }
 
     if (contact) {
@@ -167,6 +181,7 @@ function resolveAllIdentities(
   parsed: TransformedMessage,
   meIdentity?: MeIdentity
 ): TransformedMessage {
+  const slug = currentSlug()
   const senderJid = msg.sender_jid
 
   // 1. Primary sender
@@ -193,7 +208,7 @@ function resolveAllIdentities(
 
   // 2. Reply sender
   if (parsed.replyTo && parsed.replyTo.messageId) {
-    const originalMsg = messageOps.getByWhatsappMessageId(parsed.replyTo.messageId) as any
+    const originalMsg = messageOps.getByWhatsappMessageId(slug, parsed.replyTo.messageId) as any
     if (originalMsg) {
       const resolved = resolveFromContacts(originalMsg.sender_jid, {
         name: parsed.replyTo.senderName || 'Unknown',
@@ -206,7 +221,7 @@ function resolveAllIdentities(
 
   // 2b. Deferred reply
   if (!parsed.replyTo && parsed.replyToMessageId) {
-    const original = messageOps.getByWhatsappMessageId(parsed.replyToMessageId) as any
+    const original = messageOps.getByWhatsappMessageId(slug, parsed.replyToMessageId) as any
     if (original) {
       try {
         const content = JSON.parse(original.content_json)
@@ -235,7 +250,7 @@ function resolveAllIdentities(
 
   // 5. deletedMessage.sender
   if (parsed.deletedMessage?.sender && parsed.deletedMessage.messageId) {
-    const original = messageOps.getByWhatsappMessageId(parsed.deletedMessage.messageId) as any
+    const original = messageOps.getByWhatsappMessageId(slug, parsed.deletedMessage.messageId) as any
     if (original) {
       parsed.deletedMessage.sender = resolveFromContacts(original.sender_jid, parsed.deletedMessage.sender)
     }
@@ -243,7 +258,7 @@ function resolveAllIdentities(
 
   // 6. editedMessage.sender
   if (parsed.editedMessage?.sender && parsed.editedMessage.messageId) {
-    const original = messageOps.getByWhatsappMessageId(parsed.editedMessage.messageId) as any
+    const original = messageOps.getByWhatsappMessageId(slug, parsed.editedMessage.messageId) as any
     if (original) {
       parsed.editedMessage.sender = resolveFromContacts(original.sender_jid, parsed.editedMessage.sender)
     }
@@ -281,7 +296,7 @@ function createMcpServer(): McpServer {
     },
     { readOnlyHint: true },
     async ({ query }: { query: string }) => {
-      const allChats = chatOps.getAll() as any[]
+      const allChats = chatOps.getAll(currentSlug()) as any[]
       const results = allChats.filter((chat: any) => {
         if (!chat.enabled) return false
         const name = chat.name?.toLowerCase() || ''
@@ -312,7 +327,8 @@ function createMcpServer(): McpServer {
     },
     { readOnlyHint: true },
     async ({ jid, limit, since }: { jid: string; limit: number; since?: string }) => {
-      const chat = chatOps.getByWhatsappJid(jid) as any
+      const slug = currentSlug()
+      const chat = chatOps.getByWhatsappJid(slug, jid) as any
       if (!chat) {
         return { content: [{ type: 'text', text: `Chat not found: ${jid}` }], isError: true }
       }
@@ -320,7 +336,7 @@ function createMcpServer(): McpServer {
         return { content: [{ type: 'text', text: `Chat is disabled: ${jid}` }], isError: true }
       }
 
-      let messages = messageOps.getByChatId(chat.id, limit || 100) as any[]
+      let messages = messageOps.getByChatId(slug, chat.id, limit || 100) as any[]
 
       // Filter by timestamp if provided
       if (since) {
@@ -355,7 +371,7 @@ function createMcpServer(): McpServer {
     { readOnlyHint: true },
     async ({ since, limit }: { since: string; limit: number }) => {
       const sinceTs = new Date(since).getTime()
-      const db = getDatabase()
+      const db = getDatabase(currentSlug())
       const messages = db.prepare(`
         SELECT m.*, c.whatsapp_jid, c.name as chat_name, c.chat_type
         FROM messages m
@@ -401,13 +417,14 @@ function createMcpServer(): McpServer {
     },
     { readOnlyHint: true },
     async ({ since }: { since?: string }) => {
+      const slug = currentSlug()
       // Get last check time from settings, or default to 24h ago
-      const lastCheck = settingOps.get('last_unread_check')
+      const lastCheck = settingOps.get(slug, 'last_unread_check')
       const defaultSince = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
       const sinceStr = since || lastCheck || defaultSince
       const sinceTs = new Date(sinceStr).getTime()
 
-      const db = getDatabase()
+      const db = getDatabase(slug)
       const messages = db.prepare(`
         SELECT m.*, c.whatsapp_jid, c.name as chat_name, c.chat_type
         FROM messages m
@@ -418,7 +435,7 @@ function createMcpServer(): McpServer {
       `).all(sinceTs) as any[]
 
       // Update last check time
-      settingOps.set('last_unread_check', new Date().toISOString())
+      settingOps.set(slug, 'last_unread_check', new Date().toISOString())
 
       const meIdentity = getMeIdentity()
 
@@ -623,17 +640,18 @@ export function isMcpServerRunning(): boolean {
 }
 
 /**
- * Get the current MCP server port (from settings or default)
+ * Get the current MCP server port (from global settings or default).
+ * Kept for backward compatibility; delegates to global-settings.
  */
 export function getMcpPort(): number {
-  const portStr = settingOps.get('mcp_port')
-  return portStr ? parseInt(portStr, 10) : 13491 // Default port
+  return getGlobalMcpPort()
 }
 
 /**
- * Set the MCP server port in settings
+ * Set the MCP server port (in global settings).
+ * Kept for backward compatibility; delegates to global-settings.
  */
 export function setMcpPort(port: number): void {
-  settingOps.set('mcp_port', String(port))
+  setGlobalMcpPort(port)
 }
 
