@@ -82,6 +82,7 @@ import {
   disconnectWhatsApp,
   clearWhatsAppSession,
   initializeWhatsApp,
+  handleConnectionClose,
   WhatsAppManager,
 } from './whatsapp-manager'
 
@@ -1572,5 +1573,90 @@ describe('WhatsAppManager Tests', () => {
       expect(manager.state).toBe('disconnected')
     })
   })
+
+  describe('handleConnectionClose() — device removed', () => {
+    const TEST_SLUG = 'test-slug'
+    let actualDb: typeof import('./database')
+    let actualAccounts: typeof import('./accounts')
+
+    beforeAll(async () => {
+      actualDb = await vi.importActual<typeof import('./database')>('./database')
+      actualAccounts = await vi.importActual<typeof import('./accounts')>('./accounts')
+    })
+
+    beforeEach(() => {
+      // Wipe any prior accounts.json / account dir so addAccount succeeds fresh.
+      const accountsJsonPath = path.join(testDir, 'accounts.json')
+      if (fs.existsSync(accountsJsonPath)) fs.rmSync(accountsJsonPath, { force: true })
+      const acctDir = path.join(testDir, 'accounts', TEST_SLUG)
+      if (fs.existsSync(acctDir)) {
+        try { actualDb.closeDatabase(TEST_SLUG) } catch { /* ignore */ }
+        fs.rmSync(acctDir, { recursive: true, force: true })
+      }
+      actualAccounts.addAccount(TEST_SLUG)
+      actualDb.initializeDatabase(TEST_SLUG)
+    })
+
+    afterEach(() => {
+      try { actualDb.closeDatabase(TEST_SLUG) } catch { /* ignore */ }
+    })
+
+    it('preserves DB rows and disables MCP on DisconnectReason.loggedOut', async () => {
+      // Prime Baileys module-level vars (DisconnectReason, etc.) via mocked init path.
+      await initializeWhatsApp(TEST_SLUG)
+
+      // Insert sentinel rows BEFORE triggering the handler.
+      const chatResult = actualDb.chatOps.insert(
+        TEST_SLUG, '1234@s.whatsapp.net', 'dm', undefined, 'Sentinel Chat'
+      )
+      const chatId = Number((chatResult as any).lastInsertRowid)
+      actualDb.messageOps.insert(
+        TEST_SLUG, chatId, 'msg-sentinel-1', Date.now(),
+        '1234@s.whatsapp.net', '{"text":"hi"}'
+      )
+      actualDb.contactOps.insert(TEST_SLUG, '1234@s.whatsapp.net', 'Sentinel Contact')
+      actualDb.logOps.insert(TEST_SLUG, 'info', 'test', 'pre-event sentinel log')
+
+      // Sanity: all sentinel rows present and mcpEnabled=true.
+      expect((actualDb.chatOps.getAll(TEST_SLUG) as any[]).length).toBe(1)
+      expect((actualDb.contactOps.getAll(TEST_SLUG) as any[]).length).toBe(1)
+      expect(actualDb.messageOps.getCount(TEST_SLUG)).toBe(1)
+      const logsBefore = actualDb.logOps.getAll(TEST_SLUG) as any[]
+      expect(logsBefore.length).toBeGreaterThanOrEqual(1)
+      expect(actualAccounts.getAccount(TEST_SLUG)?.mcpEnabled).toBe(true)
+
+      // Trigger the device-removed branch (statusCode === DisconnectReason.loggedOut).
+      const manager: WhatsAppManager = {
+        slug: TEST_SLUG,
+        socket: null,
+        state: 'connected',
+        qrCode: null,
+        error: null,
+        reconnectDelay: 2000,
+      }
+      handleConnectionClose(manager, {
+        error: { output: { statusCode: 401 } }, // DisconnectReason.loggedOut per baileys mock
+      })
+
+      // MCP endpoint disabled for this slug.
+      expect(actualAccounts.getAccount(TEST_SLUG)?.mcpEnabled).toBe(false)
+
+      // Manager state updated for device-removed (no reconnect scheduled).
+      expect(manager.state).toBe('disconnected')
+      expect(manager.error).toContain('Device removed')
+
+      // DB rows preserved — nothing was mass-deleted (spec §6).
+      expect((actualDb.chatOps.getAll(TEST_SLUG) as any[]).length).toBe(1)
+      expect((actualDb.contactOps.getAll(TEST_SLUG) as any[]).length).toBe(1)
+      expect(actualDb.messageOps.getCount(TEST_SLUG)).toBe(1)
+      const logsAfter = actualDb.logOps.getAll(TEST_SLUG) as any[]
+      expect(logsAfter.length).toBeGreaterThanOrEqual(logsBefore.length)
+
+      // Auth dir left on disk — handler no longer wipes it.
+      const authDir = path.join(testDir, 'accounts', TEST_SLUG, 'whatsapp-auth')
+      expect(fs.existsSync(authDir)).toBe(true)
+    })
+  })
+
 })
 

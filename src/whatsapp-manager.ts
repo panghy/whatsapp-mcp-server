@@ -183,7 +183,7 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
   }
 }
 
-function handleConnectionClose(manager: WhatsAppManager, lastDisconnect: any): void {
+export function handleConnectionClose(manager: WhatsAppManager, lastDisconnect: any): void {
   const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut
   if (shouldReconnect) {
     manager.state = 'connecting'
