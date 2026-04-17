@@ -258,8 +258,25 @@ describe('accounts', () => {
       moved.close()
       expect(rows.map((r) => r.key)).toEqual(['user_display_name'])
 
-      // Backup marker written.
+      // Backup snapshot written: README + real copies of the pre-migration files.
       expect(fs.existsSync(path.join(testDir, 'migration-backup', 'README.txt'))).toBe(true)
+      expect(
+        fs.readFileSync(
+          path.join(testDir, 'migration-backup', 'whatsapp-auth', 'creds.json'),
+          'utf-8'
+        )
+      ).toBe('{"fake":"creds"}')
+      expect(fs.existsSync(path.join(testDir, 'migration-backup', 'nodexa.db'))).toBe(true)
+      // Snapshot DB still contains the original mcp_* rows (it was taken before
+      // deleteLegacyMcpRows ran against the moved copy).
+      const snap = new Database(path.join(testDir, 'migration-backup', 'nodexa.db'), { readonly: true })
+      const snapRows = snap.prepare('SELECT key FROM settings ORDER BY key').all() as { key: string }[]
+      snap.close()
+      expect(snapRows.map((r) => r.key)).toEqual(['mcp_auto_start', 'mcp_port', 'user_display_name'])
+
+      // Moved files still exist at the new per-account locations.
+      expect(fs.existsSync(path.join(accountAuthDir(DEFAULT_SLUG), 'creds.json'))).toBe(true)
+      expect(fs.existsSync(accountDbPath(DEFAULT_SLUG))).toBe(true)
 
       // Registry written with default account.
       const reg = loadAccounts()
@@ -331,6 +348,27 @@ describe('accounts', () => {
       expect(reg.defaultSlug).toBeNull()
       // No migration backup written for fresh installs.
       expect(fs.existsSync(path.join(testDir, 'migration-backup'))).toBe(false)
+    })
+
+    it('pre-existing migration-backup/ is left intact (defensive)', () => {
+      // Seed a legacy auth dir so migration has real work to do.
+      const legacyAuth = path.join(testDir, 'whatsapp-auth')
+      fs.mkdirSync(legacyAuth, { recursive: true })
+      fs.writeFileSync(path.join(legacyAuth, 'creds.json'), '{"current":"creds"}')
+
+      // Pre-seed a migration-backup/ folder as if left over from an earlier run.
+      const backupDir = path.join(testDir, 'migration-backup')
+      fs.mkdirSync(backupDir, { recursive: true })
+      fs.writeFileSync(path.join(backupDir, 'sentinel.txt'), 'pre-existing')
+
+      migrateLegacyLayoutIfNeeded()
+
+      // Pre-existing sentinel survives; snapshot copies are not written on top.
+      expect(fs.readFileSync(path.join(backupDir, 'sentinel.txt'), 'utf-8')).toBe('pre-existing')
+      expect(fs.existsSync(path.join(backupDir, 'whatsapp-auth'))).toBe(false)
+      // Move still happened into the new layout.
+      expect(fs.existsSync(legacyAuth)).toBe(false)
+      expect(fs.existsSync(path.join(accountAuthDir(DEFAULT_SLUG), 'creds.json'))).toBe(true)
     })
   })
 })

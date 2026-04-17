@@ -258,30 +258,56 @@ function deleteLegacyMcpRows(dbPath: string): void {
   }
 }
 
+function snapshotLegacyLayout(hasLegacyAuth: boolean, hasLegacyDb: boolean): void {
+  const dir = migrationBackupDir()
+  // Defensive: if a backup folder already exists (unexpected, since migration is
+  // idempotency-gated on accounts.json), do not overwrite it.
+  if (fs.existsSync(dir)) return
+  fs.mkdirSync(dir, { recursive: true })
+  if (hasLegacyAuth) {
+    fs.cpSync(legacyAuthDir(), path.join(dir, 'whatsapp-auth'), { recursive: true })
+  }
+  if (hasLegacyDb) {
+    fs.cpSync(legacyDbPath(), path.join(dir, 'nodexa.db'))
+  }
+}
+
 function writeBackupReadme(movedAuth: boolean, movedDb: boolean): void {
   const dir = migrationBackupDir()
   fs.mkdirSync(dir, { recursive: true })
   const lines = [
-    'WhatsApp MCP Server — legacy layout migration',
+    'WhatsApp MCP Server — legacy layout migration backup',
     '',
     `Performed at: ${new Date().toISOString()}`,
     '',
-    'The following legacy locations have been migrated into the new',
-    'per-account layout under accounts/default/:',
+    'This folder contains a pre-migration snapshot of the legacy data. The',
+    'originals have been moved into the new per-account layout under',
+    'accounts/default/:',
     '',
     movedAuth
-      ? '  - whatsapp-auth/               -> accounts/default/whatsapp-auth/'
-      : '  - whatsapp-auth/               (not present)',
+      ? '  - whatsapp-auth/           (copy of the pre-migration whatsapp-auth/)'
+      : '  - whatsapp-auth/           (not present on this system)',
     movedDb
-      ? '  - nodexa-whatsapp/nodexa.db    -> accounts/default/nodexa.db'
-      : '  - nodexa-whatsapp/nodexa.db    (not present)',
+      ? '  - nodexa.db                (copy of the pre-migration nodexa-whatsapp/nodexa.db)'
+      : '  - nodexa.db                (not present on this system)',
     '',
     'Global MCP settings (mcp_port, mcp_auto_start) were copied out of the',
     "legacy DB's settings table into electron-settings before the move, and",
     'then removed from the moved DB so the per-account settings table only',
-    'holds per-account keys.',
+    'holds per-account keys. The snapshot nodexa.db above still carries the',
+    'original rows untouched.',
     '',
-    'This folder is a marker indicating the migration has run. Safe to delete.',
+    'To restore from this backup:',
+    '  1. Quit the app.',
+    '  2. Remove (or move aside) accounts.json and the accounts/ directory in',
+    "     this folder's parent (the app's userData directory).",
+    '  3. Copy whatsapp-auth/ back to ../whatsapp-auth/ and nodexa.db back to',
+    '     ../nodexa-whatsapp/nodexa.db.',
+    '  4. Relaunch the app; the migration will run again against the restored',
+    '     files.',
+    '',
+    'Once you are confident the migrated data is healthy, this folder is safe',
+    'to delete.',
     '',
   ]
   fs.writeFileSync(path.join(dir, 'README.txt'), lines.join('\n'), 'utf-8')
@@ -306,6 +332,10 @@ export function migrateLegacyLayoutIfNeeded(): void {
     if (legacy.port !== undefined) setMcpPort(legacy.port)
     if (legacy.autoStart !== undefined) setMcpAutoStart(legacy.autoStart)
   }
+
+  // Snapshot the legacy layout into migration-backup/ before any move, so the
+  // user can restore from the backup if anything goes wrong.
+  snapshotLegacyLayout(hasLegacyAuth, hasLegacyDb)
 
   // Create target account dirs and move contents.
   const targetAuth = accountAuthDir(DEFAULT_SLUG)

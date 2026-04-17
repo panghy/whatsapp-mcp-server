@@ -196,7 +196,7 @@ When you upgrade from a single-account build, the first launch runs a one-time m
 - The legacy `whatsapp-auth/` directory and `nodexa-whatsapp/nodexa.db` file are moved into `accounts/default/`.
 - An account with the slug `default` is registered and marked as the default.
 - Legacy `http://localhost:13491/mcp` URLs keep working because `/mcp` is an alias for the default account — no change is required in existing MCP client configurations.
-- A `migration-backup/` directory is created in `userData` with a README describing what was moved, so you can locate the original files if needed.
+- A `migration-backup/` directory is created in `userData` containing a copy of the pre-migration `whatsapp-auth/` directory and `nodexa.db` file, alongside a README with restore instructions. Delete it once you are confident the migrated data is healthy.
 
 The migration is idempotent: once `accounts.json` exists, it is not run again.
 
