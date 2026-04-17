@@ -1,42 +1,51 @@
 import Database from 'better-sqlite3'
 import path from 'path'
-import { app } from 'electron'
 import fs from 'fs'
+import { accountDbPath } from './accounts'
 
-const DATA_DIR = path.join(app.getPath('userData'), 'nodexa-whatsapp')
-const DB_PATH = path.join(DATA_DIR, 'nodexa.db')
+// Per-account database connections keyed by slug.
+// Callers (main.ts, sync-orchestrator.ts, mcp-server.ts, etc.) will be updated
+// in a follow-up task to thread slugs through their call sites.
+const dbs = new Map<string, Database.Database>()
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true })
-}
+export function initializeDatabase(slug: string): Database.Database {
+  const existing = dbs.get(slug)
+  if (existing) return existing
 
-let db: Database.Database | null = null
+  const dbPath = accountDbPath(slug)
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true })
 
-export function initializeDatabase(): Database.Database {
-  if (db) return db
-
-  db = new Database(DB_PATH)
+  const db = new Database(dbPath)
   db.pragma('journal_mode = WAL')
 
-  // Run migrations
   runMigrations(db)
-
+  dbs.set(slug, db)
   return db
 }
 
-export function getDatabase(): Database.Database {
+export function getDatabase(slug: string): Database.Database {
+  const db = dbs.get(slug)
   if (!db) {
-    throw new Error('Database not initialized. Call initializeDatabase() first.')
+    throw new Error(
+      `Database not initialized for slug "${slug}". Call initializeDatabase("${slug}") first.`
+    )
   }
   return db
 }
 
-export function closeDatabase(): void {
+export function closeDatabase(slug: string): void {
+  const db = dbs.get(slug)
   if (db) {
     db.close()
-    db = null
+    dbs.delete(slug)
   }
+}
+
+export function closeAllDatabases(): void {
+  for (const db of dbs.values()) {
+    db.close()
+  }
+  dbs.clear()
 }
 
 function runMigrations(database: Database.Database): void {
@@ -157,102 +166,102 @@ function applyMigration5(database: Database.Database): void {
 
 // CRUD Operations for messages
 export const messageOps = {
-  insert: (chatId: number, whatsappMessageId: string, timestamp: number, senderJid: string, contentJson: string, hasAttachment: boolean = false) => {
-    const stmt = getDatabase().prepare(`
+  insert: (slug: string, chatId: number, whatsappMessageId: string, timestamp: number, senderJid: string, contentJson: string, hasAttachment: boolean = false) => {
+    const stmt = getDatabase(slug).prepare(`
       INSERT OR IGNORE INTO messages (chat_id, whatsapp_message_id, timestamp, sender_jid, content_json, has_attachment)
       VALUES (?, ?, ?, ?, ?, ?)
     `)
     return stmt.run(chatId, whatsappMessageId, timestamp, senderJid, contentJson, hasAttachment ? 1 : 0)
   },
 
-  getById: (id: number) => {
-    return getDatabase().prepare('SELECT * FROM messages WHERE id = ?').get(id)
+  getById: (slug: string, id: number) => {
+    return getDatabase(slug).prepare('SELECT * FROM messages WHERE id = ?').get(id)
   },
 
-  getByWhatsappMessageId: (whatsappMessageId: string) => {
-    return getDatabase().prepare('SELECT * FROM messages WHERE whatsapp_message_id = ?').get(whatsappMessageId)
+  getByWhatsappMessageId: (slug: string, whatsappMessageId: string) => {
+    return getDatabase(slug).prepare('SELECT * FROM messages WHERE whatsapp_message_id = ?').get(whatsappMessageId)
   },
 
-  getUnpushedByChatId: (chatId: number, lastPushedMessageId: number) => {
-    return getDatabase().prepare('SELECT * FROM messages WHERE chat_id = ? AND id > ? ORDER BY id ASC').all(chatId, lastPushedMessageId)
+  getUnpushedByChatId: (slug: string, chatId: number, lastPushedMessageId: number) => {
+    return getDatabase(slug).prepare('SELECT * FROM messages WHERE chat_id = ? AND id > ? ORDER BY id ASC').all(chatId, lastPushedMessageId)
   },
 
-  getByChatId: (chatId: number, limit: number = 100, offset: number = 0) => {
-    return getDatabase().prepare('SELECT * FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ? OFFSET ?').all(chatId, limit, offset)
+  getByChatId: (slug: string, chatId: number, limit: number = 100, offset: number = 0) => {
+    return getDatabase(slug).prepare('SELECT * FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ? OFFSET ?').all(chatId, limit, offset)
   },
 
-  getCountByChatId: (chatId: number) => {
-    const result = getDatabase().prepare('SELECT COUNT(*) as count FROM messages WHERE chat_id = ?').get(chatId) as { count: number }
+  getCountByChatId: (slug: string, chatId: number) => {
+    const result = getDatabase(slug).prepare('SELECT COUNT(*) as count FROM messages WHERE chat_id = ?').get(chatId) as { count: number }
     return result.count
   },
 
-  delete: (id: number) => {
-    return getDatabase().prepare('DELETE FROM messages WHERE id = ?').run(id)
+  delete: (slug: string, id: number) => {
+    return getDatabase(slug).prepare('DELETE FROM messages WHERE id = ?').run(id)
   },
 
-  getCount: () => {
-    const result = getDatabase().prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }
+  getCount: (slug: string) => {
+    const result = getDatabase(slug).prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }
     return result.count
   },
 
-  updateContentJson: (whatsappMessageId: string, contentJson: string) => {
-    const stmt = getDatabase().prepare('UPDATE messages SET content_json = ? WHERE whatsapp_message_id = ?')
+  updateContentJson: (slug: string, whatsappMessageId: string, contentJson: string) => {
+    const stmt = getDatabase(slug).prepare('UPDATE messages SET content_json = ? WHERE whatsapp_message_id = ?')
     return stmt.run(contentJson, whatsappMessageId)
   },
 
-  getLatestTimestamp: () => {
-    const result = getDatabase().prepare('SELECT MAX(timestamp) as max_ts FROM messages').get() as { max_ts: number | null }
+  getLatestTimestamp: (slug: string) => {
+    const result = getDatabase(slug).prepare('SELECT MAX(timestamp) as max_ts FROM messages').get() as { max_ts: number | null }
     return result?.max_ts || null
   }
 }
 
 // CRUD Operations for chats
 export const chatOps = {
-  insert: (whatsappJid: string, chatType: string, backendStreamUuid?: string, name?: string) => {
-    const stmt = getDatabase().prepare(`
+  insert: (slug: string, whatsappJid: string, chatType: string, backendStreamUuid?: string, name?: string) => {
+    const stmt = getDatabase(slug).prepare(`
       INSERT INTO chats (whatsapp_jid, chat_type, backend_stream_uuid, name)
       VALUES (?, ?, ?, ?)
     `)
     return stmt.run(whatsappJid, chatType, backendStreamUuid || null, name || null)
   },
 
-  getById: (id: number) => {
-    return getDatabase().prepare('SELECT * FROM chats WHERE id = ?').get(id)
+  getById: (slug: string, id: number) => {
+    return getDatabase(slug).prepare('SELECT * FROM chats WHERE id = ?').get(id)
   },
 
-  getByWhatsappJid: (whatsappJid: string) => {
-    return getDatabase().prepare('SELECT * FROM chats WHERE whatsapp_jid = ?').get(whatsappJid)
+  getByWhatsappJid: (slug: string, whatsappJid: string) => {
+    return getDatabase(slug).prepare('SELECT * FROM chats WHERE whatsapp_jid = ?').get(whatsappJid)
   },
 
-  getAll: () => {
-    return getDatabase().prepare('SELECT * FROM chats').all()
+  getAll: (slug: string) => {
+    return getDatabase(slug).prepare('SELECT * FROM chats').all()
   },
 
-  updateLastPushedMessageId: (chatId: number, messageId: number) => {
-    return getDatabase().prepare('UPDATE chats SET last_pushed_message_id = ? WHERE id = ?').run(messageId, chatId)
+  updateLastPushedMessageId: (slug: string, chatId: number, messageId: number) => {
+    return getDatabase(slug).prepare('UPDATE chats SET last_pushed_message_id = ? WHERE id = ?').run(messageId, chatId)
   },
 
-  updateBackendStreamUuid: (chatId: number, uuid: string) => {
-    return getDatabase().prepare('UPDATE chats SET backend_stream_uuid = ? WHERE id = ?').run(uuid, chatId)
+  updateBackendStreamUuid: (slug: string, chatId: number, uuid: string) => {
+    return getDatabase(slug).prepare('UPDATE chats SET backend_stream_uuid = ? WHERE id = ?').run(uuid, chatId)
   },
 
-  updateEnabled: (chatId: number, enabled: boolean) => {
-    return getDatabase().prepare('UPDATE chats SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, chatId)
+  updateEnabled: (slug: string, chatId: number, enabled: boolean) => {
+    return getDatabase(slug).prepare('UPDATE chats SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, chatId)
   },
 
-  updateName: (chatId: number, name: string) => {
-    return getDatabase().prepare('UPDATE chats SET name = ? WHERE id = ?').run(name, chatId)
+  updateName: (slug: string, chatId: number, name: string) => {
+    return getDatabase(slug).prepare('UPDATE chats SET name = ? WHERE id = ?').run(name, chatId)
   },
 
-  updateLastActivity: (chatId: number, timestamp: string) => {
-    return getDatabase().prepare('UPDATE chats SET last_activity = ? WHERE id = ? AND (last_activity IS NULL OR last_activity < ?)').run(timestamp, chatId, timestamp)
+  updateLastActivity: (slug: string, chatId: number, timestamp: string) => {
+    return getDatabase(slug).prepare('UPDATE chats SET last_activity = ? WHERE id = ? AND (last_activity IS NULL OR last_activity < ?)').run(timestamp, chatId, timestamp)
   },
 
-  updateHighestChunkOrder: (chatId: number, order: number) => {
-    return getDatabase().prepare('UPDATE chats SET highest_chunk_order = ? WHERE id = ?').run(order, chatId)
+  updateHighestChunkOrder: (slug: string, chatId: number, order: number) => {
+    return getDatabase(slug).prepare('UPDATE chats SET highest_chunk_order = ? WHERE id = ?').run(order, chatId)
   },
 
-  updateMetadata: (chatId: number, updates: { name?: string, lastActivity?: string }) => {
+  updateMetadata: (slug: string, chatId: number, updates: { name?: string, lastActivity?: string }) => {
     const fields: string[] = []
     const values: any[] = []
     if (updates.name !== undefined) { fields.push('name = ?'); values.push(updates.name) }
@@ -260,14 +269,14 @@ export const chatOps = {
     if (fields.length === 0) { return { changes: 0 } }
     values.push(chatId)
     const query = `UPDATE chats SET ${fields.join(', ')} WHERE id = ?`
-    return getDatabase().prepare(query).run(...values)
+    return getDatabase(slug).prepare(query).run(...values)
   },
 
-  delete: (id: number) => {
-    return getDatabase().prepare('DELETE FROM chats WHERE id = ?').run(id)
+  delete: (slug: string, id: number) => {
+    return getDatabase(slug).prepare('DELETE FROM chats WHERE id = ?').run(id)
   },
 
-  backfillDmNames: () => {
+  backfillDmNames: (slug: string) => {
     const query = `
       UPDATE chats SET name = (
         SELECT c.name FROM contacts c WHERE c.jid = chats.whatsapp_jid
@@ -275,34 +284,34 @@ export const chatOps = {
       WHERE chat_type = 'dm' AND name IS NULL
       AND EXISTS (SELECT 1 FROM contacts c WHERE c.jid = chats.whatsapp_jid AND c.name IS NOT NULL)
     `
-    return getDatabase().prepare(query).run()
+    return getDatabase(slug).prepare(query).run()
   },
 
-  updateGroupMetadataFetched: (chatId: number, fetched: boolean) => {
-    return getDatabase().prepare('UPDATE chats SET group_metadata_fetched = ? WHERE id = ?').run(fetched ? 1 : 0, chatId)
+  updateGroupMetadataFetched: (slug: string, chatId: number, fetched: boolean) => {
+    return getDatabase(slug).prepare('UPDATE chats SET group_metadata_fetched = ? WHERE id = ?').run(fetched ? 1 : 0, chatId)
   },
 
-  getGroupsNeedingMetadata: () => {
-    return getDatabase().prepare(`
+  getGroupsNeedingMetadata: (slug: string) => {
+    return getDatabase(slug).prepare(`
       SELECT * FROM chats
       WHERE chat_type = 'group' AND group_metadata_fetched = 0 AND enabled = 1
     `).all()
   },
 
-  getGroupMetadataFetched: (chatId: number): boolean => {
-    const row = getDatabase().prepare('SELECT group_metadata_fetched FROM chats WHERE id = ?').get(chatId) as any
+  getGroupMetadataFetched: (slug: string, chatId: number): boolean => {
+    const row = getDatabase(slug).prepare('SELECT group_metadata_fetched FROM chats WHERE id = ?').get(chatId) as any
     return row?.group_metadata_fetched === 1
   },
 
-  getByJidAndType: (whatsappJid: string, chatType: string) => {
-    return getDatabase().prepare('SELECT * FROM chats WHERE whatsapp_jid = ? AND chat_type = ?').get(whatsappJid, chatType)
+  getByJidAndType: (slug: string, whatsappJid: string, chatType: string) => {
+    return getDatabase(slug).prepare('SELECT * FROM chats WHERE whatsapp_jid = ? AND chat_type = ?').get(whatsappJid, chatType)
   }
 }
 
 // CRUD Operations for contacts
 export const contactOps = {
-  insert: (jid: string, name?: string, phoneNumber?: string, lid?: string) => {
-    const stmt = getDatabase().prepare(`
+  insert: (slug: string, jid: string, name?: string, phoneNumber?: string, lid?: string) => {
+    const stmt = getDatabase(slug).prepare(`
       INSERT INTO contacts (jid, name, phone_number, lid, updated_at)
       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(jid) DO UPDATE SET
@@ -314,31 +323,31 @@ export const contactOps = {
     return stmt.run(jid, name || null, phoneNumber || null, lid || null)
   },
 
-  getByJid: (jid: string) => {
-    return getDatabase().prepare('SELECT * FROM contacts WHERE jid = ?').get(jid)
+  getByJid: (slug: string, jid: string) => {
+    return getDatabase(slug).prepare('SELECT * FROM contacts WHERE jid = ?').get(jid)
   },
 
-  getByLid: (lid: string) => {
-    return getDatabase().prepare('SELECT * FROM contacts WHERE lid = ?').get(lid)
+  getByLid: (slug: string, lid: string) => {
+    return getDatabase(slug).prepare('SELECT * FROM contacts WHERE lid = ?').get(lid)
   },
 
-  getByPhone: (phone: string) => {
+  getByPhone: (slug: string, phone: string) => {
     const normalized = phone.startsWith('+') ? phone.slice(1) : phone
-    return getDatabase().prepare(
+    return getDatabase(slug).prepare(
       "SELECT * FROM contacts WHERE phone_number = ? OR phone_number = ? OR phone_number = ?"
     ).get(phone, normalized, `+${normalized}`)
   },
 
-  getAll: () => {
-    return getDatabase().prepare('SELECT * FROM contacts').all()
+  getAll: (slug: string) => {
+    return getDatabase(slug).prepare('SELECT * FROM contacts').all()
   },
 
-  delete: (jid: string) => {
-    return getDatabase().prepare('DELETE FROM contacts WHERE jid = ?').run(jid)
+  delete: (slug: string, jid: string) => {
+    return getDatabase(slug).prepare('DELETE FROM contacts WHERE jid = ?').run(jid)
   },
 
-  crossResolveLidNames: () => {
-    return getDatabase().prepare(`
+  crossResolveLidNames: (slug: string) => {
+    return getDatabase(slug).prepare(`
       UPDATE contacts
       SET name = (
         SELECT dm.name FROM contacts dm
@@ -351,8 +360,8 @@ export const contactOps = {
     `).run()
   },
 
-  crossResolveDmNames: () => {
-    return getDatabase().prepare(`
+  crossResolveDmNames: (slug: string) => {
+    return getDatabase(slug).prepare(`
       UPDATE contacts
       SET name = (
         SELECT lid_c.name FROM contacts lid_c
@@ -369,58 +378,63 @@ export const contactOps = {
 
 // CRUD Operations for settings
 export const settingOps = {
-  set: (key: string, value: string) => {
-    const stmt = getDatabase().prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`)
+  set: (slug: string, key: string, value: string) => {
+    const stmt = getDatabase(slug).prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`)
     return stmt.run(key, value)
   },
 
-  get: (key: string) => {
-    const result = getDatabase().prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
+  get: (slug: string, key: string) => {
+    const result = getDatabase(slug).prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
     return result?.value || null
   },
 
-  getAll: () => {
-    return getDatabase().prepare('SELECT * FROM settings').all()
+  getAll: (slug: string) => {
+    return getDatabase(slug).prepare('SELECT * FROM settings').all()
   },
 
-  delete: (key: string) => {
-    return getDatabase().prepare('DELETE FROM settings WHERE key = ?').run(key)
+  delete: (slug: string, key: string) => {
+    return getDatabase(slug).prepare('DELETE FROM settings WHERE key = ?').run(key)
+  },
+
+  has: (slug: string, key: string): boolean => {
+    const result = getDatabase(slug).prepare('SELECT 1 FROM settings WHERE key = ?').get(key)
+    return result !== undefined
   }
 }
 
 // CRUD Operations for logs
 export const logOps = {
-  insert: (level: string, category: string, message: string, detailsJson?: string) => {
-    const stmt = getDatabase().prepare(`INSERT INTO logs (level, category, message, details_json) VALUES (?, ?, ?, ?)`)
+  insert: (slug: string, level: string, category: string, message: string, detailsJson?: string) => {
+    const stmt = getDatabase(slug).prepare(`INSERT INTO logs (level, category, message, details_json) VALUES (?, ?, ?, ?)`)
     return stmt.run(level, category, message, detailsJson || null)
   },
 
-  getAll: (limit: number = 1000) => {
-    return getDatabase().prepare('SELECT * FROM logs ORDER BY timestamp DESC LIMIT ?').all(limit)
+  getAll: (slug: string, limit: number = 1000) => {
+    return getDatabase(slug).prepare('SELECT * FROM logs ORDER BY timestamp DESC LIMIT ?').all(limit)
   },
 
-  getByLevel: (level: string, limit: number = 1000) => {
-    return getDatabase().prepare('SELECT * FROM logs WHERE level = ? ORDER BY timestamp DESC LIMIT ?').all(level, limit)
+  getByLevel: (slug: string, level: string, limit: number = 1000) => {
+    return getDatabase(slug).prepare('SELECT * FROM logs WHERE level = ? ORDER BY timestamp DESC LIMIT ?').all(level, limit)
   },
 
-  getByCategory: (category: string, limit: number = 1000) => {
-    return getDatabase().prepare('SELECT * FROM logs WHERE category = ? ORDER BY timestamp DESC LIMIT ?').all(category, limit)
+  getByCategory: (slug: string, category: string, limit: number = 1000) => {
+    return getDatabase(slug).prepare('SELECT * FROM logs WHERE category = ? ORDER BY timestamp DESC LIMIT ?').all(category, limit)
   },
 
-  delete: (id: number) => {
-    return getDatabase().prepare('DELETE FROM logs WHERE id = ?').run(id)
+  delete: (slug: string, id: number) => {
+    return getDatabase(slug).prepare('DELETE FROM logs WHERE id = ?').run(id)
   },
 
-  deleteOlderThan: (days: number) => {
-    return getDatabase().prepare(`DELETE FROM logs WHERE timestamp < datetime('now', '-' || ? || ' days')`).run(days)
+  deleteOlderThan: (slug: string, days: number) => {
+    return getDatabase(slug).prepare(`DELETE FROM logs WHERE timestamp < datetime('now', '-' || ? || ' days')`).run(days)
   },
 
-  getRecent: (limit: number = 100) => {
-    return getDatabase().prepare('SELECT * FROM logs ORDER BY timestamp DESC LIMIT ?').all(limit)
+  getRecent: (slug: string, limit: number = 100) => {
+    return getDatabase(slug).prepare('SELECT * FROM logs ORDER BY timestamp DESC LIMIT ?').all(limit)
   },
 
-  clear: () => {
-    return getDatabase().prepare('DELETE FROM logs').run()
+  clear: (slug: string) => {
+    return getDatabase(slug).prepare('DELETE FROM logs').run()
   }
 }
 

@@ -1,17 +1,17 @@
 import { vi, describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
-import path from 'path'
 import fs from 'fs'
 
-// Create a unique temp directory - hoisted so mock can access it
-// Must use require inside vi.hoisted since imports are hoisted after vi.hoisted
+// Create a unique temp directory - hoisted so mock can access it.
+// Must use require inside vi.hoisted since imports are hoisted after vi.hoisted.
 const { testDir } = vi.hoisted(() => {
   const path = require('path')
   const os = require('os')
-  const testDir = path.join(os.tmpdir(), 'whatsapp-mcp-test-' + Date.now())
+  const testDir = path.join(os.tmpdir(), 'whatsapp-mcp-test-' + Date.now() + '-' + Math.random().toString(36).slice(2))
   return { testDir }
 })
 
-// Mock electron BEFORE importing database module
+// Mock electron BEFORE importing the database module so accountDbPath resolves
+// into our temp directory instead of the real userData folder.
 vi.mock('electron', () => ({
   app: {
     getPath: () => testDir
@@ -19,47 +19,54 @@ vi.mock('electron', () => ({
 }))
 
 // NOW import database - the mock is already in place
-import { initializeDatabase, closeDatabase, getDatabase, chatOps, messageOps, contactOps, settingOps, logOps } from './database'
+import {
+  initializeDatabase,
+  closeDatabase,
+  closeAllDatabases,
+  getDatabase,
+  chatOps,
+  messageOps,
+  contactOps,
+  settingOps,
+  logOps,
+} from './database'
+
+const SLUG = 'test-a'
 
 describe('Database Integration Tests', () => {
   beforeAll(() => {
-    // Create the temp directory
     fs.mkdirSync(testDir, { recursive: true })
   })
 
   afterAll(() => {
-    // Close DB and clean up
-    closeDatabase()
+    closeAllDatabases()
     if (fs.existsSync(testDir)) {
       fs.rmSync(testDir, { recursive: true, force: true })
     }
   })
 
   beforeEach(() => {
-    // Initialize fresh database for each test
-    closeDatabase()
-    // Remove any existing database file
-    const dbDir = path.join(testDir, 'nodexa-whatsapp')
-    if (fs.existsSync(dbDir)) {
-      fs.rmSync(dbDir, { recursive: true, force: true })
+    // Fresh DB per test: close any open handles and wipe the accounts dir.
+    closeAllDatabases()
+    const accountsRoot = require('path').join(testDir, 'accounts')
+    if (fs.existsSync(accountsRoot)) {
+      fs.rmSync(accountsRoot, { recursive: true, force: true })
     }
-    fs.mkdirSync(dbDir, { recursive: true })
-    initializeDatabase()
+    initializeDatabase(SLUG)
   })
 
   afterEach(() => {
-    closeDatabase()
+    closeAllDatabases()
   })
 
   describe('initializeDatabase', () => {
     it('should create database and run migrations', () => {
-      const db = getDatabase()
+      const db = getDatabase(SLUG)
       expect(db).toBeDefined()
-      
-      // Verify tables exist by querying them
+
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
-      const tableNames = tables.map(t => t.name)
-      
+      const tableNames = tables.map((t) => t.name)
+
       expect(tableNames).toContain('chats')
       expect(tableNames).toContain('messages')
       expect(tableNames).toContain('contacts')
@@ -69,18 +76,44 @@ describe('Database Integration Tests', () => {
     })
 
     it('should apply all migrations', () => {
-      const db = getDatabase()
+      const db = getDatabase(SLUG)
       const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
-      expect(version.version).toBe(5) // Latest migration version
+      expect(version.version).toBe(5)
+    })
+
+    it('should return the same handle when initialized twice for the same slug', () => {
+      const first = initializeDatabase(SLUG)
+      const second = initializeDatabase(SLUG)
+      expect(second).toBe(first)
+    })
+  })
+
+  describe('getDatabase / closeDatabase', () => {
+    it('should throw when getDatabase is called for an uninitialized slug', () => {
+      expect(() => getDatabase('never-initialized')).toThrow(/not initialized/)
+    })
+
+    it('closeDatabase should drop the cached handle for that slug', () => {
+      initializeDatabase(SLUG)
+      closeDatabase(SLUG)
+      expect(() => getDatabase(SLUG)).toThrow(/not initialized/)
+    })
+
+    it('closeAllDatabases should drop handles for all slugs', () => {
+      initializeDatabase('a')
+      initializeDatabase('b')
+      closeAllDatabases()
+      expect(() => getDatabase('a')).toThrow(/not initialized/)
+      expect(() => getDatabase('b')).toThrow(/not initialized/)
     })
   })
 
   describe('chatOps', () => {
     it('should insert and retrieve a chat', () => {
       const jid = '1234567890@s.whatsapp.net'
-      chatOps.insert(jid, 'dm', 'uuid-123', 'Test User')
-      
-      const chats = chatOps.getAll() as any[]
+      chatOps.insert(SLUG, jid, 'dm', 'uuid-123', 'Test User')
+
+      const chats = chatOps.getAll(SLUG) as any[]
       expect(chats).toHaveLength(1)
       expect(chats[0].whatsapp_jid).toBe(jid)
       expect(chats[0].chat_type).toBe('dm')
@@ -89,124 +122,120 @@ describe('Database Integration Tests', () => {
 
     it('should get chat by JID', () => {
       const jid = '9876543210@s.whatsapp.net'
-      chatOps.insert(jid, 'group', undefined, 'My Group')
-      
-      const chat = chatOps.getByWhatsappJid(jid) as any
+      chatOps.insert(SLUG, jid, 'group', undefined, 'My Group')
+
+      const chat = chatOps.getByWhatsappJid(SLUG, jid) as any
       expect(chat).toBeDefined()
       expect(chat.whatsapp_jid).toBe(jid)
       expect(chat.chat_type).toBe('group')
     })
 
     it('should update chat metadata', () => {
-      chatOps.insert('test@s.whatsapp.net', 'dm')
-      const chat = chatOps.getByWhatsappJid('test@s.whatsapp.net') as any
-      
-      chatOps.updateMetadata(chat.id, { name: 'Updated Name', lastActivity: '2024-01-01T00:00:00Z' })
-      
-      const updated = chatOps.getById(chat.id) as any
+      chatOps.insert(SLUG, 'test@s.whatsapp.net', 'dm')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'test@s.whatsapp.net') as any
+
+      chatOps.updateMetadata(SLUG, chat.id, { name: 'Updated Name', lastActivity: '2024-01-01T00:00:00Z' })
+
+      const updated = chatOps.getById(SLUG, chat.id) as any
       expect(updated.name).toBe('Updated Name')
       expect(updated.last_activity).toBe('2024-01-01T00:00:00Z')
     })
 
     it('should get chat by JID and type', () => {
-      chatOps.insert('group@g.us', 'group', undefined, 'Group Chat')
-      
-      const chat = chatOps.getByJidAndType('group@g.us', 'group') as any
+      chatOps.insert(SLUG, 'group@g.us', 'group', undefined, 'Group Chat')
+
+      const chat = chatOps.getByJidAndType(SLUG, 'group@g.us', 'group') as any
       expect(chat).toBeDefined()
       expect(chat.name).toBe('Group Chat')
-      
-      const nonExistent = chatOps.getByJidAndType('group@g.us', 'dm')
+
+      const nonExistent = chatOps.getByJidAndType(SLUG, 'group@g.us', 'dm')
       expect(nonExistent).toBeUndefined()
     })
   })
 
   describe('messageOps', () => {
     it('should insert and retrieve messages', () => {
-      chatOps.insert('chat@s.whatsapp.net', 'dm', undefined, 'Chat')
-      const chat = chatOps.getByWhatsappJid('chat@s.whatsapp.net') as any
-      
-      messageOps.insert(chat.id, 'msg-001', 1700000000, 'sender@s.whatsapp.net', '{"text":"Hello"}', false)
-      messageOps.insert(chat.id, 'msg-002', 1700000001, 'sender@s.whatsapp.net', '{"text":"World"}', false)
-      
-      const messages = messageOps.getByChatId(chat.id) as any[]
+      chatOps.insert(SLUG, 'chat@s.whatsapp.net', 'dm', undefined, 'Chat')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'chat@s.whatsapp.net') as any
+
+      messageOps.insert(SLUG, chat.id, 'msg-001', 1700000000, 'sender@s.whatsapp.net', '{"text":"Hello"}', false)
+      messageOps.insert(SLUG, chat.id, 'msg-002', 1700000001, 'sender@s.whatsapp.net', '{"text":"World"}', false)
+
+      const messages = messageOps.getByChatId(SLUG, chat.id) as any[]
       expect(messages).toHaveLength(2)
     })
 
     it('should get message by WhatsApp message ID', () => {
-      chatOps.insert('chat2@s.whatsapp.net', 'dm')
-      const chat = chatOps.getByWhatsappJid('chat2@s.whatsapp.net') as any
-      
-      messageOps.insert(chat.id, 'unique-msg-123', 1700000000, 'sender@s.whatsapp.net', '{"text":"Test"}', false)
-      
-      const msg = messageOps.getByWhatsappMessageId('unique-msg-123') as any
+      chatOps.insert(SLUG, 'chat2@s.whatsapp.net', 'dm')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'chat2@s.whatsapp.net') as any
+
+      messageOps.insert(SLUG, chat.id, 'unique-msg-123', 1700000000, 'sender@s.whatsapp.net', '{"text":"Test"}', false)
+
+      const msg = messageOps.getByWhatsappMessageId(SLUG, 'unique-msg-123') as any
       expect(msg).toBeDefined()
       expect(msg.content_json).toBe('{"text":"Test"}')
     })
 
     it('should support pagination with limit and offset', () => {
-      chatOps.insert('chat3@s.whatsapp.net', 'dm')
-      const chat = chatOps.getByWhatsappJid('chat3@s.whatsapp.net') as any
-      
-      // Insert 5 messages
+      chatOps.insert(SLUG, 'chat3@s.whatsapp.net', 'dm')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'chat3@s.whatsapp.net') as any
+
       for (let i = 0; i < 5; i++) {
-        messageOps.insert(chat.id, `msg-${i}`, 1700000000 + i, 'sender@s.whatsapp.net', `{"text":"Message ${i}"}`, false)
+        messageOps.insert(SLUG, chat.id, `msg-${i}`, 1700000000 + i, 'sender@s.whatsapp.net', `{"text":"Message ${i}"}`, false)
       }
-      
-      // Get first 2 messages (most recent due to ORDER BY id DESC)
-      const page1 = messageOps.getByChatId(chat.id, 2, 0) as any[]
+
+      const page1 = messageOps.getByChatId(SLUG, chat.id, 2, 0) as any[]
       expect(page1).toHaveLength(2)
-      
-      // Get next 2 messages
-      const page2 = messageOps.getByChatId(chat.id, 2, 2) as any[]
+
+      const page2 = messageOps.getByChatId(SLUG, chat.id, 2, 2) as any[]
       expect(page2).toHaveLength(2)
-      
-      // Messages should be different
+
       expect(page1[0].whatsapp_message_id).not.toBe(page2[0].whatsapp_message_id)
     })
 
     it('should count messages by chat', () => {
-      chatOps.insert('chat-count@s.whatsapp.net', 'dm')
-      const chat = chatOps.getByWhatsappJid('chat-count@s.whatsapp.net') as any
+      chatOps.insert(SLUG, 'chat-count@s.whatsapp.net', 'dm')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'chat-count@s.whatsapp.net') as any
 
-      messageOps.insert(chat.id, 'count-1', 1700000000, 'sender@s.whatsapp.net', '{"text":"1"}', false)
-      messageOps.insert(chat.id, 'count-2', 1700000001, 'sender@s.whatsapp.net', '{"text":"2"}', false)
-      messageOps.insert(chat.id, 'count-3', 1700000002, 'sender@s.whatsapp.net', '{"text":"3"}', false)
+      messageOps.insert(SLUG, chat.id, 'count-1', 1700000000, 'sender@s.whatsapp.net', '{"text":"1"}', false)
+      messageOps.insert(SLUG, chat.id, 'count-2', 1700000001, 'sender@s.whatsapp.net', '{"text":"2"}', false)
+      messageOps.insert(SLUG, chat.id, 'count-3', 1700000002, 'sender@s.whatsapp.net', '{"text":"3"}', false)
 
-      const count = messageOps.getCountByChatId(chat.id)
+      const count = messageOps.getCountByChatId(SLUG, chat.id)
       expect(count).toBe(3)
     })
 
     it('should update message content JSON', () => {
-      chatOps.insert('chat-update@s.whatsapp.net', 'dm')
-      const chat = chatOps.getByWhatsappJid('chat-update@s.whatsapp.net') as any
+      chatOps.insert(SLUG, 'chat-update@s.whatsapp.net', 'dm')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'chat-update@s.whatsapp.net') as any
 
-      messageOps.insert(chat.id, 'update-msg', 1700000000, 'sender@s.whatsapp.net', '{"text":"Original"}', false)
-      messageOps.updateContentJson('update-msg', '{"text":"Updated"}')
+      messageOps.insert(SLUG, chat.id, 'update-msg', 1700000000, 'sender@s.whatsapp.net', '{"text":"Original"}', false)
+      messageOps.updateContentJson(SLUG, 'update-msg', '{"text":"Updated"}')
 
-      const msg = messageOps.getByWhatsappMessageId('update-msg') as any
+      const msg = messageOps.getByWhatsappMessageId(SLUG, 'update-msg') as any
       expect(msg.content_json).toBe('{"text":"Updated"}')
     })
 
     it('should ignore duplicate message inserts', () => {
-      chatOps.insert('chat-dup@s.whatsapp.net', 'dm')
-      const chat = chatOps.getByWhatsappJid('chat-dup@s.whatsapp.net') as any
+      chatOps.insert(SLUG, 'chat-dup@s.whatsapp.net', 'dm')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'chat-dup@s.whatsapp.net') as any
 
-      messageOps.insert(chat.id, 'dup-msg', 1700000000, 'sender@s.whatsapp.net', '{"text":"First"}', false)
-      messageOps.insert(chat.id, 'dup-msg', 1700000001, 'sender@s.whatsapp.net', '{"text":"Second"}', false)
+      messageOps.insert(SLUG, chat.id, 'dup-msg', 1700000000, 'sender@s.whatsapp.net', '{"text":"First"}', false)
+      messageOps.insert(SLUG, chat.id, 'dup-msg', 1700000001, 'sender@s.whatsapp.net', '{"text":"Second"}', false)
 
-      const count = messageOps.getCountByChatId(chat.id)
+      const count = messageOps.getCountByChatId(SLUG, chat.id)
       expect(count).toBe(1)
 
-      const msg = messageOps.getByWhatsappMessageId('dup-msg') as any
+      const msg = messageOps.getByWhatsappMessageId(SLUG, 'dup-msg') as any
       expect(msg.content_json).toBe('{"text":"First"}')
     })
   })
 
   describe('contactOps', () => {
     it('should insert and retrieve contact by JID', () => {
-      contactOps.insert('contact@s.whatsapp.net', 'John Doe', '+1234567890', 'lid-123')
+      contactOps.insert(SLUG, 'contact@s.whatsapp.net', 'John Doe', '+1234567890', 'lid-123')
 
-      const contact = contactOps.getByJid('contact@s.whatsapp.net') as any
+      const contact = contactOps.getByJid(SLUG, 'contact@s.whatsapp.net') as any
       expect(contact).toBeDefined()
       expect(contact.name).toBe('John Doe')
       expect(contact.phone_number).toBe('+1234567890')
@@ -214,79 +243,78 @@ describe('Database Integration Tests', () => {
     })
 
     it('should get contact by phone number', () => {
-      contactOps.insert('phone-contact@s.whatsapp.net', 'Jane', '+9876543210')
+      contactOps.insert(SLUG, 'phone-contact@s.whatsapp.net', 'Jane', '+9876543210')
 
-      // Test with different phone formats
-      const withPlus = contactOps.getByPhone('+9876543210') as any
+      const withPlus = contactOps.getByPhone(SLUG, '+9876543210') as any
       expect(withPlus).toBeDefined()
       expect(withPlus.name).toBe('Jane')
 
-      const withoutPlus = contactOps.getByPhone('9876543210') as any
+      const withoutPlus = contactOps.getByPhone(SLUG, '9876543210') as any
       expect(withoutPlus).toBeDefined()
       expect(withoutPlus.name).toBe('Jane')
     })
 
     it('should get contact by LID', () => {
-      contactOps.insert('lid-contact@lid', 'Lid User', '+1111111111', 'my-lid-value')
+      contactOps.insert(SLUG, 'lid-contact@lid', 'Lid User', '+1111111111', 'my-lid-value')
 
-      const contact = contactOps.getByLid('my-lid-value') as any
+      const contact = contactOps.getByLid(SLUG, 'my-lid-value') as any
       expect(contact).toBeDefined()
       expect(contact.name).toBe('Lid User')
     })
 
     it('should upsert contact - update existing', () => {
-      contactOps.insert('upsert@s.whatsapp.net', 'Original Name', '+1234567890')
-      contactOps.insert('upsert@s.whatsapp.net', 'Updated Name')
+      contactOps.insert(SLUG, 'upsert@s.whatsapp.net', 'Original Name', '+1234567890')
+      contactOps.insert(SLUG, 'upsert@s.whatsapp.net', 'Updated Name')
 
-      const contact = contactOps.getByJid('upsert@s.whatsapp.net') as any
+      const contact = contactOps.getByJid(SLUG, 'upsert@s.whatsapp.net') as any
       expect(contact.name).toBe('Updated Name')
-      expect(contact.phone_number).toBe('+1234567890') // Should be preserved
+      expect(contact.phone_number).toBe('+1234567890')
     })
   })
 
   describe('settingOps', () => {
     it('should set and get a setting', () => {
-      settingOps.set('api_key', 'secret-123')
-
-      const value = settingOps.get('api_key')
-      expect(value).toBe('secret-123')
+      settingOps.set(SLUG, 'api_key', 'secret-123')
+      expect(settingOps.get(SLUG, 'api_key')).toBe('secret-123')
     })
 
     it('should return null for non-existent setting', () => {
-      const value = settingOps.get('non_existent_key')
-      expect(value).toBeNull()
+      expect(settingOps.get(SLUG, 'non_existent_key')).toBeNull()
     })
 
     it('should overwrite existing setting', () => {
-      settingOps.set('overwrite_test', 'value1')
-      settingOps.set('overwrite_test', 'value2')
-
-      const value = settingOps.get('overwrite_test')
-      expect(value).toBe('value2')
+      settingOps.set(SLUG, 'overwrite_test', 'value1')
+      settingOps.set(SLUG, 'overwrite_test', 'value2')
+      expect(settingOps.get(SLUG, 'overwrite_test')).toBe('value2')
     })
 
     it('should get all settings', () => {
-      settingOps.set('setting1', 'a')
-      settingOps.set('setting2', 'b')
-
-      const all = settingOps.getAll() as any[]
+      settingOps.set(SLUG, 'setting1', 'a')
+      settingOps.set(SLUG, 'setting2', 'b')
+      const all = settingOps.getAll(SLUG) as any[]
       expect(all.length).toBeGreaterThanOrEqual(2)
     })
 
     it('should delete a setting', () => {
-      settingOps.set('to_delete', 'value')
-      settingOps.delete('to_delete')
+      settingOps.set(SLUG, 'to_delete', 'value')
+      settingOps.delete(SLUG, 'to_delete')
+      expect(settingOps.get(SLUG, 'to_delete')).toBeNull()
+    })
 
-      const value = settingOps.get('to_delete')
-      expect(value).toBeNull()
+    it('has() should reflect presence of a key', () => {
+      expect(settingOps.has(SLUG, 'maybe_key')).toBe(false)
+      settingOps.set(SLUG, 'maybe_key', 'v')
+      expect(settingOps.has(SLUG, 'maybe_key')).toBe(true)
+      settingOps.delete(SLUG, 'maybe_key')
+      expect(settingOps.has(SLUG, 'maybe_key')).toBe(false)
     })
   })
 
   describe('logOps', () => {
     it('should insert and retrieve recent logs', () => {
-      logOps.insert('info', 'test', 'Test log message', '{"extra":"data"}')
+      logOps.insert(SLUG, 'info', 'test', 'Test log message', '{"extra":"data"}')
 
-      const logs = logOps.getRecent(10) as any[]
+      const logs = logOps.getRecent(SLUG, 10) as any[]
       expect(logs.length).toBeGreaterThanOrEqual(1)
 
       const lastLog = logs.find((l: any) => l.message === 'Test log message')
@@ -296,29 +324,86 @@ describe('Database Integration Tests', () => {
     })
 
     it('should get logs by level', () => {
-      logOps.insert('error', 'system', 'Error message')
-      logOps.insert('info', 'system', 'Info message')
+      logOps.insert(SLUG, 'error', 'system', 'Error message')
+      logOps.insert(SLUG, 'info', 'system', 'Info message')
 
-      const errorLogs = logOps.getByLevel('error') as any[]
+      const errorLogs = logOps.getByLevel(SLUG, 'error') as any[]
       expect(errorLogs.every((l: any) => l.level === 'error')).toBe(true)
     })
 
     it('should get logs by category', () => {
-      logOps.insert('info', 'whatsapp', 'WhatsApp log')
-      logOps.insert('info', 'mcp', 'MCP log')
+      logOps.insert(SLUG, 'info', 'whatsapp', 'WhatsApp log')
+      logOps.insert(SLUG, 'info', 'mcp', 'MCP log')
 
-      const whatsappLogs = logOps.getByCategory('whatsapp') as any[]
+      const whatsappLogs = logOps.getByCategory(SLUG, 'whatsapp') as any[]
       expect(whatsappLogs.every((l: any) => l.category === 'whatsapp')).toBe(true)
     })
 
     it('should clear all logs', () => {
-      logOps.insert('info', 'test', 'Log 1')
-      logOps.insert('info', 'test', 'Log 2')
+      logOps.insert(SLUG, 'info', 'test', 'Log 1')
+      logOps.insert(SLUG, 'info', 'test', 'Log 2')
 
-      logOps.clear()
+      logOps.clear(SLUG)
 
-      const logs = logOps.getAll() as any[]
+      const logs = logOps.getAll(SLUG) as any[]
       expect(logs).toHaveLength(0)
+    })
+  })
+
+  describe('per-slug isolation', () => {
+    it('queries under one slug do not see rows from another slug', () => {
+      // Two additional slugs; the outer beforeEach already initialized SLUG.
+      initializeDatabase('a')
+      initializeDatabase('b')
+
+      // Distinct chats per slug
+      chatOps.insert('a', 'alpha@s.whatsapp.net', 'dm', undefined, 'Alpha')
+      chatOps.insert('b', 'beta@s.whatsapp.net', 'dm', undefined, 'Beta')
+
+      // Distinct contacts per slug (same JID to prove they live in different DBs)
+      contactOps.insert('a', 'shared@s.whatsapp.net', 'A-side', '+1000000001')
+      contactOps.insert('b', 'shared@s.whatsapp.net', 'B-side', '+1000000002')
+
+      // Distinct settings per slug (same key, different value)
+      settingOps.set('a', 'user_phone', '+1-a')
+      settingOps.set('b', 'user_phone', '+1-b')
+
+      // Distinct messages per slug
+      const chatA = chatOps.getByWhatsappJid('a', 'alpha@s.whatsapp.net') as any
+      const chatB = chatOps.getByWhatsappJid('b', 'beta@s.whatsapp.net') as any
+      messageOps.insert('a', chatA.id, 'a-msg-1', 1700000000, 'a@s.whatsapp.net', '{"t":"A"}')
+      messageOps.insert('b', chatB.id, 'b-msg-1', 1700000000, 'b@s.whatsapp.net', '{"t":"B"}')
+
+      // Chats are isolated
+      const chatsA = chatOps.getAll('a') as any[]
+      const chatsB = chatOps.getAll('b') as any[]
+      expect(chatsA.map((c) => c.whatsapp_jid)).toEqual(['alpha@s.whatsapp.net'])
+      expect(chatsB.map((c) => c.whatsapp_jid)).toEqual(['beta@s.whatsapp.net'])
+      expect(chatOps.getByWhatsappJid('a', 'beta@s.whatsapp.net')).toBeUndefined()
+      expect(chatOps.getByWhatsappJid('b', 'alpha@s.whatsapp.net')).toBeUndefined()
+
+      // Contacts are isolated (same jid resolves to different rows per slug)
+      expect((contactOps.getByJid('a', 'shared@s.whatsapp.net') as any).name).toBe('A-side')
+      expect((contactOps.getByJid('b', 'shared@s.whatsapp.net') as any).name).toBe('B-side')
+
+      // Settings are isolated
+      expect(settingOps.get('a', 'user_phone')).toBe('+1-a')
+      expect(settingOps.get('b', 'user_phone')).toBe('+1-b')
+
+      // Messages are isolated (lookup of A's msg in B's DB returns undefined)
+      expect(messageOps.getByWhatsappMessageId('a', 'a-msg-1')).toBeDefined()
+      expect(messageOps.getByWhatsappMessageId('b', 'a-msg-1')).toBeUndefined()
+      expect(messageOps.getByWhatsappMessageId('a', 'b-msg-1')).toBeUndefined()
+      expect(messageOps.getByWhatsappMessageId('b', 'b-msg-1')).toBeDefined()
+
+      // Per-DB totals reflect only that slug's rows
+      expect(messageOps.getCount('a')).toBe(1)
+      expect(messageOps.getCount('b')).toBe(1)
+
+      closeDatabase('a')
+      closeDatabase('b')
+      expect(() => getDatabase('a')).toThrow(/not initialized/)
+      expect(() => getDatabase('b')).toThrow(/not initialized/)
     })
   })
 })
