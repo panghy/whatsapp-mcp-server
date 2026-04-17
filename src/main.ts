@@ -8,7 +8,7 @@ import { initializeDatabase, chatOps, contactOps, messageOps, logOps, settingOps
 import { initializeSyncOrchestrator, getSyncOrchestrator } from './sync-orchestrator'
 import { MessageTransformer, extractPhoneFromJid, normalizePhoneNumber } from './message-transformer'
 import { initializeGroupMetadataFetcher, getGroupMetadataFetcher } from './group-metadata-fetcher'
-import { startMcpServer, stopMcpServer, isMcpServerRunning, setWhatsAppManager } from './mcp-server'
+import { startMcpServer, stopMcpServer, isMcpServerRunning } from './mcp-server'
 import {
   migrateLegacyLayoutIfNeeded,
   getDefaultSlug,
@@ -378,9 +378,8 @@ async function setupWhatsAppConnection(manager: WhatsAppManager): Promise<void> 
         whatsappConnected = true
         updateTrayMenu()
 
-        // Set WhatsApp manager for MCP server and start it
+        // Start the MCP server; it resolves the per-account socket via getManager(slug).
         if (whatsappManager) {
-          setWhatsAppManager(whatsappManager)
           await startMcpServerSafe()
         }
 
