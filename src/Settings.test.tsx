@@ -85,11 +85,17 @@ describe('Settings AccountsTabBody', () => {
     expect(listIdx).toBeGreaterThan(explainerIdx)
   })
 
-  it('labels the currently-viewed row with "viewing" (not "active")', () => {
+  it('highlights the currently-viewed row via background only (no "viewing" or "active" label)', () => {
     const html = render({ selectedSlug: 'beta', defaultSlug: 'alpha' })
-    expect(extractRow(html, 'beta')).toContain('viewing')
-    expect(extractRow(html, 'alpha')).not.toContain('>viewing<')
-    // Ensure the old "active" label is gone.
+    const betaRow = extractRow(html, 'beta')
+    const alphaRow = extractRow(html, 'alpha')
+    // Row is still identifiable by data-slug.
+    expect(betaRow).toContain('data-slug="beta"')
+    // Currently-viewed row gets the muted background highlight; non-viewed rows do not.
+    expect(betaRow).toContain('hsl(var(--muted) / 0.4)')
+    expect(alphaRow).toContain('background-color:transparent')
+    // No "viewing" or "active" text labels anywhere.
+    expect(html).not.toMatch(/>viewing</)
     expect(html).not.toMatch(/>active</)
   })
 

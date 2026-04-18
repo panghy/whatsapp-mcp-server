@@ -464,9 +464,6 @@ export function AccountsTabBody({
                           Default
                         </span>
                       )}
-                      {isViewing && (
-                        <span style={{ fontSize: '0.7rem', color: 'hsl(var(--muted-foreground))', fontWeight: 400 }}>viewing</span>
-                      )}
                     </strong>
                     <button className="action-btn" data-testid={`make-default-${a.slug}`} onClick={() => onSetDefault(a.slug)} disabled={isDefault} style={{ padding: '4px 8px', fontSize: '0.75rem' }} title="Make this the default account; MCP clients pointed at /mcp will route here.">Make default</button>
                     <button className="action-btn" onClick={() => onStartRename(a.slug)} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Rename</button>
