@@ -78,7 +78,7 @@ describe('Database Integration Tests', () => {
     it('should apply all migrations', () => {
       const db = getDatabase(SLUG)
       const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
-      expect(version.version).toBe(5)
+      expect(version.version).toBe(6)
     })
 
     it('should return the same handle when initialized twice for the same slug', () => {

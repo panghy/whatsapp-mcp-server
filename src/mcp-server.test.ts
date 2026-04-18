@@ -385,6 +385,156 @@ describe('MCP Server', () => {
     })
   })
 
+  describe('search_chats FTS fuzzy search', () => {
+    beforeEach(() => {
+      makeAccount(DEFAULT)
+    })
+
+    it('multi-word queries return chats matching any of the words ranked reasonably', async () => {
+      chatOps.insert(DEFAULT, 'family-staff@g.us', 'group', undefined, 'Family Staff')
+      chatOps.insert(DEFAULT, 'family-only@g.us', 'group', undefined, 'Family')
+      chatOps.insert(DEFAULT, 'staff-only@g.us', 'group', undefined, 'Staff Room')
+      chatOps.insert(DEFAULT, 'noise1@g.us', 'group', undefined, 'Random Group')
+      chatOps.insert(DEFAULT, 'noise2@g.us', 'group', undefined, 'Book Lovers')
+      chatOps.insert(DEFAULT, 'noise3@g.us', 'group', undefined, 'Soccer Team')
+      chatOps.insert(DEFAULT, 'noise4@g.us', 'group', undefined, 'Music Society')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'paying family staff' })
+      const chats = JSON.parse(result.result.content[0].text)
+      const names = chats.map((c: any) => c.name)
+      expect(names).toContain('Family Staff')
+      expect(names).toContain('Family')
+      expect(names).toContain('Staff Room')
+      expect(names).not.toContain('Random Group')
+      expect(names).not.toContain('Music Society')
+      expect(names).not.toContain('Book Lovers')
+      expect(names).not.toContain('Soccer Team')
+      expect(chats[0]).toHaveProperty('rank')
+      expect(chats[0].matchedVia).toBe('name')
+    })
+
+    it('tolerates typos via trigram fuzzy matching', async () => {
+      chatOps.insert(DEFAULT, 'family@g.us', 'group', undefined, 'Family')
+      chatOps.insert(DEFAULT, 'familiar@g.us', 'group', undefined, 'Familiar Faces')
+      chatOps.insert(DEFAULT, 'other@g.us', 'group', undefined, 'Soccer Club')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Familly' })
+      const chats = JSON.parse(result.result.content[0].text)
+      expect(chats.length).toBeGreaterThan(0)
+      expect(chats.map((c: any) => c.name)).toContain('Family')
+      expect(chats.map((c: any) => c.name)).not.toContain('Soccer Club')
+    })
+
+    it('matches normalized phone numbers (digit-only ≥5 chars)', async () => {
+      contactOps.insert(DEFAULT, 'dialed@s.whatsapp.net', 'Dialed Contact', '+1 (650) 223-4510')
+      chatOps.insert(DEFAULT, 'dialed@s.whatsapp.net', 'dm', undefined, 'Old Name')
+      contactOps.insert(DEFAULT, 'other@s.whatsapp.net', 'Other', '+1 (415) 555-1212')
+      chatOps.insert(DEFAULT, 'other@s.whatsapp.net', 'dm', undefined, 'Other Chat')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: '6502234510' })
+      const chats = JSON.parse(result.result.content[0].text)
+      expect(chats.length).toBe(1)
+      expect(chats[0].jid).toBe('dialed@s.whatsapp.net')
+      expect(chats[0].matchedVia).toBe('phone')
+    })
+
+    it('matches DM chats via contact name even when chat name is stale', async () => {
+      contactOps.insert(DEFAULT, 'stale-dm@s.whatsapp.net', 'Zebra Longhorn', '+1234567000')
+      // Chat name is a stale/null value; contact has the searchable name.
+      chatOps.insert(DEFAULT, 'stale-dm@s.whatsapp.net', 'dm', undefined, null as any)
+      chatOps.insert(DEFAULT, 'other-dm@s.whatsapp.net', 'dm', undefined, 'Somebody Else')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Zebra' })
+      const chats = JSON.parse(result.result.content[0].text)
+      const stale = chats.find((c: any) => c.jid === 'stale-dm@s.whatsapp.net')
+      expect(stale).toBeDefined()
+      expect(stale.matchedVia).toBe('contact')
+    })
+
+    it('ranks results with last_activity DESC as tiebreaker', async () => {
+      chatOps.insert(DEFAULT, 'old-family@g.us', 'group', undefined, 'Family')
+      chatOps.insert(DEFAULT, 'new-family@g.us', 'group', undefined, 'Family')
+      const oldChat = chatOps.getByWhatsappJid(DEFAULT, 'old-family@g.us') as any
+      const newChat = chatOps.getByWhatsappJid(DEFAULT, 'new-family@g.us') as any
+      chatOps.updateLastActivity(DEFAULT, oldChat.id, '2020-01-01T00:00:00Z')
+      chatOps.updateLastActivity(DEFAULT, newChat.id, '2025-01-01T00:00:00Z')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Family' })
+      const chats = JSON.parse(result.result.content[0].text)
+      expect(chats.length).toBe(2)
+      expect(chats[0].jid).toBe('new-family@g.us')
+      expect(chats[1].jid).toBe('old-family@g.us')
+    })
+
+    it('excludes disabled chats from FTS and phone results', async () => {
+      chatOps.insert(DEFAULT, 'enabled@g.us', 'group', undefined, 'Family Enabled')
+      chatOps.insert(DEFAULT, 'disabled@g.us', 'group', undefined, 'Family Disabled')
+      const disabled = chatOps.getByWhatsappJid(DEFAULT, 'disabled@g.us') as any
+      chatOps.updateEnabled(DEFAULT, disabled.id, false)
+
+      contactOps.insert(DEFAULT, 'disabled-dm@s.whatsapp.net', 'Disabled DM', '+9998887777')
+      chatOps.insert(DEFAULT, 'disabled-dm@s.whatsapp.net', 'dm', undefined, 'Disabled DM Chat')
+      const disabledDm = chatOps.getByWhatsappJid(DEFAULT, 'disabled-dm@s.whatsapp.net') as any
+      chatOps.updateEnabled(DEFAULT, disabledDm.id, false)
+      await startMcpServer(testPort)
+
+      const nameRes = JSON.parse((await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Family' })).result.content[0].text)
+      expect(nameRes).toHaveLength(1)
+      expect(nameRes[0].name).toBe('Family Enabled')
+
+      const phoneRes = JSON.parse((await callMcpTool(testPort, '/mcp', 'search_chats', { query: '9998887777' })).result.content[0].text)
+      expect(phoneRes).toHaveLength(0)
+    })
+
+    it('returns empty array for an empty query', async () => {
+      chatOps.insert(DEFAULT, 'any@g.us', 'group', undefined, 'Any Chat')
+      await startMcpServer(testPort)
+
+      const emptyRes = JSON.parse((await callMcpTool(testPort, '/mcp', 'search_chats', { query: '' })).result.content[0].text)
+      expect(emptyRes).toHaveLength(0)
+
+      const tinyRes = JSON.parse((await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'a' })).result.content[0].text)
+      expect(tinyRes).toHaveLength(0)
+    })
+
+    it('respects the limit parameter and caps it at 100', async () => {
+      for (let i = 0; i < 30; i++) {
+        chatOps.insert(DEFAULT, `many-${i}@g.us`, 'group', undefined, `Family Chat ${i}`)
+      }
+      await startMcpServer(testPort)
+
+      const defaulted = JSON.parse((await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Family' })).result.content[0].text)
+      expect(defaulted).toHaveLength(20)
+
+      const custom = JSON.parse((await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Family', limit: 5 })).result.content[0].text)
+      expect(custom).toHaveLength(5)
+
+      const huge = JSON.parse((await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Family', limit: 5000 })).result.content[0].text)
+      expect(huge.length).toBeLessThanOrEqual(100)
+    })
+
+    it('updates FTS indexes when chat name or contact name changes', async () => {
+      chatOps.insert(DEFAULT, 'renamable@g.us', 'group', undefined, 'Initial Name')
+      await startMcpServer(testPort)
+
+      const initialRes = JSON.parse((await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Initial' })).result.content[0].text)
+      expect(initialRes).toHaveLength(1)
+
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'renamable@g.us') as any
+      chatOps.updateName(DEFAULT, chat.id, 'Renamed Topic')
+
+      const afterOld = JSON.parse((await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Initial' })).result.content[0].text)
+      expect(afterOld).toHaveLength(0)
+      const afterNew = JSON.parse((await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Renamed' })).result.content[0].text)
+      expect(afterNew).toHaveLength(1)
+    })
+  })
+
   describe('get_chat_history Tool', () => {
     beforeEach(() => {
       makeAccount(DEFAULT)

@@ -19,6 +19,29 @@ const activeTransports = new Map<string, StreamableHTTPServerTransport>()
 let httpServer: http.Server | null = null
 
 /**
+ * Build an FTS5 MATCH expression from a free-text query by generating the set
+ * of overlapping trigrams from every >=3 char word in the query and OR-ing
+ * them together. This makes multi-word queries find chats containing any of
+ * the words (bm25 ranks chats matching more words higher) and tolerates typos
+ * because a single-character error only invalidates a few overlapping trigrams.
+ * Returns `null` when the query has no searchable trigrams.
+ */
+function buildFtsQuery(query: string): string | null {
+  const normalized = (query || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  if (!normalized) return null
+  const words = normalized.split(/\s+/).filter((w) => w.length >= 3)
+  if (words.length === 0) return null
+  const trigrams = new Set<string>()
+  for (const word of words) {
+    for (let i = 0; i <= word.length - 3; i++) {
+      trigrams.add(word.substring(i, i + 3))
+    }
+  }
+  if (trigrams.size === 0) return null
+  return Array.from(trigrams).map((t) => `"${t}"`).join(' OR ')
+}
+
+/**
  * Read meIdentity from the given account's settings.
  */
 function getMeIdentity(slug: string): MeIdentity | undefined {
@@ -245,25 +268,86 @@ export function createMcpServer(slug: string): McpServer {
 
   server.tool(
     'search_chats',
-    'Search chats by phone number or name fragment',
-    { query: z.string().describe('Phone number or name fragment to search for') },
+    'Search chats by name or associated contact name, with typo tolerance and phone-number matching. Multi-word queries match chats that contain any of the words; chats matching more words rank higher (bm25). Typos are tolerated via trigram fuzzy matching when available. Digit-only queries of 5+ digits also match contacts by normalized phone number (digits only, ignoring +, -, spaces, parentheses), surfacing the matching DM chat. Results are ranked by relevance with recent activity as a tiebreaker and capped by `limit`.',
+    {
+      query: z.string().describe('Search query: name fragment, multiple words, or a phone number'),
+      limit: z.number().optional().default(20).describe('Maximum number of results to return (default 20, capped at 100)')
+    },
     { readOnlyHint: true },
-    async ({ query }: { query: string }) => {
-      const allChats = chatOps.getAll(slug) as any[]
-      const results = allChats.filter((chat: any) => {
-        if (!chat.enabled) return false
-        const name = chat.name?.toLowerCase() || ''
-        const jid = chat.whatsapp_jid?.toLowerCase() || ''
-        const q = query.toLowerCase()
-        return name.includes(q) || jid.includes(q)
-      }).map((chat: any) => ({
-        jid: chat.whatsapp_jid,
-        name: chat.name || 'Unknown',
-        type: chat.chat_type,
-        lastActivity: chat.last_activity
-      }))
+    async ({ query, limit }: { query: string; limit?: number }) => {
+      const cap = Math.min(Math.max(Number.isFinite(limit) ? Number(limit) : 20, 1), 100)
+      const db = getDatabase(slug)
 
-      return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] }
+      const ftsQuery = buildFtsQuery(query)
+      const digitQuery = (query || '').replace(/\D+/g, '')
+
+      type Hit = { chatId: number; rank: number; matchedVia: 'name' | 'contact' | 'phone' }
+      const hits = new Map<number, Hit>()
+      const upsert = (h: Hit) => {
+        const existing = hits.get(h.chatId)
+        if (!existing || h.rank < existing.rank) hits.set(h.chatId, h)
+      }
+
+      if (ftsQuery) {
+        try {
+          const chatRows = db.prepare(`
+            SELECT cf.rowid AS chatId, bm25(chats_fts) AS rank
+            FROM chats_fts cf
+            WHERE chats_fts MATCH ?
+          `).all(ftsQuery) as { chatId: number; rank: number }[]
+          for (const r of chatRows) upsert({ chatId: r.chatId, rank: r.rank, matchedVia: 'name' })
+
+          const contactRows = db.prepare(`
+            SELECT c.id AS chatId, bm25(contacts_fts) AS rank
+            FROM contacts_fts cf
+            JOIN chats c ON c.whatsapp_jid = cf.jid AND c.chat_type = 'dm'
+            WHERE contacts_fts MATCH ?
+          `).all(ftsQuery) as { chatId: number; rank: number }[]
+          for (const r of contactRows) upsert({ chatId: r.chatId, rank: r.rank, matchedVia: 'contact' })
+        } catch { /* malformed FTS query → skip FTS hits */ }
+      }
+
+      if (digitQuery.length >= 5) {
+        const phoneRows = db.prepare(`
+          SELECT c.id AS chatId
+          FROM contacts ct
+          JOIN chats c ON c.whatsapp_jid = ct.jid AND c.chat_type = 'dm'
+          WHERE ct.phone_digits IS NOT NULL AND ct.phone_digits LIKE '%' || ? || '%'
+        `).all(digitQuery) as { chatId: number }[]
+        for (const r of phoneRows) upsert({ chatId: r.chatId, rank: -1e6, matchedVia: 'phone' })
+      }
+
+      if (hits.size === 0) {
+        return { content: [{ type: 'text', text: JSON.stringify([], null, 2) }] }
+      }
+
+      const ids = Array.from(hits.keys())
+      const placeholders = ids.map(() => '?').join(',')
+      const chats = db.prepare(
+        `SELECT * FROM chats WHERE id IN (${placeholders}) AND enabled = 1`
+      ).all(...ids) as any[]
+
+      const results = chats.map((chat: any) => {
+        const h = hits.get(chat.id)!
+        return {
+          jid: chat.whatsapp_jid,
+          name: chat.name || 'Unknown',
+          type: chat.chat_type,
+          lastActivity: chat.last_activity,
+          rank: h.rank,
+          matchedVia: h.matchedVia
+        }
+      })
+
+      results.sort((a, b) => {
+        if (a.rank !== b.rank) return a.rank - b.rank
+        const aAct = a.lastActivity || ''
+        const bAct = b.lastActivity || ''
+        if (aAct === bAct) return 0
+        return aAct < bAct ? 1 : -1
+      })
+
+      return { content: [{ type: 'text', text: JSON.stringify(results.slice(0, cap), null, 2) }] }
     }
   )
 

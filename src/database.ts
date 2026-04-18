@@ -84,6 +84,11 @@ function runMigrations(database: Database.Database): void {
     applyMigration5(database)
     database.prepare('INSERT INTO schema_version (version) VALUES (?)').run(5)
   }
+
+  if (version < 6) {
+    applyMigration6(database)
+    database.prepare('INSERT INTO schema_version (version) VALUES (?)').run(6)
+  }
 }
 
 function applyMigration1(database: Database.Database): void {
@@ -161,6 +166,89 @@ function applyMigration4(database: Database.Database): void {
 
 function applyMigration5(database: Database.Database): void {
   try { database.exec('ALTER TABLE chats ADD COLUMN group_metadata_fetched INTEGER DEFAULT 0') } catch { }
+}
+
+// Exposes the tokenizer chosen by applyMigration6 for the most recently
+// initialized database. `null` before the first migration runs.
+let lastChosenFtsTokenizer: 'trigram' | 'unicode61' | null = null
+
+export function getLastChosenFtsTokenizer(): 'trigram' | 'unicode61' | null {
+  return lastChosenFtsTokenizer
+}
+
+function detectFtsTokenizer(database: Database.Database): 'trigram' | 'unicode61' {
+  try {
+    database.exec(`CREATE VIRTUAL TABLE _fts_trigram_probe USING fts5(x, tokenize='trigram')`)
+    database.exec('DROP TABLE _fts_trigram_probe')
+    return 'trigram'
+  } catch {
+    try { database.exec('DROP TABLE IF EXISTS _fts_trigram_probe') } catch { }
+    return 'unicode61'
+  }
+}
+
+function applyMigration6(database: Database.Database): void {
+  const tokenizer = detectFtsTokenizer(database)
+  lastChosenFtsTokenizer = tokenizer
+
+  database.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS chats_fts USING fts5(
+      name,
+      tokenize='${tokenizer}'
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS contacts_fts USING fts5(
+      name,
+      jid UNINDEXED,
+      tokenize='${tokenizer}'
+    );
+  `)
+
+  const contactCols = database.prepare('PRAGMA table_info(contacts)').all() as { name: string }[]
+  if (!contactCols.some((c) => c.name === 'phone_digits')) {
+    database.exec(`
+      ALTER TABLE contacts ADD COLUMN phone_digits TEXT GENERATED ALWAYS AS (
+        CASE WHEN phone_number IS NULL THEN NULL
+        ELSE replace(replace(replace(replace(replace(replace(replace(replace(replace(
+          phone_number,
+          '+', ''), '-', ''), ' ', ''), '(', ''), ')', ''), '.', ''), '/', ''), '_', ''), CHAR(9), '')
+        END
+      ) VIRTUAL
+    `)
+  }
+  database.exec('CREATE INDEX IF NOT EXISTS idx_contacts_phone_digits ON contacts(phone_digits)')
+
+  database.exec(`
+    CREATE TRIGGER IF NOT EXISTS chats_fts_ai AFTER INSERT ON chats BEGIN
+      INSERT INTO chats_fts(rowid, name) VALUES (NEW.id, COALESCE(NEW.name, ''));
+    END;
+    CREATE TRIGGER IF NOT EXISTS chats_fts_au AFTER UPDATE OF name ON chats BEGIN
+      DELETE FROM chats_fts WHERE rowid = OLD.id;
+      INSERT INTO chats_fts(rowid, name) VALUES (NEW.id, COALESCE(NEW.name, ''));
+    END;
+    CREATE TRIGGER IF NOT EXISTS chats_fts_ad AFTER DELETE ON chats BEGIN
+      DELETE FROM chats_fts WHERE rowid = OLD.id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS contacts_fts_ai AFTER INSERT ON contacts BEGIN
+      INSERT INTO contacts_fts(name, jid) VALUES (COALESCE(NEW.name, ''), NEW.jid);
+    END;
+    CREATE TRIGGER IF NOT EXISTS contacts_fts_au AFTER UPDATE OF name ON contacts BEGIN
+      DELETE FROM contacts_fts WHERE jid = OLD.jid;
+      INSERT INTO contacts_fts(name, jid) VALUES (COALESCE(NEW.name, ''), NEW.jid);
+    END;
+    CREATE TRIGGER IF NOT EXISTS contacts_fts_ad AFTER DELETE ON contacts BEGIN
+      DELETE FROM contacts_fts WHERE jid = OLD.jid;
+    END;
+  `)
+
+  database.exec(`
+    DELETE FROM chats_fts;
+    INSERT INTO chats_fts(rowid, name) SELECT id, COALESCE(name, '') FROM chats;
+
+    DELETE FROM contacts_fts;
+    INSERT INTO contacts_fts(name, jid) SELECT COALESCE(name, ''), jid FROM contacts;
+  `)
 }
 
 
