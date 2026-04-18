@@ -75,7 +75,7 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
     let groupMetadataFetcher: any = null
     try {
       groupMetadataFetcher = getGroupMetadataFetcher(manager.slug)
-    } catch (e) {
+    } catch {
       // Fetcher may not be initialized yet
     }
 
@@ -84,7 +84,7 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
     try {
       const result = await fetchLatestWaWebVersion({})
       version = result.version
-    } catch (e) {
+    } catch {
       version = [2, 3000, 1034074495]
     }
 
@@ -111,7 +111,7 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
               return JSON.parse(msg.content_json)
             }
           }
-        } catch (e) {
+        } catch {
           // Ignore lookup errors
         }
         return undefined
@@ -122,7 +122,7 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
     if (manager.socket) {
       try {
         await manager.socket.end(new Error('Reconnecting'))
-      } catch (e) {
+      } catch {
         // Ignore cleanup errors
       }
     }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage } from 'electron'
+import { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, dialog } from 'electron'
 import path from 'path'
 import Settings from 'electron-settings'
 import fs from 'fs'
@@ -227,7 +227,7 @@ const createWindow = () => {
 }
 
 
-process.on('unhandledRejection', (reason, _promise) => {
+process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED REJECTION]', reason)
 })
 
@@ -308,7 +308,7 @@ const createTray = () => {
     tray = new Tray(trayIcon)
     tray.setToolTip('WhatsApp MCP Server')
     updateTrayMenu()
-  } catch (_e) {
+  } catch {
     console.log('Tray icon not found, continuing without tray')
   }
 }
@@ -883,6 +883,48 @@ ipcMain.handle('clear-logs', async (_, payload: { slug: string }) => {
   const { slug } = payload || ({} as any)
   try { logOps.clear(slug); return { success: true } }
   catch (error) { console.error('Failed to clear logs:', error); throw error }
+})
+
+ipcMain.handle('export-logs', async (_, payload: { slug: string; format?: 'json' | 'text' }) => {
+  const { slug, format = 'json' } = payload || ({} as any)
+  const rows = logOps.getAll(slug, Number.MAX_SAFE_INTEGER) as Array<{
+    timestamp: string
+    level: string
+    category: string
+    message: string
+    details_json: string | null
+  }>
+
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  const ext = format === 'text' ? 'txt' : 'json'
+  const defaultFileName = `logs-${slug}-${stamp}.${ext}`
+
+  const filters = format === 'text'
+    ? [{ name: 'Text', extensions: ['txt'] }]
+    : [{ name: 'JSON', extensions: ['json'] }]
+
+  const result = mainWindow
+    ? await dialog.showSaveDialog(mainWindow, { defaultPath: defaultFileName, filters })
+    : await dialog.showSaveDialog({ defaultPath: defaultFileName, filters })
+
+  if (result.canceled || !result.filePath) return false
+
+  let content: string
+  if (format === 'text') {
+    const parts = rows.map((row) => {
+      const iso = new Date(row.timestamp + 'Z').toISOString()
+      const head = `[${iso}] [${row.level}] [${row.category}] ${row.message}`
+      return row.details_json ? `${head}\n${row.details_json}` : head
+    })
+    content = parts.join('\n\n') + (parts.length > 0 ? '\n' : '')
+  } else {
+    content = JSON.stringify(rows, null, 2)
+  }
+
+  fs.writeFileSync(result.filePath, content, 'utf8')
+  return true
 })
 
 ipcMain.handle('get-sync-status', async (_, payload: { slug: string }) => {

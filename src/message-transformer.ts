@@ -168,7 +168,7 @@ export class MessageTransformer {
           originalText = content.text || null
           originalSender = content.sender
           originalTimestamp = content.timestamp
-        } catch (e) { originalText = null }
+        } catch { originalText = null }
       }
 
       const deletedByJid = participant || key.remoteJid || 'unknown'
@@ -205,7 +205,7 @@ export class MessageTransformer {
           originalText = parsed.text || null
           originalSender = parsed.sender
           originalTimestamp = parsed.timestamp
-        } catch (e) { }
+        } catch { }
       }
 
       const editedMsg = update?.message?.editedMessage?.message || update?.message
@@ -234,7 +234,7 @@ export class MessageTransformer {
           const parsed = JSON.parse(original.content_json)
           parsed.text = newText
           messageOps.updateContentJson(this.slug, key.id, JSON.stringify(parsed))
-        } catch (e) { }
+        } catch { }
       }
     } catch (error) {
       logOps.insert(this.slug, 'error', 'transformer', 'Failed to process message edit', JSON.stringify({ error: String(error) }))

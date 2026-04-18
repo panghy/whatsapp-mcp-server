@@ -145,22 +145,22 @@ function applyMigration1(database: Database.Database): void {
 }
 
 function applyMigration2(database: Database.Database): void {
-  try { database.exec('ALTER TABLE chats ADD COLUMN name TEXT') } catch (error) { }
-  try { database.exec('ALTER TABLE chats ADD COLUMN participant_count INTEGER DEFAULT 0') } catch (error) { }
-  try { database.exec('ALTER TABLE chats ADD COLUMN last_activity DATETIME') } catch (error) { }
+  try { database.exec('ALTER TABLE chats ADD COLUMN name TEXT') } catch { }
+  try { database.exec('ALTER TABLE chats ADD COLUMN participant_count INTEGER DEFAULT 0') } catch { }
+  try { database.exec('ALTER TABLE chats ADD COLUMN last_activity DATETIME') } catch { }
 }
 
 function applyMigration3(database: Database.Database): void {
-  try { database.exec('ALTER TABLE chats ADD COLUMN highest_chunk_order INTEGER DEFAULT 0') } catch (error) { }
+  try { database.exec('ALTER TABLE chats ADD COLUMN highest_chunk_order INTEGER DEFAULT 0') } catch { }
 }
 
 function applyMigration4(database: Database.Database): void {
-  try { database.exec('ALTER TABLE contacts ADD COLUMN lid TEXT') } catch (error) { }
+  try { database.exec('ALTER TABLE contacts ADD COLUMN lid TEXT') } catch { }
   database.exec('CREATE INDEX IF NOT EXISTS idx_contacts_lid ON contacts(lid)')
 }
 
 function applyMigration5(database: Database.Database): void {
-  try { database.exec('ALTER TABLE chats ADD COLUMN group_metadata_fetched INTEGER DEFAULT 0') } catch (error) { }
+  try { database.exec('ALTER TABLE chats ADD COLUMN group_metadata_fetched INTEGER DEFAULT 0') } catch { }
 }
 
 

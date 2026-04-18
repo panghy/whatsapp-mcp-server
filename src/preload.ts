@@ -70,7 +70,8 @@ contextBridge.exposeInMainWorld('electron', {
     filters?: { levels?: string[]; categories?: string[]; searchText?: string; limit?: number }
   ) => ipcRenderer.invoke('get-logs', { slug, ...(filters || {}) }),
   clearLogs: (slug: string) => ipcRenderer.invoke('clear-logs', { slug }),
-  exportLogs: (_slug: string, _format?: 'json' | 'text') => Promise.resolve(false),
+  exportLogs: (slug: string, format?: 'json' | 'text') =>
+    ipcRenderer.invoke('export-logs', { slug, format }),
 
   // MCP server (global)
   getMcpStatus: () => ipcRenderer.invoke('mcp-get-status'),
