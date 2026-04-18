@@ -502,6 +502,10 @@ interface RouteFailure {
   body: { error: string }
 }
 
+function isRouteFailure(r: RouteResolution | RouteFailure): r is RouteFailure {
+  return r.ok === false
+}
+
 function resolveRoute(pathname: string): RouteResolution | RouteFailure | null {
   const match = MCP_PATH_RE.exec(pathname)
   if (!match) return null
@@ -608,7 +612,7 @@ export async function startMcpServer(port: number): Promise<void> {
         res.end('Not Found')
         return
       }
-      if (!route.ok) {
+      if (isRouteFailure(route)) {
         sendJson(res, route.status, route.body)
         return
       }
