@@ -10,9 +10,12 @@ interface Group {
   name?: string
 }
 
+type SettingsTab = 'group-sync' | 'interface-system' | 'logs'
+
 interface SettingsProps {
   onBack?: () => void
   onLogoff?: () => void
+  initialTab?: SettingsTab | null
 }
 
 interface McpStatusData {
@@ -29,8 +32,8 @@ interface UpdateStatusData {
   progress: number | null
 }
 
-export default function Settings({ onBack, onLogoff }: SettingsProps) {
-  const [activeTab, setActiveTab] = useState<'group-sync' | 'interface-system' | 'logs'>('group-sync')
+export default function Settings({ onBack, onLogoff, initialTab }: SettingsProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'group-sync')
   const [groups, setGroups] = useState<Group[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -165,6 +168,20 @@ export default function Settings({ onBack, onLogoff }: SettingsProps) {
     const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape' && onBack) { onBack() } }
     window.addEventListener('keydown', handleKeyDown); return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onBack])
+
+  useEffect(() => {
+    if (initialTab) { setActiveTab(initialTab) }
+  }, [initialTab])
+
+  useEffect(() => {
+    const handleOpenLogs = () => { setActiveTab('logs') }
+    const ipcRenderer = (window as any).ipcRenderer
+    if (ipcRenderer) {
+      ipcRenderer.on('open-logs', handleOpenLogs)
+      return () => { ipcRenderer.removeListener('open-logs', handleOpenLogs) }
+    }
+    return undefined
+  }, [])
 
   return (
     <div className="settings-page">

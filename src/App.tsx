@@ -3,6 +3,7 @@ import Settings from './Settings'
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
 type ViewType = 'hero' | 'loading' | 'sync-status' | 'settings'
+type SettingsTab = 'group-sync' | 'interface-system' | 'logs'
 
 interface WhatsAppStatus {
   state: ConnectionState
@@ -97,6 +98,7 @@ export default function App() {
   const [userName, setUserName] = useState('')
   const [nameConfirmed, setNameConfirmed] = useState(false)
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null)
+  const [pendingInitialTab, setPendingInitialTab] = useState<SettingsTab | null>(null)
 
   useEffect(() => {
     const loadStatus = async () => {
@@ -140,14 +142,27 @@ export default function App() {
   }, [currentView, isAutoReconnecting])
 
   useEffect(() => {
-    const handleOpenSettings = () => { setCurrentView('settings') }
+    const handleOpenSettings = () => { setPendingInitialTab(null); setCurrentView('settings') }
+    const handleOpenLogs = () => { setPendingInitialTab('logs'); setCurrentView('settings') }
     const ipcRenderer = (window as any).ipcRenderer
     if (ipcRenderer) {
       ipcRenderer.on('open-settings', handleOpenSettings)
-      return () => { ipcRenderer.removeListener('open-settings', handleOpenSettings) }
+      ipcRenderer.on('open-logs', handleOpenLogs)
+      return () => {
+        ipcRenderer.removeListener('open-settings', handleOpenSettings)
+        ipcRenderer.removeListener('open-logs', handleOpenLogs)
+      }
     }
     return undefined
   }, [])
+
+  useEffect(() => {
+    if (pendingInitialTab !== null) {
+      const id = setTimeout(() => setPendingInitialTab(null), 0)
+      return () => clearTimeout(id)
+    }
+    return undefined
+  }, [pendingInitialTab])
 
   const handleConnect = async () => {
     setConnecting(true)
@@ -234,6 +249,7 @@ export default function App() {
       <Settings
         onBack={() => { whatsappStatus.state === 'connected' ? setCurrentView('sync-status') : whatsappStatus.state === 'connecting' ? setCurrentView('loading') : setCurrentView('hero') }}
         onLogoff={() => { setNameConfirmed(false); setUserName(''); setWhatsappStatus({ state: 'disconnected', qrCode: null, error: null }); setCurrentView('hero') }}
+        initialTab={pendingInitialTab}
       />
     )
   }
