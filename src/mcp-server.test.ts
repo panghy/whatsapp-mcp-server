@@ -383,6 +383,21 @@ describe('MCP Server', () => {
       expect(chats[0].type).toBe('group')
       expect(chats[0]).toHaveProperty('lastActivity')
     })
+
+    it('should show JID instead of Unknown for unnamed chats', async () => {
+      // Insert a DM chat with no name; match it via phone-digit search on the
+      // linked contact so the name-fallback in the result mapping is exercised.
+      contactOps.insert(DEFAULT, 'unnamed@s.whatsapp.net', undefined, '+15551234567')
+      chatOps.insert(DEFAULT, 'unnamed@s.whatsapp.net', 'dm', undefined, undefined as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: '15551234567' })
+
+      const chats = JSON.parse(result.result.content[0].text)
+      expect(chats).toHaveLength(1)
+      expect(chats[0].name).toBe('unnamed@s.whatsapp.net')
+      expect(chats[0].name).not.toBe('Unknown')
+    })
   })
 
   describe('search_chats FTS fuzzy search', () => {

@@ -307,6 +307,13 @@ const createTray = () => {
     trayIcon.setTemplateImage(true)
     tray = new Tray(trayIcon)
     tray.setToolTip('WhatsApp MCP Server')
+    // On macOS, Tray with setContextMenu already opens the menu on click.
+    // Also bring the window to the foreground if it's already visible.
+    tray.on('click', () => {
+      if (mainWindow && mainWindow.isVisible()) {
+        mainWindow.focus()
+      }
+    })
     updateTrayMenu()
   } catch {
     console.log('Tray icon not found, continuing without tray')

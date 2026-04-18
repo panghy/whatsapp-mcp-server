@@ -276,7 +276,8 @@ function resolveAllIdentities(
 export function createMcpServer(slug: string): McpServer {
   const server = new McpServer({
     name: `whatsapp-mcp-server:${slug}`,
-    version: '1.0.0'
+    version: '1.0.0',
+    description: 'Access WhatsApp messages and chats. Search conversations, read message history, get recent and unread messages, and send messages through WhatsApp.'
   })
 
   server.tool(
@@ -383,7 +384,7 @@ export function createMcpServer(slug: string): McpServer {
         const chat = chatsById.get(h.chatId)!
         return {
           jid: chat.whatsapp_jid,
-          name: chat.name || 'Unknown',
+          name: chat.name || chat.whatsapp_jid,
           type: chat.chat_type,
           lastActivity: chat.last_activity,
           rank: h.rank,
@@ -405,9 +406,9 @@ export function createMcpServer(slug: string): McpServer {
 
   server.tool(
     'get_chat_history',
-    'Get messages for a specific chat',
+    'Get WhatsApp message history for a specific chat by JID. Returns messages in chronological order with optional time-based filtering.',
     {
-      jid: z.string().describe('WhatsApp JID of the chat'),
+      jid: z.string().describe('WhatsApp JID of the chat (get this from search_chats)'),
       limit: z.number().optional().default(100).describe('Maximum number of messages to return'),
       since: z.string().optional().describe('ISO timestamp cutoff - only return messages after this time')
     },
@@ -445,9 +446,9 @@ export function createMcpServer(slug: string): McpServer {
 
   server.tool(
     'get_recent_messages',
-    'Get messages across all chats since a timestamp',
+    'Get recent WhatsApp messages across all chats since a given time. Useful for catching up on what happened in a time window. Results grouped by chat.',
     {
-      since: z.string().describe('ISO timestamp cutoff - return messages after this time'),
+      since: z.string().describe('ISO timestamp cutoff (e.g. "2024-01-15T00:00:00Z") - returns messages after this time'),
       limit: z.number().optional().default(200).describe('Maximum total messages to return')
     },
     { readOnlyHint: true },
@@ -491,8 +492,10 @@ export function createMcpServer(slug: string): McpServer {
 
   server.tool(
     'get_unread_messages',
-    'Get unread/new messages across all chats',
-    { since: z.string().optional().describe('ISO timestamp cutoff (defaults to last check time or 24h ago)') },
+    'Get unread WhatsApp messages across all chats since the last check. Tracks read state so subsequent calls only return new messages. Results grouped by chat.',
+    {
+      since: z.string().optional().describe('Optional ISO timestamp cutoff. If omitted, uses the last time this tool was called (or 24h ago if first call)')
+    },
     { readOnlyHint: true },
     async ({ since }: { since?: string }) => {
       const lastCheck = settingOps.get(slug, 'last_unread_check')
@@ -540,11 +543,11 @@ export function createMcpServer(slug: string): McpServer {
 
   server.tool(
     'send_message',
-    'Send a text message with optional attachment',
+    'Send a WhatsApp message to a contact or group. Supports text messages and file attachments (images, documents). Requires the chat JID from search_chats.',
     {
-      jid: z.string().describe('WhatsApp JID to send the message to'),
-      text: z.string().describe('Message text to send'),
-      attachmentPath: z.string().optional().describe('Optional path to a file to attach')
+      jid: z.string().describe('WhatsApp JID of the recipient (get this from search_chats)'),
+      text: z.string().describe('The message text to send'),
+      attachmentPath: z.string().optional().describe('Optional absolute path to a file to attach (images, PDFs, documents)')
     },
     { readOnlyHint: false, destructiveHint: false },
     async ({ jid, text, attachmentPath }: { jid: string; text: string; attachmentPath?: string }) => {
