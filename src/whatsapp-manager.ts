@@ -1,9 +1,9 @@
 import { Boom } from '@hapi/boom'
 import QRCode from 'qrcode'
-import path from 'path'
-import { app } from 'electron'
 import fs from 'fs'
 import crypto from 'crypto'
+import { accountAuthDir, setMcpEnabled, getAccount } from './accounts'
+import { logOps } from './database'
 
 // Ensure crypto.subtle is available for Baileys
 if (!globalThis.crypto) {
@@ -23,6 +23,7 @@ let fetchLatestWaWebVersion: any
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
 export interface WhatsAppManager {
+  slug: string
   socket: any
   state: ConnectionState
   qrCode: string | null
@@ -33,11 +34,19 @@ export interface WhatsAppManager {
   onSocketCreated?: (socket: any) => void
 }
 
-const AUTH_DIR = path.join(app.getPath('userData'), 'whatsapp-auth')
+// Per-slug registry.
+const managers = new Map<string, WhatsAppManager>()
 
-// Ensure auth directory exists
-if (!fs.existsSync(AUTH_DIR)) {
-  fs.mkdirSync(AUTH_DIR, { recursive: true })
+export function getManager(slug: string): WhatsAppManager | undefined {
+  return managers.get(slug)
+}
+
+export function setManager(slug: string, manager: WhatsAppManager): void {
+  managers.set(slug, manager)
+}
+
+export function listManagers(): Map<string, WhatsAppManager> {
+  return managers
 }
 
 // Load ESM modules dynamically
@@ -65,8 +74,8 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
     const { getGroupMetadataFetcher } = require('./group-metadata-fetcher')
     let groupMetadataFetcher: any = null
     try {
-      groupMetadataFetcher = getGroupMetadataFetcher()
-    } catch (e) {
+      groupMetadataFetcher = getGroupMetadataFetcher(manager.slug)
+    } catch {
       // Fetcher may not be initialized yet
     }
 
@@ -75,7 +84,7 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
     try {
       const result = await fetchLatestWaWebVersion({})
       version = result.version
-    } catch (e) {
+    } catch {
       version = [2, 3000, 1034074495]
     }
 
@@ -97,12 +106,12 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
         try {
           const { messageOps } = require('./database')
           if (key.id) {
-            const msg = messageOps.getByWhatsappMessageId(key.id) as any
+            const msg = messageOps.getByWhatsappMessageId(manager.slug, key.id) as any
             if (msg && msg.content_json) {
               return JSON.parse(msg.content_json)
             }
           }
-        } catch (e) {
+        } catch {
           // Ignore lookup errors
         }
         return undefined
@@ -113,7 +122,7 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
     if (manager.socket) {
       try {
         await manager.socket.end(new Error('Reconnecting'))
-      } catch (e) {
+      } catch {
         // Ignore cleanup errors
       }
     }
@@ -146,6 +155,20 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
         manager.qrCode = null
         manager.error = null
         manager.reconnectDelay = 2000
+        // Re-enable MCP endpoint for this account if it was previously disabled
+        // after a device-removed event.
+        try {
+          const account = getAccount(manager.slug)
+          if (account && !account.mcpEnabled) {
+            setMcpEnabled(manager.slug, true)
+            try {
+              logOps.insert(manager.slug, 'info', 'connection',
+                `Re-enabled MCP endpoint for "${manager.slug}" after successful re-link`)
+            } catch { /* db may not be ready */ }
+          }
+        } catch (err) {
+          console.error(`[whatsapp-manager:${manager.slug}] Failed to re-enable MCP:`, err)
+        }
       } else if (connection === 'close') {
         handleConnectionClose(manager, lastDisconnect)
       }
@@ -160,60 +183,43 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
   }
 }
 
-function handleConnectionClose(manager: WhatsAppManager, lastDisconnect: any): void {
+export function handleConnectionClose(manager: WhatsAppManager, lastDisconnect: any): void {
   const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut
   if (shouldReconnect) {
     manager.state = 'connecting'
     const delay = manager.reconnectDelay || 2000
-    console.log(`Reconnecting to WhatsApp in ${delay}ms...`)
+    console.log(`[whatsapp-manager:${manager.slug}] Reconnecting in ${delay}ms...`)
     setTimeout(() => {
       connectSocket(manager).catch(error => {
-        console.error('Reconnection failed:', error)
+        console.error(`[whatsapp-manager:${manager.slug}] Reconnection failed:`, error)
         manager.error = error instanceof Error ? error.message : 'Reconnection failed'
         manager.reconnectDelay = Math.min((manager.reconnectDelay || 2000) * 2, 60000)
       })
     }, delay)
   } else {
-    // Device removed or logged out - clear stale credentials
-    console.log('Device removed, clearing session and showing new QR code...')
+    // Device removed / logged out: preserve the account's data. Disable the
+    // MCP endpoint for this slug until the user explicitly re-links.
+    console.log(`[whatsapp-manager:${manager.slug}] Device removed — disabling MCP endpoint; auth/DB preserved`)
     try {
-      const { settingOps, getDatabase } = require('./database')
-      settingOps.delete('initial_sync_complete')
-      settingOps.delete('user_display_name')
-      settingOps.delete('user_phone')
-      const db = getDatabase()
-      db.exec('DELETE FROM messages')
-      db.exec('DELETE FROM chats')
-      db.exec('DELETE FROM contacts')
-      db.exec('DELETE FROM logs')
-      db.exec('UPDATE chats SET last_pushed_message_id = NULL')
-    } catch (error) {
-      console.error('Failed to clear sync state after device removal:', error)
+      setMcpEnabled(manager.slug, false)
+    } catch (err) {
+      console.error(`[whatsapp-manager:${manager.slug}] Failed to set mcpEnabled=false:`, err)
     }
+    try {
+      logOps.insert(manager.slug, 'warn', 'connection',
+        `Device removed for account "${manager.slug}" — MCP endpoint disabled. Re-link via QR to re-enable.`)
+    } catch { /* db may not be ready */ }
 
-    clearWhatsAppSession().then(async () => {
-      try {
-        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
-        manager.authState = state
-        manager.saveCreds = saveCreds
-        await connectSocket(manager)
-      } catch (error) {
-        console.error('Failed to reinitialize auth after device removal:', error)
-        manager.state = 'error'
-        manager.error = error instanceof Error ? error.message : 'Failed to reinitialize auth'
-        manager.reconnectDelay = 2000
-      }
-    }).catch(error => {
-      console.error('Failed to clear WhatsApp session:', error)
-      manager.state = 'error'
-      manager.error = 'Failed to clear session'
-      manager.reconnectDelay = 2000
-    })
+    manager.state = 'disconnected'
+    manager.qrCode = null
+    manager.error = 'Device removed. Re-link WhatsApp to re-enable MCP.'
+    manager.reconnectDelay = 2000
   }
 }
 
-export async function initializeWhatsApp(): Promise<WhatsAppManager> {
+export async function initializeWhatsApp(slug: string): Promise<WhatsAppManager> {
   const manager: WhatsAppManager = {
+    slug,
     socket: null,
     state: 'disconnected',
     qrCode: null,
@@ -223,14 +229,20 @@ export async function initializeWhatsApp(): Promise<WhatsAppManager> {
 
   try {
     await loadBaileysModules()
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
+    const authDir = accountAuthDir(slug)
+    if (!fs.existsSync(authDir)) {
+      fs.mkdirSync(authDir, { recursive: true })
+    }
+    const { state, saveCreds } = await useMultiFileAuthState(authDir)
     manager.authState = state
     manager.saveCreds = saveCreds
     await connectSocket(manager)
+    managers.set(slug, manager)
     return manager
   } catch (error) {
     manager.state = 'error'
     manager.error = error instanceof Error ? error.message : 'Unknown error'
+    managers.set(slug, manager)
     return manager
   }
 }
@@ -248,13 +260,14 @@ export async function disconnectWhatsApp(manager: WhatsAppManager): Promise<void
   }
 }
 
-export async function clearWhatsAppSession(): Promise<void> {
+export async function clearWhatsAppSession(slug: string): Promise<void> {
   try {
-    if (fs.existsSync(AUTH_DIR)) {
-      fs.rmSync(AUTH_DIR, { recursive: true, force: true })
+    const authDir = accountAuthDir(slug)
+    if (fs.existsSync(authDir)) {
+      fs.rmSync(authDir, { recursive: true, force: true })
     }
   } catch (error) {
-    console.error('Failed to clear WhatsApp session:', error)
+    console.error(`[whatsapp-manager:${slug}] Failed to clear session:`, error)
   }
 }
 

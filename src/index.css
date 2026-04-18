@@ -307,3 +307,85 @@ input:checked + .slider:before { transform: translateX(14px); }
 .status-dot.error { background-color: #f87171; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
+
+/* Multi-account shell */
+.app-shell { display: flex; flex-direction: column; min-height: 100vh; }
+
+/* Account switcher header */
+.account-switcher {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  padding: 0.5rem 1rem 0.5rem calc(1rem + 70px);
+  border-bottom: 1px solid hsl(var(--border));
+  background-color: hsl(var(--background));
+  position: sticky; top: 0; z-index: 10;
+  -webkit-app-region: drag;
+}
+.account-switcher-pills {
+  display: flex; align-items: center; gap: 2px;
+  overflow-x: auto;
+  -webkit-app-region: no-drag;
+  background-color: hsl(var(--muted) / 0.4);
+  border-radius: 999px;
+  padding: 2px;
+}
+.account-pill {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.25rem 0.65rem; border-radius: 999px;
+  border: 1px solid transparent;
+  background-color: transparent; color: hsl(var(--muted-foreground));
+  font-size: 0.8rem; line-height: 1; cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+  white-space: nowrap;
+}
+.account-pill:hover { background-color: hsl(var(--muted) / 0.7); color: hsl(var(--foreground)); }
+.account-pill.active {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  box-shadow: 0 1px 2px hsl(0 0% 0% / 0.08), 0 0 0 1px hsl(var(--border));
+}
+.account-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  display: inline-block; flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.15);
+}
+.account-slug { font-weight: 500; }
+.account-add-btn {
+  border: 1px solid transparent;
+  background: transparent; color: hsl(var(--muted-foreground));
+  padding: 0.25rem 0.65rem; border-radius: 999px;
+  font-size: 0.8rem; line-height: 1; cursor: pointer;
+  -webkit-app-region: no-drag;
+  white-space: nowrap;
+  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+.account-add-btn:hover { background-color: hsl(var(--muted) / 0.7); color: hsl(var(--foreground)); }
+
+/* Add-account modal */
+.modal-overlay {
+  position: fixed; inset: 0; background-color: rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background-color: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.5rem; padding: 1.5rem;
+  width: min(420px, calc(100vw - 2rem));
+  box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+}
+.modal-title { margin: 0 0 1rem 0; font-size: 1.1rem; font-weight: 600; }
+.modal-label { display: block; font-size: 0.8rem; color: hsl(var(--muted-foreground)); margin-bottom: 0.25rem; }
+.modal-input {
+  width: 100%; padding: 0.5rem 0.75rem; border-radius: 0.375rem;
+  border: 1px solid hsl(var(--border));
+  background-color: hsl(var(--input)); color: hsl(var(--foreground));
+  font-size: 0.95rem;
+}
+.modal-hint { font-size: 0.75rem; color: hsl(var(--muted-foreground)); margin: 0.5rem 0 0.25rem; }
+.modal-hint code { font-size: 0.75rem; }
+.modal-error { font-size: 0.75rem; color: hsl(var(--destructive)); margin: 0.5rem 0 0; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+
+/* Settings slug label */
+.settings-header-slug { font-size: 0.9rem; color: hsl(var(--muted-foreground)); font-weight: 400; margin-left: 0.25rem; }
+

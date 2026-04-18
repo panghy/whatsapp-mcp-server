@@ -40,37 +40,39 @@ import { initializeDatabase, closeDatabase, chatOps, logOps } from './database'
 import { SyncOrchestrator, initializeSyncOrchestrator, getSyncOrchestrator } from './sync-orchestrator'
 import { MessageTransformer } from './message-transformer'
 
+const SLUG = 'default'
+
 describe('SyncOrchestrator Tests', () => {
   beforeAll(() => {
     fs.mkdirSync(testDir, { recursive: true })
   })
 
   afterAll(() => {
-    closeDatabase()
+    closeDatabase(SLUG)
     if (fs.existsSync(testDir)) {
       fs.rmSync(testDir, { recursive: true, force: true })
     }
   })
 
   beforeEach(() => {
-    closeDatabase()
-    const dbDir = path.join(testDir, 'nodexa-whatsapp')
+    closeDatabase(SLUG)
+    const dbDir = path.join(testDir, 'accounts', SLUG)
     if (fs.existsSync(dbDir)) {
       fs.rmSync(dbDir, { recursive: true, force: true })
     }
     fs.mkdirSync(dbDir, { recursive: true })
-    initializeDatabase()
+    initializeDatabase(SLUG)
     mockProcessMessageFn.mockClear()
   })
 
   afterEach(() => {
-    closeDatabase()
+    closeDatabase(SLUG)
   })
 
   describe('SyncOrchestrator class', () => {
     it('should create instance with correct initial status', () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
       const status = orchestrator.getStatus()
       
       expect(status.isSyncing).toBe(false)
@@ -83,7 +85,7 @@ describe('SyncOrchestrator Tests', () => {
 
     it('should return a copy of status (not reference)', () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
       
       const status1 = orchestrator.getStatus()
       status1.isSyncing = true
@@ -96,7 +98,7 @@ describe('SyncOrchestrator Tests', () => {
 
     it('should set isSyncing=true with markSyncInProgress()', () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
       
       expect(orchestrator.getStatus().isSyncing).toBe(false)
       orchestrator.markSyncInProgress()
@@ -105,7 +107,7 @@ describe('SyncOrchestrator Tests', () => {
 
     it('should set isSyncing=false with markSyncComplete()', () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
       
       orchestrator.markSyncInProgress()
       expect(orchestrator.getStatus().isSyncing).toBe(true)
@@ -116,8 +118,8 @@ describe('SyncOrchestrator Tests', () => {
 
     it('should set message transformer via setMessageTransformer()', () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
-      const mockTransformer = new MessageTransformer(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
+      const mockTransformer = new MessageTransformer(SLUG, mockSocket)
       
       // Should not throw
       expect(() => orchestrator.setMessageTransformer(mockTransformer)).not.toThrow()
@@ -127,7 +129,7 @@ describe('SyncOrchestrator Tests', () => {
   describe('startInitialSync()', () => {
     it('should skip if sync already in progress', async () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
       
       // Mark sync in progress
       orchestrator.markSyncInProgress()
@@ -136,23 +138,23 @@ describe('SyncOrchestrator Tests', () => {
       await orchestrator.startInitialSync()
       
       // Check logs for warning
-      const logs = logOps.getRecent(10) as any[]
+      const logs = logOps.getRecent(SLUG, 10) as any[]
       const warnLog = logs.find(l => l.message.includes('Sync already in progress'))
       expect(warnLog).toBeDefined()
     })
 
     it('should sync only enabled DM chats', async () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
 
       // Seed DB with various chats
-      chatOps.insert('enabled-dm@s.whatsapp.net', 'dm', undefined, 'Enabled DM')
-      chatOps.insert('disabled-dm@s.whatsapp.net', 'dm', undefined, 'Disabled DM')
-      chatOps.insert('group@g.us', 'group', undefined, 'Test Group')
+      chatOps.insert(SLUG, 'enabled-dm@s.whatsapp.net', 'dm', undefined, 'Enabled DM')
+      chatOps.insert(SLUG, 'disabled-dm@s.whatsapp.net', 'dm', undefined, 'Disabled DM')
+      chatOps.insert(SLUG, 'group@g.us', 'group', undefined, 'Test Group')
 
       // Disable the second DM
-      const disabledChat = chatOps.getByWhatsappJid('disabled-dm@s.whatsapp.net') as any
-      chatOps.updateEnabled(disabledChat.id, false)
+      const disabledChat = chatOps.getByWhatsappJid(SLUG, 'disabled-dm@s.whatsapp.net') as any
+      chatOps.updateEnabled(SLUG, disabledChat.id, false)
 
       await orchestrator.startInitialSync()
 
@@ -164,10 +166,10 @@ describe('SyncOrchestrator Tests', () => {
 
     it('should set isSyncing=true during sync and false after', async () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
 
       // Add an enabled DM to sync
-      chatOps.insert('test@s.whatsapp.net', 'dm', undefined, 'Test')
+      chatOps.insert(SLUG, 'test@s.whatsapp.net', 'dm', undefined, 'Test')
 
       // Before sync
       expect(orchestrator.getStatus().isSyncing).toBe(false)
@@ -180,11 +182,11 @@ describe('SyncOrchestrator Tests', () => {
 
     it('should update completedChats count', async () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
 
       // Add two enabled DMs
-      chatOps.insert('chat1@s.whatsapp.net', 'dm', undefined, 'Chat 1')
-      chatOps.insert('chat2@s.whatsapp.net', 'dm', undefined, 'Chat 2')
+      chatOps.insert(SLUG, 'chat1@s.whatsapp.net', 'dm', undefined, 'Chat 1')
+      chatOps.insert(SLUG, 'chat2@s.whatsapp.net', 'dm', undefined, 'Chat 2')
 
       await orchestrator.startInitialSync()
 
@@ -195,11 +197,11 @@ describe('SyncOrchestrator Tests', () => {
 
     it('should handle individual chat sync errors gracefully', async () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
 
       // Add chats
-      chatOps.insert('good@s.whatsapp.net', 'dm', undefined, 'Good Chat')
-      chatOps.insert('bad@s.whatsapp.net', 'dm', undefined, 'Bad Chat')
+      chatOps.insert(SLUG, 'good@s.whatsapp.net', 'dm', undefined, 'Good Chat')
+      chatOps.insert(SLUG, 'bad@s.whatsapp.net', 'dm', undefined, 'Bad Chat')
 
       await orchestrator.startInitialSync()
 
@@ -214,7 +216,7 @@ describe('SyncOrchestrator Tests', () => {
   describe('bufferMessage()', () => {
     it('should buffer messages when isSyncing is true', () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
 
       orchestrator.markSyncInProgress()
 
@@ -230,7 +232,7 @@ describe('SyncOrchestrator Tests', () => {
 
     it('should ignore messages when isSyncing is false', () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
 
       expect(orchestrator.getStatus().isSyncing).toBe(false)
 
@@ -246,7 +248,7 @@ describe('SyncOrchestrator Tests', () => {
 
     it('should group messages by chatId', () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
 
       orchestrator.markSyncInProgress()
 
@@ -264,21 +266,21 @@ describe('SyncOrchestrator Tests', () => {
   describe('syncEnabledGroup()', () => {
     it('should throw error if chat not found', async () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
 
       await expect(orchestrator.syncEnabledGroup(999)).rejects.toThrow('Chat 999 not found')
     })
 
     it('should sync a valid chat by ID', async () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
 
       // Create a chat
-      chatOps.insert('group@g.us', 'group', undefined, 'Test Group')
-      const chat = chatOps.getByWhatsappJid('group@g.us') as any
+      chatOps.insert(SLUG, 'group@g.us', 'group', undefined, 'Test Group')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'group@g.us') as any
 
       // Enable the group
-      chatOps.updateEnabled(chat.id, true)
+      chatOps.updateEnabled(SLUG, chat.id, true)
 
       // Should not throw
       await expect(orchestrator.syncEnabledGroup(chat.id)).resolves.not.toThrow()
@@ -288,13 +290,13 @@ describe('SyncOrchestrator Tests', () => {
   describe('flushMessageBuffer() via startInitialSync', () => {
     it('should process buffered messages through messageTransformer', async () => {
       const mockSocket = {}
-      const orchestrator = new SyncOrchestrator(mockSocket)
-      const mockTransformer = new MessageTransformer(mockSocket)
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
+      const mockTransformer = new MessageTransformer(SLUG, mockSocket)
       orchestrator.setMessageTransformer(mockTransformer)
 
       // Create a chat
-      chatOps.insert('test@s.whatsapp.net', 'dm', undefined, 'Test Chat')
-      const chat = chatOps.getByWhatsappJid('test@s.whatsapp.net') as any
+      chatOps.insert(SLUG, 'test@s.whatsapp.net', 'dm', undefined, 'Test Chat')
+      const chat = chatOps.getByWhatsappJid(SLUG, 'test@s.whatsapp.net') as any
 
       // Mark sync in progress and buffer some messages
       orchestrator.markSyncInProgress()
@@ -307,14 +309,14 @@ describe('SyncOrchestrator Tests', () => {
 
       // The buffer should have been processed
       // Check logs for flush confirmation
-      const logs = logOps.getRecent(20) as any[]
+      const logs = logOps.getRecent(SLUG, 20) as any[]
       const flushLog = logs.find(l => l.message.includes('Message buffer flushed'))
       expect(flushLog).toBeDefined()
     })
   })
 
   describe('Global functions', () => {
-    it('should throw when getSyncOrchestrator() called before initialization', () => {
+    it('should throw when getSyncOrchestrator(SLUG) called before initialization', () => {
       // Note: This test relies on module-level singleton state
       // Since we can't reset the module, we test this behavior pattern
       // The actual singleton may have been initialized in other tests
@@ -322,9 +324,9 @@ describe('SyncOrchestrator Tests', () => {
       expect(typeof getSyncOrchestrator).toBe('function')
     })
 
-    it('should create and return orchestrator via initializeSyncOrchestrator()', () => {
+    it('should create and return orchestrator via initializeSyncOrchestrator(SLUG)', () => {
       const mockSocket = {}
-      const orchestrator = initializeSyncOrchestrator(mockSocket)
+      const orchestrator = initializeSyncOrchestrator(SLUG, mockSocket)
 
       expect(orchestrator).toBeInstanceOf(SyncOrchestrator)
       expect(orchestrator.getStatus()).toBeDefined()
@@ -334,8 +336,8 @@ describe('SyncOrchestrator Tests', () => {
       const mockSocket1 = {}
       const mockSocket2 = {}
 
-      const orchestrator1 = initializeSyncOrchestrator(mockSocket1)
-      const orchestrator2 = initializeSyncOrchestrator(mockSocket2)
+      const orchestrator1 = initializeSyncOrchestrator(SLUG, mockSocket1)
+      const orchestrator2 = initializeSyncOrchestrator(SLUG, mockSocket2)
 
       // Same instance should be returned
       expect(orchestrator1).toBe(orchestrator2)
