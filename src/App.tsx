@@ -11,6 +11,7 @@ import type {
 } from './types'
 
 type ViewType = 'hero' | 'loading' | 'sync-status' | 'settings'
+type SettingsTab = 'group-sync' | 'interface-system' | 'logs'
 
 const SELECTED_SLUG_KEY = 'selectedAccountSlug'
 
@@ -45,6 +46,7 @@ export default function App() {
   const [userName, setUserName] = useState('')
   const [nameConfirmed, setNameConfirmed] = useState(false)
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null)
+  const [pendingInitialTab, setPendingInitialTab] = useState<SettingsTab | null>(null)
 
   const refreshAccounts = useCallback(async (): Promise<Account[]> => {
     const { accounts: list, defaultSlug: nextDefault } = await window.electron.accounts.list()
@@ -143,14 +145,27 @@ export default function App() {
   }, [selectedSlug, currentView, isAutoReconnecting])
 
   useEffect(() => {
-    const handleOpenSettings = () => setCurrentView('settings')
+    const handleOpenSettings = () => { setPendingInitialTab(null); setCurrentView('settings') }
+    const handleOpenLogs = () => { setPendingInitialTab('logs'); setCurrentView('settings') }
     const ipcRenderer = (window as { ipcRenderer?: { on: (c: string, l: (...a: unknown[]) => void) => void; removeListener: (c: string, l: (...a: unknown[]) => void) => void } }).ipcRenderer
     if (ipcRenderer) {
       ipcRenderer.on('open-settings', handleOpenSettings)
-      return () => ipcRenderer.removeListener('open-settings', handleOpenSettings)
+      ipcRenderer.on('open-logs', handleOpenLogs)
+      return () => {
+        ipcRenderer.removeListener('open-settings', handleOpenSettings)
+        ipcRenderer.removeListener('open-logs', handleOpenLogs)
+      }
     }
     return undefined
   }, [])
+
+  useEffect(() => {
+    if (pendingInitialTab !== null) {
+      const id = setTimeout(() => setPendingInitialTab(null), 0)
+      return () => clearTimeout(id)
+    }
+    return undefined
+  }, [pendingInitialTab])
 
   const handleSelectSlug = useCallback((slug: string) => {
     setSelectedSlug(slug)
@@ -315,6 +330,7 @@ export default function App() {
           onAccountsChanged={handleAccountsChanged}
           onBack={() => { whatsappStatus.state === 'connected' ? setCurrentView('sync-status') : whatsappStatus.state === 'connecting' ? setCurrentView('loading') : setCurrentView('hero') }}
           onLogoff={() => { setNameConfirmed(false); setUserName(''); setStatusByAccount((prev) => ({ ...prev, [slug]: { state: 'disconnected', qrCode: null, error: null } })); setCurrentView('hero') }}
+          initialTab={pendingInitialTab}
         />
         {addModal}
       </div>

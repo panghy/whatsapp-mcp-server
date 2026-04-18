@@ -226,6 +226,18 @@ const createWindow = () => {
   })
 }
 
+const showMainWindowAndSend = (channel: string) => {
+  if (mainWindow) {
+    mainWindow.show()
+    mainWindow.focus()
+    mainWindow.webContents.send(channel)
+  } else {
+    createWindow()
+    mainWindow!.webContents.once('did-finish-load', () => {
+      mainWindow!.webContents.send(channel)
+    })
+  }
+}
 
 process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED REJECTION]', reason)
@@ -279,20 +291,8 @@ const updateTrayMenu = () => {
     template.push({ type: 'separator' })
   }
   template.push(
-    {
-      label: 'Settings...',
-      click: () => {
-        if (mainWindow) { mainWindow.show(); mainWindow.focus(); mainWindow.webContents.send('open-settings') }
-        else { createWindow() }
-      }
-    },
-    {
-      label: 'Logs...',
-      click: () => {
-        if (mainWindow) { mainWindow.show(); mainWindow.focus(); mainWindow.webContents.send('open-logs') }
-        else { createWindow() }
-      }
-    },
+    { label: 'Settings...', click: () => { showMainWindowAndSend('open-settings') } },
+    { label: 'Logs...', click: () => { showMainWindowAndSend('open-logs') } },
     { type: 'separator' },
     { label: 'Quit', click: () => { app.quit() } }
   )
@@ -990,4 +990,3 @@ ipcMain.handle('mcp-set-auto-start', async (_, enabled: boolean) => {
   setGlobalMcpAutoStart(enabled)
   return { success: true }
 })
-

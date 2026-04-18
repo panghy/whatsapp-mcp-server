@@ -12,6 +12,8 @@ interface Group {
   name?: string
 }
 
+type SettingsTab = 'group-sync' | 'interface-system' | 'logs'
+
 interface SettingsProps {
   slug: string
   accounts: Account[]
@@ -20,10 +22,11 @@ interface SettingsProps {
   onAccountsChanged: (nextSelected?: string) => Promise<void> | void
   onBack?: () => void
   onLogoff?: () => void
+  initialTab?: SettingsTab | null
 }
 
-export default function Settings({ slug, accounts, defaultSlug, statusByAccount, onAccountsChanged, onBack, onLogoff }: SettingsProps) {
-  const [activeTab, setActiveTab] = useState<'group-sync' | 'interface-system' | 'logs' | 'accounts'>('group-sync')
+export default function Settings({ slug, accounts, defaultSlug, statusByAccount, onAccountsChanged, onBack, onLogoff, initialTab }: SettingsProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTab | 'accounts'>(initialTab ?? 'group-sync')
   const [groups, setGroups] = useState<Group[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -223,6 +226,20 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
     const handleKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape' && onBack) { onBack() } }
     window.addEventListener('keydown', handleKeyDown); return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onBack])
+
+  useEffect(() => {
+    if (initialTab) { setActiveTab(initialTab) }
+  }, [initialTab])
+
+  useEffect(() => {
+    const handleOpenLogs = () => { setActiveTab('logs') }
+    const ipcRenderer = (window as any).ipcRenderer
+    if (ipcRenderer) {
+      ipcRenderer.on('open-logs', handleOpenLogs)
+      return () => { ipcRenderer.removeListener('open-logs', handleOpenLogs) }
+    }
+    return undefined
+  }, [])
 
   return (
     <div className="settings-page">
