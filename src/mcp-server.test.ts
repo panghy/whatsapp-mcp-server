@@ -455,6 +455,37 @@ describe('MCP Server', () => {
       expect(chats[0].matchedVia).toBe('phone')
     })
 
+    it('drops digit-only-name FTS hits when a phone hit exists', async () => {
+      contactOps.insert(DEFAULT, 'A@s.whatsapp.net', 'Ingrid P', '+852 9243 9919')
+      chatOps.insert(DEFAULT, 'A@s.whatsapp.net', 'dm', undefined, 'Ingrid P')
+      contactOps.insert(DEFAULT, 'B@s.whatsapp.net', undefined, '+852 9349 7494')
+      chatOps.insert(DEFAULT, 'B@s.whatsapp.net', 'dm', undefined, '85293497494')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: '85292439919' })
+      const chats = JSON.parse(result.result.content[0].text)
+      const jids = chats.map((c: any) => c.jid)
+      expect(jids).toContain('A@s.whatsapp.net')
+      expect(jids).not.toContain('B@s.whatsapp.net')
+      const ingrid = chats.find((c: any) => c.jid === 'A@s.whatsapp.net')
+      expect(ingrid.matchedVia).toBe('phone')
+    })
+
+    it('keeps digit-only-name FTS hits when no phone hit fires', async () => {
+      contactOps.insert(DEFAULT, 'A@s.whatsapp.net', 'Ingrid P', '+852 9243 9919')
+      chatOps.insert(DEFAULT, 'A@s.whatsapp.net', 'dm', undefined, 'Ingrid P')
+      contactOps.insert(DEFAULT, 'B@s.whatsapp.net', undefined, '+852 9349 7494')
+      chatOps.insert(DEFAULT, 'B@s.whatsapp.net', 'dm', undefined, '85293497494')
+      await startMcpServer(testPort)
+
+      // "852" is <5 digits so the phone path is skipped; FTS trigram "852"
+      // still matches chat B's digit-only name and must survive the filter.
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: '852' })
+      const chats = JSON.parse(result.result.content[0].text)
+      const jids = chats.map((c: any) => c.jid)
+      expect(jids).toContain('B@s.whatsapp.net')
+    })
+
     it('matches DM chats via contact name even when chat name is stale', async () => {
       contactOps.insert(DEFAULT, 'stale-dm@s.whatsapp.net', 'Zebra Longhorn', '+1234567000')
       // Chat name is a stale/null value; contact has the searchable name.

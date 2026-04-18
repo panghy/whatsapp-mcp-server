@@ -330,6 +330,40 @@ export function createMcpServer(slug: string): McpServer {
         for (const r of phoneRows) upsert({ chatId: r.chatId, rank: -1e6, matchedVia: 'phone' })
       }
 
+      if (hits.size === 0) {
+        return { content: [{ type: 'text', text: JSON.stringify([], null, 2) }] }
+      }
+
+      // Fetch enabled chat rows once, up front, so the digit-only-name filter
+      // below can consult display names and the final result builder can reuse
+      // the same rows without a second round-trip.
+      const ids = Array.from(hits.keys())
+      const placeholders = ids.map(() => '?').join(',')
+      const chats = db.prepare(
+        `SELECT * FROM chats WHERE id IN (${placeholders}) AND enabled = 1`
+      ).all(...ids) as any[]
+      const chatsById = new Map<number, any>(chats.map((c: any) => [c.id, c]))
+
+      // Drop hits whose chat is disabled or missing — previously handled
+      // implicitly by the enabled = 1 join on the result fetch.
+      for (const id of Array.from(hits.keys())) {
+        if (!chatsById.has(id)) hits.delete(id)
+      }
+
+      // Digit-only-name filter: when a phone-number query produced any phone
+      // hit, drop FTS name/contact hits whose chat display name has no ASCII
+      // letter (pure-digit strings like "85293497494" or "+852 9243 9919").
+      // Those are unnamed DMs where the name is another phone number and the
+      // trigram overlap with the query is coincidental digit collision.
+      const hasPhoneHit = Array.from(hits.values()).some((h) => h.matchedVia === 'phone')
+      if (hasPhoneHit) {
+        for (const [id, h] of hits) {
+          if (h.matchedVia === 'phone') continue
+          const name = ((chatsById.get(id)?.name ?? '') as string).trim()
+          if (!name || !/[a-zA-Z]/.test(name)) hits.delete(id)
+        }
+      }
+
       // Rank-gap post-filter: when a strong FTS hit exists, drop FTS hits whose
       // BM25 rank is much worse (see GAP_FACTOR). Phone hits are exempt so the
       // sentinel `-1e6` rank keeps them visible regardless of other matches.
@@ -345,18 +379,8 @@ export function createMcpServer(slug: string): McpServer {
         }
       }
 
-      if (hits.size === 0) {
-        return { content: [{ type: 'text', text: JSON.stringify([], null, 2) }] }
-      }
-
-      const ids = Array.from(hits.keys())
-      const placeholders = ids.map(() => '?').join(',')
-      const chats = db.prepare(
-        `SELECT * FROM chats WHERE id IN (${placeholders}) AND enabled = 1`
-      ).all(...ids) as any[]
-
-      const results = chats.map((chat: any) => {
-        const h = hits.get(chat.id)!
+      const results = Array.from(hits.values()).map((h) => {
+        const chat = chatsById.get(h.chatId)!
         return {
           jid: chat.whatsapp_jid,
           name: chat.name || 'Unknown',
