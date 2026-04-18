@@ -18,27 +18,40 @@ const activeTransports = new Map<string, StreamableHTTPServerTransport>()
 
 let httpServer: http.Server | null = null
 
+// Rank-gap factor used by `search_chats` to prune weak FTS hits when a strong
+// hit exists. BM25 ranks are negative (lower = better); multiplying the top
+// (most-negative) rank by this factor yields a less-negative threshold, and
+// any hit whose rank exceeds the threshold is dropped. Phone-matched hits
+// carry a sentinel rank and are exempt from this filter.
+const GAP_FACTOR = 0.4
+
 /**
  * Build an FTS5 MATCH expression from a free-text query by generating the set
- * of overlapping trigrams from every >=3 char word in the query and OR-ing
- * them together. This makes multi-word queries find chats containing any of
- * the words (bm25 ranks chats matching more words higher) and tolerates typos
- * because a single-character error only invalidates a few overlapping trigrams.
- * Returns `null` when the query has no searchable trigrams.
+ * of overlapping trigrams for every >=3 char word, OR-ing the trigrams within
+ * each word and AND-ing the per-word groups together. Within-word OR preserves
+ * typo tolerance (a single-character error only invalidates a few overlapping
+ * trigrams), while AND across words ensures every query word contributes to
+ * the match so chats matching all words outrank chats matching only some.
+ * Single-word queries degenerate to a single group with the same semantics as
+ * a flat OR expression. Returns `null` when the query has no searchable words.
  */
 function buildFtsQuery(query: string): string | null {
   const normalized = (query || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
   if (!normalized) return null
   const words = normalized.split(/\s+/).filter((w) => w.length >= 3)
   if (words.length === 0) return null
-  const trigrams = new Set<string>()
+  const groups: string[] = []
   for (const word of words) {
+    const trigrams = new Set<string>()
     for (let i = 0; i <= word.length - 3; i++) {
       trigrams.add(word.substring(i, i + 3))
     }
+    if (trigrams.size === 0) continue
+    const terms = Array.from(trigrams).map((t) => `"${t.replace(/"/g, '""')}"`)
+    groups.push(`(${terms.join(' OR ')})`)
   }
-  if (trigrams.size === 0) return null
-  return Array.from(trigrams).map((t) => `"${t}"`).join(' OR ')
+  if (groups.length === 0) return null
+  return groups.join(' AND ')
 }
 
 /**
@@ -315,6 +328,21 @@ export function createMcpServer(slug: string): McpServer {
           WHERE ct.phone_digits IS NOT NULL AND ct.phone_digits LIKE '%' || ? || '%'
         `).all(digitQuery) as { chatId: number }[]
         for (const r of phoneRows) upsert({ chatId: r.chatId, rank: -1e6, matchedVia: 'phone' })
+      }
+
+      // Rank-gap post-filter: when a strong FTS hit exists, drop FTS hits whose
+      // BM25 rank is much worse (see GAP_FACTOR). Phone hits are exempt so the
+      // sentinel `-1e6` rank keeps them visible regardless of other matches.
+      let topFtsRank = Infinity
+      for (const h of hits.values()) {
+        if (h.matchedVia !== 'phone' && h.rank < topFtsRank) topFtsRank = h.rank
+      }
+      if (topFtsRank < 0) {
+        const threshold = topFtsRank * GAP_FACTOR
+        for (const [id, h] of hits) {
+          if (h.matchedVia === 'phone') continue
+          if (h.rank > threshold) hits.delete(id)
+        }
       }
 
       if (hits.size === 0) {

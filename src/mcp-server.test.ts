@@ -390,28 +390,42 @@ describe('MCP Server', () => {
       makeAccount(DEFAULT)
     })
 
-    it('multi-word queries return chats matching any of the words ranked reasonably', async () => {
+    it('grouped-AND: chats matching all query words win over single-word matches', async () => {
       chatOps.insert(DEFAULT, 'family-staff@g.us', 'group', undefined, 'Family Staff')
-      chatOps.insert(DEFAULT, 'family-only@g.us', 'group', undefined, 'Family')
-      chatOps.insert(DEFAULT, 'staff-only@g.us', 'group', undefined, 'Staff Room')
+      chatOps.insert(DEFAULT, 'pang-family@g.us', 'group', undefined, 'Pang Family')
+      chatOps.insert(DEFAULT, 'household-staff@g.us', 'group', undefined, 'Household Staff')
       chatOps.insert(DEFAULT, 'noise1@g.us', 'group', undefined, 'Random Group')
       chatOps.insert(DEFAULT, 'noise2@g.us', 'group', undefined, 'Book Lovers')
-      chatOps.insert(DEFAULT, 'noise3@g.us', 'group', undefined, 'Soccer Team')
-      chatOps.insert(DEFAULT, 'noise4@g.us', 'group', undefined, 'Music Society')
       await startMcpServer(testPort)
 
-      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'paying family staff' })
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'family staff' })
       const chats = JSON.parse(result.result.content[0].text)
       const names = chats.map((c: any) => c.name)
-      expect(names).toContain('Family Staff')
-      expect(names).toContain('Family')
-      expect(names).toContain('Staff Room')
+      expect(names[0]).toBe('Family Staff')
+      const famStaff = chats.find((c: any) => c.name === 'Family Staff')
+      expect(famStaff).toBeDefined()
+      expect(famStaff.matchedVia).toBe('name')
+      for (const other of chats.filter((c: any) => c.name !== 'Family Staff')) {
+        expect(famStaff.rank).toBeLessThanOrEqual(other.rank)
+      }
       expect(names).not.toContain('Random Group')
-      expect(names).not.toContain('Music Society')
       expect(names).not.toContain('Book Lovers')
-      expect(names).not.toContain('Soccer Team')
-      expect(chats[0]).toHaveProperty('rank')
-      expect(chats[0].matchedVia).toBe('name')
+    })
+
+    it('rank-gap filter prunes weak FTS hits when a strong match exists', async () => {
+      chatOps.insert(DEFAULT, 'pang-staff@g.us', 'group', undefined, 'Pang Household Staff')
+      chatOps.insert(DEFAULT, 'stanley@g.us', 'group', undefined, 'Stanley')
+      chatOps.insert(DEFAULT, 'stanford@g.us', 'group', undefined, 'Stanford')
+      chatOps.insert(DEFAULT, 'kevin@g.us', 'group', undefined, 'Kevin Bautista')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'staff' })
+      const chats = JSON.parse(result.result.content[0].text)
+      const names = chats.map((c: any) => c.name)
+      expect(names).toContain('Pang Household Staff')
+      expect(names).not.toContain('Stanley')
+      expect(names).not.toContain('Stanford')
+      expect(names).not.toContain('Kevin Bautista')
     })
 
     it('tolerates typos via trigram fuzzy matching', async () => {
