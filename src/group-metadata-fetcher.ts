@@ -26,6 +26,10 @@ export class GroupMetadataFetcher {
   private retryCount: Map<string, number> = new Map()
   private maxRetries = 3
 
+  constructor(private slug: string) {}
+
+  getSlug(): string { return this.slug }
+
   setSocket(socket: any) { this.socket = socket }
 
   getCachedMetadata(jid: string): any | undefined { return this.groupCache.get(jid) }
@@ -36,23 +40,23 @@ export class GroupMetadataFetcher {
         this.pendingGroups.push(group)
       }
     }
-    console.log(`[GroupMetadata] Queued ${groups.length} groups, total pending: ${this.pendingGroups.length}`)
+    console.log(`[GroupMetadata:${this.slug}] Queued ${groups.length} groups, total pending: ${this.pendingGroups.length}`)
   }
 
   start() {
     if (this.isRunning) return
-    if (!this.socket) { console.error('[GroupMetadata] Cannot start: no socket set'); return }
+    if (!this.socket) { console.error(`[GroupMetadata:${this.slug}] Cannot start: no socket set`); return }
     this.isRunning = true
     this.fetchedCount = 0
-    console.log(`[GroupMetadata] Starting fetch for ${this.pendingGroups.length} groups`)
-    logOps.insert('info', 'group-metadata', `Starting metadata fetch for ${this.pendingGroups.length} groups`)
+    console.log(`[GroupMetadata:${this.slug}] Starting fetch for ${this.pendingGroups.length} groups`)
+    logOps.insert(this.slug, 'info', 'group-metadata', `Starting metadata fetch for ${this.pendingGroups.length} groups`)
     this.processNextGroup()
   }
 
   stop() {
     this.isRunning = false
     if (this.fetchTimeout) { clearTimeout(this.fetchTimeout); this.fetchTimeout = null }
-    console.log('[GroupMetadata] Stopped')
+    console.log(`[GroupMetadata:${this.slug}] Stopped`)
   }
 
   getStatus(): GroupMetadataFetcherStatus {
@@ -64,8 +68,8 @@ export class GroupMetadataFetcher {
   private async processNextGroup() {
     if (!this.isRunning || this.pendingGroups.length === 0) {
       if (this.isRunning) {
-        console.log(`[GroupMetadata] All groups fetched! (${this.fetchedCount} total)`)
-        logOps.insert('info', 'group-metadata', `Completed fetching metadata for ${this.fetchedCount} groups`)
+        console.log(`[GroupMetadata:${this.slug}] All groups fetched! (${this.fetchedCount} total)`)
+        logOps.insert(this.slug, 'info', 'group-metadata', `Completed fetching metadata for ${this.fetchedCount} groups`)
         this.isRunning = false
       }
       return
@@ -75,10 +79,10 @@ export class GroupMetadataFetcher {
     this.currentGroup = group.jid
 
     try {
-      console.log(`[GroupMetadata] Fetching ${group.jid} (${this.pendingGroups.length} remaining)`)
+      console.log(`[GroupMetadata:${this.slug}] Fetching ${group.jid} (${this.pendingGroups.length} remaining)`)
       const metadata = await this.socket.groupMetadata(group.jid)
       this.groupCache.set(group.jid, metadata)
-      
+
       if (metadata.participants && Array.isArray(metadata.participants)) {
         let namesFound = 0
         for (const participant of metadata.participants) {
@@ -90,20 +94,20 @@ export class GroupMetadataFetcher {
           const name = participant.notify || participant.name || undefined
           if (name) namesFound++
           if (jid && (name || phoneNumber || lid)) {
-            contactOps.insert(jid, name, phoneNumber, lid)
-            if (lid && phoneNumber) { contactOps.insert(lid, name, phoneNumber) }
+            contactOps.insert(this.slug, jid, name, phoneNumber, lid)
+            if (lid && phoneNumber) { contactOps.insert(this.slug, lid, name, phoneNumber) }
           }
         }
-        console.log(`[GroupMetadata] Stored ${metadata.participants.length} participants (${namesFound} with names) for ${group.jid}`)
-        const crossResolved = contactOps.crossResolveLidNames()
-        if (crossResolved.changes > 0) { console.log(`[GroupMetadata] Cross-resolved ${crossResolved.changes} LID contact names`) }
-        const crossResolvedDm = contactOps.crossResolveDmNames()
-        if (crossResolvedDm.changes > 0) { console.log(`[GroupMetadata] Cross-resolved ${crossResolvedDm.changes} DM contact names`) }
-        const chatBackfill = chatOps.backfillDmNames()
-        if (chatBackfill.changes > 0) { console.log(`[GroupMetadata] Backfilled ${chatBackfill.changes} DM chat names`) }
+        console.log(`[GroupMetadata:${this.slug}] Stored ${metadata.participants.length} participants (${namesFound} with names) for ${group.jid}`)
+        const crossResolved = contactOps.crossResolveLidNames(this.slug)
+        if (crossResolved.changes > 0) { console.log(`[GroupMetadata:${this.slug}] Cross-resolved ${crossResolved.changes} LID contact names`) }
+        const crossResolvedDm = contactOps.crossResolveDmNames(this.slug)
+        if (crossResolvedDm.changes > 0) { console.log(`[GroupMetadata:${this.slug}] Cross-resolved ${crossResolvedDm.changes} DM contact names`) }
+        const chatBackfill = chatOps.backfillDmNames(this.slug)
+        if (chatBackfill.changes > 0) { console.log(`[GroupMetadata:${this.slug}] Backfilled ${chatBackfill.changes} DM chat names`) }
       }
 
-      chatOps.updateGroupMetadataFetched(group.chatId, true)
+      chatOps.updateGroupMetadataFetched(this.slug, group.chatId, true)
       this.pendingGroups.shift()
       this.fetchedCount++
       this.lastError = null
@@ -112,26 +116,26 @@ export class GroupMetadataFetcher {
     } catch (error: any) {
       const errorMsg = error?.message || String(error)
       this.lastError = errorMsg
-      console.error(`[GroupMetadata] Error fetching ${group.jid}: ${errorMsg}`)
-      
+      console.error(`[GroupMetadata:${this.slug}] Error fetching ${group.jid}: ${errorMsg}`)
+
       if (errorMsg.includes('rate-overlimit') || errorMsg.includes('429')) {
         this.currentBackoffMs = Math.min(this.currentBackoffMs * 2, this.maxBackoffMs)
-        console.log(`[GroupMetadata] Rate limited, backing off for ${this.currentBackoffMs / 1000}s`)
+        console.log(`[GroupMetadata:${this.slug}] Rate limited, backing off for ${this.currentBackoffMs / 1000}s`)
       } else if (errorMsg.toLowerCase().includes('forbidden') || errorMsg.toLowerCase().includes('item-not-found')) {
-        console.log(`[GroupMetadata] Skipping ${group.jid}: ${errorMsg}`)
+        console.log(`[GroupMetadata:${this.slug}] Skipping ${group.jid}: ${errorMsg}`)
         this.pendingGroups.shift()
         this.fetchedCount++
         this.retryCount.delete(group.jid)
-        chatOps.updateGroupMetadataFetched(group.chatId, true)
+        chatOps.updateGroupMetadataFetched(this.slug, group.chatId, true)
       } else {
         const currentRetries = (this.retryCount.get(group.jid) || 0) + 1
         this.retryCount.set(group.jid, currentRetries)
         if (currentRetries >= this.maxRetries) {
-          console.log(`[GroupMetadata] Skipping ${group.jid} after ${currentRetries} failed attempts`)
+          console.log(`[GroupMetadata:${this.slug}] Skipping ${group.jid} after ${currentRetries} failed attempts`)
           this.pendingGroups.shift()
           this.fetchedCount++
           this.retryCount.delete(group.jid)
-          chatOps.updateGroupMetadataFetched(group.chatId, true)
+          chatOps.updateGroupMetadataFetched(this.slug, group.chatId, true)
         } else {
           this.currentBackoffMs = Math.min(this.currentBackoffMs * 2, this.maxBackoffMs)
         }
@@ -162,17 +166,17 @@ export class GroupMetadataFetcher {
               : extractPhoneFromJid(jid) ?? undefined
             const name = participant.notify || participant.name || undefined
             if (jid && (name || phoneNumber || lid)) {
-              contactOps.insert(jid, name, phoneNumber, lid)
-              if (lid && phoneNumber) { contactOps.insert(lid, name, phoneNumber) }
+              contactOps.insert(this.slug, jid, name, phoneNumber, lid)
+              if (lid && phoneNumber) { contactOps.insert(this.slug, lid, name, phoneNumber) }
             }
           }
-          contactOps.crossResolveLidNames()
-          contactOps.crossResolveDmNames()
-          chatOps.backfillDmNames()
+          contactOps.crossResolveLidNames(this.slug)
+          contactOps.crossResolveDmNames(this.slug)
+          chatOps.backfillDmNames(this.slug)
         }
-        console.log(`[GroupMetadata] Updated cache for ${event.id}`)
+        console.log(`[GroupMetadata:${this.slug}] Updated cache for ${event.id}`)
       } catch (error) {
-        console.error(`[GroupMetadata] Failed to update cache for ${event.id}:`, error)
+        console.error(`[GroupMetadata:${this.slug}] Failed to update cache for ${event.id}:`, error)
       }
     }
   }
@@ -191,31 +195,44 @@ export class GroupMetadataFetcher {
             : extractPhoneFromJid(jid) ?? undefined
           const name = participant.notify || participant.name || undefined
           if (jid && (name || phoneNumber || lid)) {
-            contactOps.insert(jid, name, phoneNumber, lid)
-            if (lid && phoneNumber) { contactOps.insert(lid, name, phoneNumber) }
+            contactOps.insert(this.slug, jid, name, phoneNumber, lid)
+            if (lid && phoneNumber) { contactOps.insert(this.slug, lid, name, phoneNumber) }
           }
         }
-        contactOps.crossResolveLidNames()
-        contactOps.crossResolveDmNames()
-        chatOps.backfillDmNames()
+        contactOps.crossResolveLidNames(this.slug)
+        contactOps.crossResolveDmNames(this.slug)
+        chatOps.backfillDmNames(this.slug)
       }
-      console.log(`[GroupMetadata] Updated participants for ${event.id}`)
+      console.log(`[GroupMetadata:${this.slug}] Updated participants for ${event.id}`)
     } catch (error) {
-      console.error(`[GroupMetadata] Failed to update participants for ${event.id}:`, error)
+      console.error(`[GroupMetadata:${this.slug}] Failed to update participants for ${event.id}:`, error)
     }
   }
 }
 
-// Singleton instance
-let groupMetadataFetcher: GroupMetadataFetcher | null = null
+// Per-slug registry.
+const fetchers = new Map<string, GroupMetadataFetcher>()
 
-export function initializeGroupMetadataFetcher(): GroupMetadataFetcher {
-  if (!groupMetadataFetcher) { groupMetadataFetcher = new GroupMetadataFetcher() }
-  return groupMetadataFetcher
+export function initializeGroupMetadataFetcher(slug: string): GroupMetadataFetcher {
+  let fetcher = fetchers.get(slug)
+  if (!fetcher) {
+    fetcher = new GroupMetadataFetcher(slug)
+    fetchers.set(slug, fetcher)
+  }
+  return fetcher
 }
 
-export function getGroupMetadataFetcher(): GroupMetadataFetcher {
-  if (!groupMetadataFetcher) { throw new Error('GroupMetadataFetcher not initialized') }
-  return groupMetadataFetcher
+export function getGroupMetadataFetcher(slug: string): GroupMetadataFetcher {
+  const fetcher = fetchers.get(slug)
+  if (!fetcher) {
+    throw new Error(
+      `GroupMetadataFetcher not initialized for slug "${slug}". Call initializeGroupMetadataFetcher("${slug}") first.`
+    )
+  }
+  return fetcher
+}
+
+export function resetGroupMetadataFetchers(): void {
+  fetchers.clear()
 }
 
