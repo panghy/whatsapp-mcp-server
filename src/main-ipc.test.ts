@@ -1,4 +1,4 @@
-import { vi, describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { vi, describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'vitest'
 import path from 'path'
 import fs from 'fs'
 
@@ -56,6 +56,7 @@ vi.mock('electron-updater', () => {
 import Settings from 'electron-settings'
 import { addAccount, getAccount, accountAuthDir, accountDbPath } from './accounts'
 import { settingOps, chatOps, contactOps, logOps, closeAllDatabases } from './database'
+import { setManager, listManagers, type WhatsAppManager, type ConnectionState } from './whatsapp-manager'
 
 async function invoke(channel: string, ...args: any[]): Promise<any> {
   const handler = ipcHandlers.get(channel)
@@ -155,6 +156,100 @@ describe('main IPC surface', () => {
       const secondary = await invoke('accounts-get-mcp-urls', { slug: 'secondary' })
       expect(secondary.path).toBe('/mcp/secondary')
       expect(secondary.alias).toBeUndefined()
+    })
+  })
+
+  describe('account-management connected-guard', () => {
+    function fakeManager(slug: string, state: ConnectionState): WhatsAppManager {
+      return { slug, socket: null, state, qrCode: null, error: null }
+    }
+
+    afterEach(() => {
+      // Purge any fake managers so later tests see a clean registry.
+      const registry = listManagers()
+      for (const slug of Array.from(registry.keys())) registry.delete(slug)
+    })
+
+    it('accounts-remove rejects when the account has a connected manager', async () => {
+      await invoke('accounts-add', { slug: 'live' })
+      setManager('live', fakeManager('live', 'connected'))
+
+      await expect(invoke('accounts-remove', { slug: 'live' })).rejects.toThrow(/while connected/)
+
+      // Registry entry is untouched.
+      expect(getAccount('live')).toBeDefined()
+      // Account dir (and its auth subdir) are still on disk.
+      expect(fs.existsSync(path.dirname(accountDbPath('live')))).toBe(true)
+      expect(fs.existsSync(accountAuthDir('live'))).toBe(true)
+    })
+
+    it('accounts-remove rejects when the manager is still connecting', async () => {
+      await invoke('accounts-add', { slug: 'pending' })
+      setManager('pending', fakeManager('pending', 'connecting'))
+
+      await expect(invoke('accounts-remove', { slug: 'pending' })).rejects.toThrow(/while connected/)
+      expect(getAccount('pending')).toBeDefined()
+      expect(fs.existsSync(path.dirname(accountDbPath('pending')))).toBe(true)
+    })
+
+    it('accounts-rename rejects when the old slug has a connected manager', async () => {
+      await invoke('accounts-add', { slug: 'old-live' })
+      setManager('old-live', fakeManager('old-live', 'connected'))
+
+      await expect(
+        invoke('accounts-rename', { oldSlug: 'old-live', newSlug: 'renamed' })
+      ).rejects.toThrow(/while connected/)
+
+      // Registry unchanged: old slug still there, new slug not created.
+      expect(getAccount('old-live')).toBeDefined()
+      expect(getAccount('renamed')).toBeUndefined()
+      // Old dir still on disk; new dir was not moved into place.
+      expect(fs.existsSync(path.dirname(accountDbPath('old-live')))).toBe(true)
+      expect(fs.existsSync(path.dirname(accountDbPath('renamed')))).toBe(false)
+    })
+
+    it('accounts-rename rejects when the old slug is still connecting', async () => {
+      await invoke('accounts-add', { slug: 'old-pending' })
+      setManager('old-pending', fakeManager('old-pending', 'connecting'))
+
+      await expect(
+        invoke('accounts-rename', { oldSlug: 'old-pending', newSlug: 'renamed-pending' })
+      ).rejects.toThrow(/while connected/)
+      expect(getAccount('old-pending')).toBeDefined()
+      expect(getAccount('renamed-pending')).toBeUndefined()
+    })
+
+    it('accounts-remove succeeds once the manager transitions to disconnected', async () => {
+      await invoke('accounts-add', { slug: 'will-drop' })
+      const mgr = fakeManager('will-drop', 'connected')
+      setManager('will-drop', mgr)
+
+      // First call blocked by the guard.
+      await expect(invoke('accounts-remove', { slug: 'will-drop' })).rejects.toThrow(/while connected/)
+
+      // Simulate the user disconnecting: state flips to 'disconnected'.
+      mgr.state = 'disconnected'
+      const result = await invoke('accounts-remove', { slug: 'will-drop' })
+      expect(result.success).toBe(true)
+      expect(getAccount('will-drop')).toBeUndefined()
+      expect(fs.existsSync(path.dirname(accountDbPath('will-drop')))).toBe(false)
+    })
+
+    it('accounts-rename succeeds once the manager transitions to disconnected', async () => {
+      await invoke('accounts-add', { slug: 'old-name' })
+      const mgr = fakeManager('old-name', 'connected')
+      setManager('old-name', mgr)
+
+      await expect(
+        invoke('accounts-rename', { oldSlug: 'old-name', newSlug: 'new-name' })
+      ).rejects.toThrow(/while connected/)
+
+      mgr.state = 'disconnected'
+      const renamed = await invoke('accounts-rename', { oldSlug: 'old-name', newSlug: 'new-name' })
+      expect(renamed.slug).toBe('new-name')
+      expect(getAccount('old-name')).toBeUndefined()
+      expect(getAccount('new-name')).toBeDefined()
+      expect(fs.existsSync(accountDbPath('new-name'))).toBe(true)
     })
   })
 
