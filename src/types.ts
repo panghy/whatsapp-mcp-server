@@ -71,7 +71,7 @@ declare global {
 
       // Account registry
       accounts: {
-        list: () => Promise<Account[]>
+        list: () => Promise<{ accounts: Account[]; defaultSlug: string | null }>
         add: (slug: string) => Promise<Account>
         remove: (slug: string) => Promise<{ success: boolean }>
         rename: (oldSlug: string, newSlug: string) => Promise<{ success: boolean }>

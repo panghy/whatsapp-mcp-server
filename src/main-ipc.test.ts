@@ -91,11 +91,31 @@ describe('main IPC surface', () => {
   })
 
   describe('account registry IPC', () => {
-    it('accounts-list returns the registry contents', async () => {
+    it('accounts-list returns the registry contents with defaultSlug envelope', async () => {
       addAccount('alpha')
       addAccount('beta')
-      const accounts = await invoke('accounts-list')
-      expect(accounts.map((a: any) => a.slug).sort()).toEqual(['alpha', 'beta'])
+      const envelope = await invoke('accounts-list')
+      expect(envelope.accounts.map((a: any) => a.slug).sort()).toEqual(['alpha', 'beta'])
+      expect('defaultSlug' in envelope).toBe(true)
+    })
+
+    it('accounts-list returns the current defaultSlug and is unaffected by any UI "selected" notion', async () => {
+      await invoke('accounts-add', { slug: 'first' })
+      await invoke('accounts-add', { slug: 'second' })
+      await invoke('accounts-set-default', { slug: 'first' })
+
+      const envelope1 = await invoke('accounts-list')
+      expect(envelope1.defaultSlug).toBe('first')
+
+      // There is no IPC that changes defaultSlug based on which slug the UI is
+      // "viewing" — only accounts-set-default does. Calling accounts-list again
+      // (regardless of any selection state) must keep the previously set default.
+      const envelope2 = await invoke('accounts-list')
+      expect(envelope2.defaultSlug).toBe('first')
+
+      await invoke('accounts-set-default', { slug: 'second' })
+      const envelope3 = await invoke('accounts-list')
+      expect(envelope3.defaultSlug).toBe('second')
     })
 
     it('accounts-add creates the account and initializes its DB', async () => {
@@ -141,8 +161,9 @@ describe('main IPC surface', () => {
       await invoke('accounts-add', { slug: 'a' })
       await invoke('accounts-add', { slug: 'b' })
       await invoke('accounts-set-default', { slug: 'b' })
-      const accounts = await invoke('accounts-list')
-      expect(accounts.find((x: any) => x.slug === 'b')).toBeTruthy()
+      const envelope = await invoke('accounts-list')
+      expect(envelope.accounts.find((x: any) => x.slug === 'b')).toBeTruthy()
+      expect(envelope.defaultSlug).toBe('b')
     })
 
     it('accounts-get-mcp-urls returns /mcp/<slug> and /mcp alias for default', async () => {

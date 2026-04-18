@@ -32,13 +32,16 @@ export function accountStatusLabel(
 interface AccountSwitcherProps {
   accounts: Account[]
   selectedSlug: string
+  defaultSlug: string | null
   statusByAccount: Record<string, WhatsAppStatus | undefined>
   onSelect: (slug: string) => void
   onAdd: () => void
 }
 
+const DEFAULT_MARKER_TITLE = 'MCP clients pointed at /mcp route to this account.'
+
 export default function AccountSwitcher({
-  accounts, selectedSlug, statusByAccount, onSelect, onAdd,
+  accounts, selectedSlug, defaultSlug, statusByAccount, onSelect, onAdd,
 }: AccountSwitcherProps) {
   return (
     <div className="account-switcher" role="tablist" aria-label="Accounts">
@@ -47,18 +50,32 @@ export default function AccountSwitcher({
           const status = statusByAccount[account.slug]
           const color = accountDotColor(account.mcpEnabled, status?.state)
           const isActive = account.slug === selectedSlug
+          const isDefault = account.slug === defaultSlug
+          const pillTitle = isDefault
+            ? `${account.slug} (default) — ${accountStatusLabel(account, status)}\n${DEFAULT_MARKER_TITLE}`
+            : `${account.slug} — ${accountStatusLabel(account, status)}`
           return (
             <button
               key={account.slug}
               type="button"
               role="tab"
               aria-selected={isActive}
-              className={`account-pill ${isActive ? 'active' : ''}`}
+              className={`account-pill ${isActive ? 'active' : ''}${isDefault ? ' is-default' : ''}`}
               onClick={() => onSelect(account.slug)}
-              title={`${account.slug} — ${accountStatusLabel(account, status)}`}
+              title={pillTitle}
             >
               <span className="account-dot" style={{ backgroundColor: color }} />
               <span className="account-slug">{account.slug}</span>
+              {isDefault && (
+                <span
+                  className="account-default-marker"
+                  aria-label="Default account"
+                  title={DEFAULT_MARKER_TITLE}
+                  style={{ marginLeft: '0.35rem', fontSize: '0.7rem', color: 'hsl(var(--muted-foreground))', fontWeight: 400 }}
+                >
+                  ★
+                </span>
+              )}
             </button>
           )
         })}

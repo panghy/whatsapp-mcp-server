@@ -15,13 +15,14 @@ interface Group {
 interface SettingsProps {
   slug: string
   accounts: Account[]
+  defaultSlug: string | null
   statusByAccount: Record<string, WhatsAppStatus>
   onAccountsChanged: (nextSelected?: string) => Promise<void> | void
   onBack?: () => void
   onLogoff?: () => void
 }
 
-export default function Settings({ slug, accounts, statusByAccount, onAccountsChanged, onBack, onLogoff }: SettingsProps) {
+export default function Settings({ slug, accounts, defaultSlug, statusByAccount, onAccountsChanged, onBack, onLogoff }: SettingsProps) {
   const [activeTab, setActiveTab] = useState<'group-sync' | 'interface-system' | 'logs' | 'accounts'>('group-sync')
   const [groups, setGroups] = useState<Group[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -366,42 +367,23 @@ export default function Settings({ slug, accounts, statusByAccount, onAccountsCh
         )}
 
         {activeTab === 'accounts' && (
-          <div>
-            <h3>Accounts</h3>
-            <p className="tab-description">Each account has its own WhatsApp session, database, and MCP endpoint. The active account appears with a dot.</p>
-            <div className="accounts-list" style={{ marginTop: '1rem' }}>
-              {accounts.map((a) => {
-                const st = statusByAccount[a.slug]
-                const isActive = a.slug === slug
-                const editing = renameSlug === a.slug
-                const info = mcpUrls[a.slug]
-                const url = `http://localhost:${mcpStatus.port}${info?.path || `/mcp/${a.slug}`}`
-                return (
-                  <div key={a.slug} className="account-row" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid hsl(var(--border))', marginBottom: '0.75rem', backgroundColor: isActive ? 'hsl(var(--muted) / 0.4)' : 'transparent' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: !a.mcpEnabled ? '#f97316' : st?.state === 'connected' ? 'hsl(var(--success))' : st?.state === 'connecting' ? 'hsl(var(--warning))' : st?.state === 'error' ? 'hsl(var(--destructive))' : 'hsl(var(--muted-foreground))' }} />
-                      {editing ? (
-                        <>
-                          <input type="text" autoFocus value={renameValue} onChange={(e) => { setRenameValue(e.target.value.toLowerCase()); setRenameError(null) }} onKeyDown={(e) => { if (e.key === 'Enter') void submitRename(); if (e.key === 'Escape') cancelRename() }} style={{ flex: 1, padding: '0.25rem 0.5rem', borderRadius: '0.25rem', border: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--input))', color: 'hsl(var(--foreground))' }} />
-                          <button className="action-btn" onClick={() => void submitRename()} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Save</button>
-                          <button className="action-btn" onClick={cancelRename} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Cancel</button>
-                        </>
-                      ) : (
-                        <>
-                          <strong style={{ flex: 1 }}>{a.slug}{isActive && <span style={{ fontSize: '0.7rem', color: 'hsl(var(--muted-foreground))', marginLeft: '0.5rem', fontWeight: 400 }}>active</span>}</strong>
-                          <button className="action-btn" onClick={() => handleSetDefault(a.slug)} disabled={isActive} style={{ padding: '4px 8px', fontSize: '0.75rem' }} title="Make this the default account on startup">Make default</button>
-                          <button className="action-btn" onClick={() => startRename(a.slug)} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Rename</button>
-                          <button className="action-btn danger" onClick={() => handleRemoveAccount(a.slug)} disabled={accounts.length <= 1} style={{ padding: '4px 8px', fontSize: '0.75rem', color: 'white' }}>Remove</button>
-                        </>
-                      )}
-                    </div>
-                    {editing && renameError && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', margin: 0 }}>{renameError}</p>)}
-                    <code style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))' }}>{url}</code>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
+          <AccountsTabBody
+            accounts={accounts}
+            selectedSlug={slug}
+            defaultSlug={defaultSlug}
+            statusByAccount={statusByAccount}
+            mcpPort={mcpStatus.port}
+            mcpUrls={mcpUrls}
+            renameSlug={renameSlug}
+            renameValue={renameValue}
+            renameError={renameError}
+            onRenameValueChange={(v) => { setRenameValue(v); setRenameError(null) }}
+            onSubmitRename={() => void submitRename()}
+            onCancelRename={cancelRename}
+            onStartRename={startRename}
+            onSetDefault={handleSetDefault}
+            onRemoveAccount={handleRemoveAccount}
+          />
         )}
 
         {activeTab === 'logs' && (<div><LogsViewer slug={slug} /></div>)}
@@ -417,3 +399,87 @@ export default function Settings({ slug, accounts, statusByAccount, onAccountsCh
   )
 }
 
+
+
+interface AccountsTabBodyProps {
+  accounts: Account[]
+  selectedSlug: string
+  defaultSlug: string | null
+  statusByAccount: Record<string, WhatsAppStatus>
+  mcpPort: number
+  mcpUrls: Record<string, McpUrlInfo>
+  renameSlug: string | null
+  renameValue: string
+  renameError: string | null
+  onRenameValueChange: (value: string) => void
+  onSubmitRename: () => void
+  onCancelRename: () => void
+  onStartRename: (slug: string) => void
+  onSetDefault: (slug: string) => void
+  onRemoveAccount: (slug: string) => void
+}
+
+export function AccountsTabBody({
+  accounts, selectedSlug, defaultSlug, statusByAccount, mcpPort, mcpUrls,
+  renameSlug, renameValue, renameError,
+  onRenameValueChange, onSubmitRename, onCancelRename, onStartRename,
+  onSetDefault, onRemoveAccount,
+}: AccountsTabBodyProps) {
+  return (
+    <div>
+      <h3>Accounts</h3>
+      <p className="tab-description">Each account has its own WhatsApp session, database, and MCP endpoint.</p>
+      <p className="tab-description" data-testid="default-explainer" style={{ marginTop: '0.5rem', padding: '0.75rem', backgroundColor: 'hsl(var(--muted) / 0.4)', borderRadius: '0.375rem', fontSize: '0.85rem' }}>
+        The default account is also served at the bare <code>/mcp</code> path for back-compat with single-account MCP clients. Changing which account you&apos;re viewing at the top of the window does not change the default — click &quot;Make default&quot; below to change it.
+      </p>
+      <div className="accounts-list" style={{ marginTop: '1rem' }}>
+        {accounts.map((a) => {
+          const st = statusByAccount[a.slug]
+          const isViewing = a.slug === selectedSlug
+          const isDefault = a.slug === defaultSlug
+          const editing = renameSlug === a.slug
+          const info = mcpUrls[a.slug]
+          const url = `http://localhost:${mcpPort}${info?.path || `/mcp/${a.slug}`}`
+          return (
+            <div key={a.slug} className="account-row" data-slug={a.slug} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid hsl(var(--border))', marginBottom: '0.75rem', backgroundColor: isViewing ? 'hsl(var(--muted) / 0.4)' : 'transparent' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: !a.mcpEnabled ? '#f97316' : st?.state === 'connected' ? 'hsl(var(--success))' : st?.state === 'connecting' ? 'hsl(var(--warning))' : st?.state === 'error' ? 'hsl(var(--destructive))' : 'hsl(var(--muted-foreground))' }} />
+                {editing ? (
+                  <>
+                    <input type="text" autoFocus value={renameValue} onChange={(e) => onRenameValueChange(e.target.value.toLowerCase())} onKeyDown={(e) => { if (e.key === 'Enter') onSubmitRename(); if (e.key === 'Escape') onCancelRename() }} style={{ flex: 1, padding: '0.25rem 0.5rem', borderRadius: '0.25rem', border: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--input))', color: 'hsl(var(--foreground))' }} />
+                    <button className="action-btn" onClick={onSubmitRename} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Save</button>
+                    <button className="action-btn" onClick={onCancelRename} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Cancel</button>
+                  </>
+                ) : (
+                  <>
+                    <strong style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span>{a.slug}</span>
+                      {isDefault && (
+                        <span
+                          className="account-default-badge"
+                          data-testid="default-badge"
+                          title="MCP clients pointed at /mcp route to this account."
+                          style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '2px 6px', borderRadius: '9999px', backgroundColor: 'hsl(var(--primary, 210 90% 50%))', color: 'white', fontWeight: 600 }}
+                        >
+                          Default
+                        </span>
+                      )}
+                      {isViewing && (
+                        <span style={{ fontSize: '0.7rem', color: 'hsl(var(--muted-foreground))', fontWeight: 400 }}>viewing</span>
+                      )}
+                    </strong>
+                    <button className="action-btn" data-testid={`make-default-${a.slug}`} onClick={() => onSetDefault(a.slug)} disabled={isDefault} style={{ padding: '4px 8px', fontSize: '0.75rem' }} title="Make this the default account; MCP clients pointed at /mcp will route here.">Make default</button>
+                    <button className="action-btn" onClick={() => onStartRename(a.slug)} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Rename</button>
+                    <button className="action-btn danger" onClick={() => onRemoveAccount(a.slug)} disabled={accounts.length <= 1} style={{ padding: '4px 8px', fontSize: '0.75rem', color: 'white' }}>Remove</button>
+                  </>
+                )}
+              </div>
+              {editing && renameError && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', margin: 0 }}>{renameError}</p>)}
+              <code style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))' }}>{url}</code>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}

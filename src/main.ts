@@ -625,7 +625,10 @@ ipcMain.handle('quit-and-install', async () => {
 // IPC: account registry
 // ---------------------------------------------------------------------------
 
-ipcMain.handle('accounts-list', async () => listAccounts())
+ipcMain.handle('accounts-list', async () => ({
+  accounts: listAccounts(),
+  defaultSlug: getDefaultSlug(),
+}))
 
 ipcMain.handle('accounts-add', async (_, payload: { slug: string }) => {
   const { slug } = payload || ({} as any)

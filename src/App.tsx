@@ -31,6 +31,7 @@ function formatRelativeTime(timestamp: number | null): string {
 
 export default function App() {
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [defaultSlug, setDefaultSlug] = useState<string | null>(null)
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null)
   const [statusByAccount, setStatusByAccount] = useState<Record<string, WhatsAppStatus>>({})
   const [showAddModal, setShowAddModal] = useState(false)
@@ -46,8 +47,9 @@ export default function App() {
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null)
 
   const refreshAccounts = useCallback(async (): Promise<Account[]> => {
-    const list = await window.electron.accounts.list()
+    const { accounts: list, defaultSlug: nextDefault } = await window.electron.accounts.list()
     setAccounts(list)
+    setDefaultSlug(nextDefault)
     return list
   }, [])
 
@@ -110,16 +112,18 @@ export default function App() {
     const slug = selectedSlug
     const id = setInterval(async () => {
       try {
-        const [st, syncSt, activitySt, mcpSt, list] = await Promise.all([
+        const [st, syncSt, activitySt, mcpSt, envelope] = await Promise.all([
           window.electron.whatsappGetStatus(slug),
           window.electron.getSyncStatus(slug),
           window.electron.getActivityStatus(slug),
           window.electron.getMcpStatus(),
           window.electron.accounts.list(),
         ])
+        const list = envelope.accounts
         setStatusByAccount((prev) => ({ ...prev, [slug]: st }))
         setSyncStatus(syncSt); setActivityStatus(activitySt); setMcpStatus(mcpSt)
         setAccounts(list)
+        setDefaultSlug(envelope.defaultSlug)
         // Refresh status dots for other accounts in the background.
         await Promise.all(list.filter((a) => a.slug !== slug).map(async (a) => {
           try {
@@ -208,6 +212,7 @@ export default function App() {
     <AccountSwitcher
       accounts={accounts}
       selectedSlug={selectedSlug}
+      defaultSlug={defaultSlug}
       statusByAccount={statusByAccount}
       onSelect={handleSelectSlug}
       onAdd={() => setShowAddModal(true)}
@@ -305,6 +310,7 @@ export default function App() {
         <Settings
           slug={slug}
           accounts={accounts}
+          defaultSlug={defaultSlug}
           statusByAccount={statusByAccount}
           onAccountsChanged={handleAccountsChanged}
           onBack={() => { whatsappStatus.state === 'connected' ? setCurrentView('sync-status') : whatsappStatus.state === 'connecting' ? setCurrentView('loading') : setCurrentView('hero') }}
