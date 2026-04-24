@@ -325,7 +325,7 @@ const createTray = () => {
  * Register Baileys event handlers for a given slug/socket.
  * Called on initial connect and again on every reconnect (via onSocketCreated).
  */
-function registerHandlersForSlug(slug: string, socket: any): void {
+export function registerHandlersForSlug(slug: string, socket: any): void {
   console.log(`[SETUP:${slug}] Registering event handlers on socket...`)
   const syncOrchestrator = initializeSyncOrchestrator(slug, socket)
   const messageTransformer = new MessageTransformer(slug, socket)
@@ -344,6 +344,37 @@ function registerHandlersForSlug(slug: string, socket: any): void {
       groupMetadataFetcher.start()
       pendingGroupsBuffer = []
     }
+  }
+
+  // Upsert a single chat entry from chats.upsert or groups.upsert. Returns
+  // the new chatId + group flag when a row was inserted so the caller can
+  // queue it for metadata fetching. Returns null for newsletters, broadcasts,
+  // and already-known chats (name is refreshed in place for those).
+  const upsertDiscoveredChat = (entry: any, forceGroup: boolean): { chatId: number; jid: string; isGroup: boolean } | null => {
+    const jid: string | undefined = entry?.id
+    if (!jid || isNewsletterOrBroadcast(jid)) return null
+    const isGroup = forceGroup || jid.includes('@g.us')
+    const chatType = isGroup ? 'group' : 'dm'
+    let chatName: string | undefined = entry.subject || entry.name || undefined
+    const existing = chatOps.getByWhatsappJid(slug, jid) as any
+    if (existing) {
+      if (!existing.name && chatName) { chatOps.updateName(slug, existing.id, chatName) }
+      return null
+    }
+    if (!chatName && !isGroup) {
+      const contact = contactOps.getByJid(slug, jid) as any
+      if (contact?.name) { chatName = contact.name }
+    }
+    const enabled = isGroup ? 0 : 1
+    const result = chatOps.insert(slug, jid, chatType, undefined, chatName, enabled)
+    const chatId = (result as any).lastInsertRowid as number
+    return { chatId, jid, isGroup }
+  }
+
+  const queueOrBufferGroups = (groups: Array<{ chatId: number; jid: string }>) => {
+    if (groups.length === 0) return
+    if (contactSyncComplete) { groupMetadataFetcher.queueGroups(groups); groupMetadataFetcher.start() }
+    else { pendingGroupsBuffer.push(...groups) }
   }
 
   socket.ev.on('connection.update', async (update: any) => {
@@ -438,9 +469,15 @@ function registerHandlersForSlug(slug: string, socket: any): void {
           let chat = chatOps.getByWhatsappJid(slug, jid) as any
           if (!chat) {
             const chatType = jid.includes('@g.us') ? 'group' : 'dm'
-            const result = chatOps.insert(slug, jid, chatType, undefined, undefined)
+            const enabled = chatType === 'dm' ? 1 : 0
+            const result = chatOps.insert(slug, jid, chatType, undefined, undefined, enabled)
             const chatId = (result as any).lastInsertRowid
-            chat = { id: chatId, whatsapp_jid: jid, chat_type: chatType }
+            chat = { id: chatId, whatsapp_jid: jid, chat_type: chatType, enabled }
+            if (chatType === 'group') {
+              const newGroup = [{ chatId, jid }]
+              if (contactSyncComplete) { groupMetadataFetcher.queueGroups(newGroup); groupMetadataFetcher.start() }
+              else { pendingGroupsBuffer.push(...newGroup) }
+            }
           }
           try { await messageTransformer.processMessage(msg, chat.id) } catch (error) { console.error(`[HistorySync:${slug}] Failed to process message:`, error) }
         }
@@ -478,9 +515,15 @@ function registerHandlersForSlug(slug: string, socket: any): void {
           if (!chat) {
             const chatType = jid.includes('@g.us') ? 'group' : 'dm'
             const chatName = chatType === 'dm' ? (contactOps.getByJid(slug, jid) as any)?.name : undefined
-            const result = chatOps.insert(slug, jid, chatType, undefined, chatName)
+            const enabled = chatType === 'dm' ? 1 : 0
+            const result = chatOps.insert(slug, jid, chatType, undefined, chatName, enabled)
             const chatId = (result as any).lastInsertRowid
-            chat = { id: chatId, whatsapp_jid: jid, chat_type: chatType, enabled: chatType === 'dm' ? 1 : 0 }
+            chat = { id: chatId, whatsapp_jid: jid, chat_type: chatType, enabled }
+            if (chatType === 'group') {
+              const newGroup = [{ chatId, jid }]
+              if (contactSyncComplete) { groupMetadataFetcher.queueGroups(newGroup); groupMetadataFetcher.start() }
+              else { pendingGroupsBuffer.push(...newGroup) }
+            }
           }
           if (chat.enabled) {
             try { await messageTransformer.processMessage(msg, chat.id) }
@@ -518,6 +561,52 @@ function registerHandlersForSlug(slug: string, socket: any): void {
           }
         }
       }
+    }
+
+    if (events['groups.upsert']) {
+      const payload = events['groups.upsert'] as any[]
+      const newGroups: Array<{ chatId: number; jid: string }> = []
+      for (const group of payload) {
+        const res = upsertDiscoveredChat(group, true)
+        if (res) newGroups.push({ chatId: res.chatId, jid: res.jid })
+      }
+      if (newGroups.length > 0) {
+        console.log(`[GroupsUpsert:${slug}] Discovered ${newGroups.length} new group(s)`)
+        logOps.insert(slug, 'info', 'groups', `Discovered ${newGroups.length} new group(s) via groups.upsert`)
+      }
+      queueOrBufferGroups(newGroups)
+    }
+
+    if (events['chats.upsert']) {
+      const payload = events['chats.upsert'] as any[]
+      const newGroups: Array<{ chatId: number; jid: string }> = []
+      for (const chat of payload) {
+        const res = upsertDiscoveredChat(chat, false)
+        if (res?.isGroup) newGroups.push({ chatId: res.chatId, jid: res.jid })
+      }
+      if (newGroups.length > 0) {
+        console.log(`[ChatsUpsert:${slug}] Discovered ${newGroups.length} new group(s) in chats.upsert batch`)
+        logOps.insert(slug, 'info', 'chats', `Discovered ${newGroups.length} new group(s) via chats.upsert`)
+      }
+      queueOrBufferGroups(newGroups)
+    }
+
+    if (events['groups.update']) {
+      const updates = events['groups.update'] as any[]
+      for (const upd of updates) {
+        if (!upd?.id) continue
+        if (upd.subject) {
+          const existing = chatOps.getByWhatsappJid(slug, upd.id) as any
+          if (existing) { chatOps.updateName(slug, existing.id, upd.subject) }
+        }
+      }
+      try { await groupMetadataFetcher.handleGroupUpdate(updates) }
+      catch (error) { console.error(`[RealTime:${slug}] groups.update failed:`, error) }
+    }
+
+    if (events['group-participants.update']) {
+      try { await groupMetadataFetcher.handleParticipantsUpdate(events['group-participants.update']) }
+      catch (error) { console.error(`[RealTime:${slug}] group-participants.update failed:`, error) }
     }
   })
 }
