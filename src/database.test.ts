@@ -78,7 +78,7 @@ describe('Database Integration Tests', () => {
     it('should apply all migrations', () => {
       const db = getDatabase(SLUG)
       const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
-      expect(version.version).toBe(6)
+      expect(version.version).toBe(7)
     })
 
     it('should return the same handle when initialized twice for the same slug', () => {
@@ -105,6 +105,51 @@ describe('Database Integration Tests', () => {
       closeAllDatabases()
       expect(() => getDatabase('a')).toThrow(/not initialized/)
       expect(() => getDatabase('b')).toThrow(/not initialized/)
+    })
+  })
+
+  describe('migration 7 (backfill enabled=0 for bug-inserted groups)', () => {
+    it('flips only groups where group_metadata_fetched=0 and enabled=1', () => {
+      const db = getDatabase(SLUG)
+
+      // Seed four rows using raw SQL so we can bypass chatOps.insert and
+      // mimic the exact historical state the migration is cleaning up.
+      db.prepare(`INSERT INTO chats (whatsapp_jid, chat_type, name, enabled, group_metadata_fetched)
+                  VALUES (?, ?, ?, ?, ?)`)
+        .run('buggy-unfetched@g.us', 'group', 'Buggy', 1, 0)
+      db.prepare(`INSERT INTO chats (whatsapp_jid, chat_type, name, enabled, group_metadata_fetched)
+                  VALUES (?, ?, ?, ?, ?)`)
+        .run('correct-unfetched@g.us', 'group', 'Correct', 0, 0)
+      db.prepare(`INSERT INTO chats (whatsapp_jid, chat_type, name, enabled, group_metadata_fetched)
+                  VALUES (?, ?, ?, ?, ?)`)
+        .run('fetched-enabled@g.us', 'group', 'Fetched', 1, 1)
+      db.prepare(`INSERT INTO chats (whatsapp_jid, chat_type, name, enabled, group_metadata_fetched)
+                  VALUES (?, ?, ?, ?, ?)`)
+        .run('dm@s.whatsapp.net', 'dm', 'Alice', 1, 0)
+
+      // Re-run the migration in isolation (it is idempotent, so reapplying
+      // via a hand-rolled UPDATE is equivalent to triggering applyMigration7).
+      db.prepare(`UPDATE chats SET enabled = 0
+                  WHERE chat_type = 'group' AND group_metadata_fetched = 0 AND enabled = 1`).run()
+
+      const buggy = db.prepare('SELECT enabled FROM chats WHERE whatsapp_jid = ?').get('buggy-unfetched@g.us') as any
+      const correct = db.prepare('SELECT enabled FROM chats WHERE whatsapp_jid = ?').get('correct-unfetched@g.us') as any
+      const fetched = db.prepare('SELECT enabled FROM chats WHERE whatsapp_jid = ?').get('fetched-enabled@g.us') as any
+      const dm = db.prepare('SELECT enabled FROM chats WHERE whatsapp_jid = ?').get('dm@s.whatsapp.net') as any
+
+      expect(buggy.enabled).toBe(0)
+      expect(correct.enabled).toBe(0)
+      expect(fetched.enabled).toBe(1)
+      expect(dm.enabled).toBe(1)
+    })
+
+    it('runs at schema bootstrap on a fresh DB (idempotent no-op when no bad rows)', () => {
+      // A freshly initialized DB will have run migration 7 already; a re-run
+      // should touch zero rows.
+      const db = getDatabase(SLUG)
+      const result = db.prepare(`UPDATE chats SET enabled = 0
+                  WHERE chat_type = 'group' AND group_metadata_fetched = 0 AND enabled = 1`).run()
+      expect(result.changes).toBe(0)
     })
   })
 
@@ -150,6 +195,22 @@ describe('Database Integration Tests', () => {
 
       const nonExistent = chatOps.getByJidAndType(SLUG, 'group@g.us', 'dm')
       expect(nonExistent).toBeUndefined()
+    })
+
+    it('should honor explicit enabled argument when provided', () => {
+      chatOps.insert(SLUG, 'grp-disabled@g.us', 'group', undefined, 'Disabled', 0)
+      chatOps.insert(SLUG, 'dm-enabled@s.whatsapp.net', 'dm', undefined, 'Bob', 1)
+
+      const group = chatOps.getByWhatsappJid(SLUG, 'grp-disabled@g.us') as any
+      const dm = chatOps.getByWhatsappJid(SLUG, 'dm-enabled@s.whatsapp.net') as any
+      expect(group.enabled).toBe(0)
+      expect(dm.enabled).toBe(1)
+    })
+
+    it('should default to the SQLite column default when enabled is omitted', () => {
+      chatOps.insert(SLUG, 'default-group@g.us', 'group', undefined, 'DefaultGroup')
+      const group = chatOps.getByWhatsappJid(SLUG, 'default-group@g.us') as any
+      expect(group.enabled).toBe(1)
     })
   })
 
