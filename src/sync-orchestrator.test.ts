@@ -263,6 +263,32 @@ describe('SyncOrchestrator Tests', () => {
     })
   })
 
+  describe('syncChat() insert', () => {
+    it('inserts a new group with enabled=0', async () => {
+      const mockSocket = {}
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
+
+      await (orchestrator as any).syncChat({ id: 'newgroup@g.us' })
+
+      const row = chatOps.getByWhatsappJid(SLUG, 'newgroup@g.us') as any
+      expect(row).toBeDefined()
+      expect(row.chat_type).toBe('group')
+      expect(row.enabled).toBe(0)
+    })
+
+    it('inserts a new DM with enabled=1', async () => {
+      const mockSocket = {}
+      const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
+
+      await (orchestrator as any).syncChat({ id: 'newdm@s.whatsapp.net' })
+
+      const row = chatOps.getByWhatsappJid(SLUG, 'newdm@s.whatsapp.net') as any
+      expect(row).toBeDefined()
+      expect(row.chat_type).toBe('dm')
+      expect(row.enabled).toBe(1)
+    })
+  })
+
   describe('syncEnabledGroup()', () => {
     it('should throw error if chat not found', async () => {
       const mockSocket = {}
