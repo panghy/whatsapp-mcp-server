@@ -1,7 +1,54 @@
 import { useState, useEffect, useCallback } from 'react'
 import LogsViewer from './LogsViewer'
 import { validateSlug } from './slug'
-import type { Account, McpStatus, UpdateStatusData, WhatsAppStatus, McpUrlInfo } from './types'
+import type { Account, ConnectionState, McpStatus, UpdateStatusData, WhatsAppStatus, McpUrlInfo } from './types'
+
+export interface RemoveAccountDeps {
+  confirm: (message: string) => boolean
+  whatsappLogout: (slug: string) => Promise<unknown>
+  accountsRemove: (slug: string) => Promise<unknown>
+}
+
+export type RemoveAccountResult =
+  | { ok: true }
+  | { ok: false; cancelled: true }
+  | { ok: false; error: string }
+
+export function buildRemoveAccountMessage(slug: string): string {
+  return (
+    `Remove account "${slug}"? ` +
+    'This will log out of WhatsApp on this device, clear all local data for this account, ' +
+    'and cannot be undone.'
+  )
+}
+
+export async function performAccountRemoval(
+  slug: string,
+  state: ConnectionState | undefined,
+  deps: RemoveAccountDeps,
+): Promise<RemoveAccountResult> {
+  if (!deps.confirm(buildRemoveAccountMessage(slug))) return { ok: false, cancelled: true }
+  const needsLogout = state === 'connected' || state === 'connecting'
+  if (needsLogout) {
+    try { await deps.whatsappLogout(slug) }
+    catch (err) { return { ok: false, error: err instanceof Error ? err.message : 'Failed to log out' } }
+  }
+  try { await deps.accountsRemove(slug) }
+  catch (err) { return { ok: false, error: err instanceof Error ? err.message : 'Failed to remove account' } }
+  return { ok: true }
+}
+
+const STATE_PILL_LABELS: Record<ConnectionState, string> = {
+  connected: 'Connected',
+  connecting: 'Connecting…',
+  disconnected: 'Disconnected',
+  error: 'Error',
+}
+
+export function getAccountStateLabel(status: WhatsAppStatus | undefined): string {
+  const state = status?.state ?? 'disconnected'
+  return STATE_PILL_LABELS[state]
+}
 
 interface Group {
   id: number
@@ -195,9 +242,18 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
 
   const handleRemoveAccount = async (s: string) => {
     if (accounts.length <= 1) { setError('Cannot remove the last account'); return }
-    if (!window.confirm(`Remove account "${s}"? Its database and session data will be deleted. This cannot be undone.`)) return
-    try { await window.electron.accounts.remove(s); const next = accounts.find((a) => a.slug !== s)?.slug; await onAccountsChanged(next) }
-    catch (err) { setError(err instanceof Error ? err.message : 'Failed to remove account') }
+    const result = await performAccountRemoval(s, statusByAccount[s]?.state, {
+      confirm: (m) => window.confirm(m),
+      whatsappLogout: (slug) => window.electron.whatsappLogout(slug),
+      accountsRemove: (slug) => window.electron.accounts.remove(slug),
+    })
+    if (!result.ok) {
+      if ('error' in result) setError(result.error)
+      return
+    }
+    setError(null)
+    const next = accounts.find((a) => a.slug !== s)?.slug
+    await onAccountsChanged(next)
   }
 
   // Update handlers
@@ -481,6 +537,14 @@ export function AccountsTabBody({
                           Default
                         </span>
                       )}
+                      <span
+                        className="account-state-pill"
+                        data-testid={`state-pill-${a.slug}`}
+                        data-state={st?.state ?? 'disconnected'}
+                        style={{ fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '2px 6px', borderRadius: '9999px', color: 'white', fontWeight: 600, backgroundColor: st?.state === 'connected' ? 'hsl(var(--success))' : st?.state === 'connecting' ? 'hsl(var(--warning))' : st?.state === 'error' ? 'hsl(var(--destructive))' : 'hsl(var(--muted-foreground))' }}
+                      >
+                        {getAccountStateLabel(st)}
+                      </span>
                     </strong>
                     <button className="action-btn" data-testid={`make-default-${a.slug}`} onClick={() => onSetDefault(a.slug)} disabled={isDefault} style={{ padding: '4px 8px', fontSize: '0.75rem' }} title="Make this the default account; MCP clients pointed at /mcp will route here.">Make default</button>
                     <button className="action-btn" onClick={() => onStartRename(a.slug)} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Rename</button>
