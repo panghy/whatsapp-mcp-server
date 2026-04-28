@@ -226,15 +226,15 @@ const createWindow = () => {
   })
 }
 
-const showMainWindowAndSend = (channel: string) => {
+const showMainWindowAndSend = (channel: string, payload?: any) => {
   if (mainWindow) {
     mainWindow.show()
     mainWindow.focus()
-    mainWindow.webContents.send(channel)
+    mainWindow.webContents.send(channel, payload)
   } else {
     createWindow()
     mainWindow!.webContents.once('did-finish-load', () => {
-      mainWindow!.webContents.send(channel)
+      mainWindow!.webContents.send(channel, payload)
     })
   }
 }
@@ -254,17 +254,7 @@ const updateTrayMenu = () => {
     const label = `${acc.slug}${isDefault ? ' (default)' : ''}: ${stateLabel}`
     return {
       label,
-      submenu: [
-        {
-          label: 'Disconnect',
-          enabled: state === 'connected' || state === 'connecting',
-          click: async () => {
-            const m = getManager(acc.slug)
-            if (m) { try { await disconnectWhatsApp(m) } catch (e) { console.error('Tray disconnect failed:', e) } }
-            updateTrayMenu()
-          }
-        }
-      ]
+      click: () => { showMainWindowAndSend('focus-account', acc.slug) }
     }
   })
 
