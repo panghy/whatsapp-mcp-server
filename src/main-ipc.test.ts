@@ -55,8 +55,9 @@ vi.mock('electron-updater', () => {
 
 import Settings from 'electron-settings'
 import { addAccount, getAccount, accountAuthDir, accountDbPath } from './accounts'
-import { settingOps, chatOps, contactOps, logOps, closeAllDatabases } from './database'
+import { settingOps, chatOps, contactOps, logOps, closeAllDatabases, initializeDatabase } from './database'
 import { setManager, listManagers, type WhatsAppManager, type ConnectionState } from './whatsapp-manager'
+import { initializeGroupMetadataFetcher, resetGroupMetadataFetchers } from './group-metadata-fetcher'
 
 async function invoke(channel: string, ...args: any[]): Promise<any> {
   const handler = ipcHandlers.get(channel)
@@ -366,6 +367,217 @@ describe('main IPC surface', () => {
       const status = await invoke('mcp-get-status')
       expect(status.running).toBe(false)
       expect(status.port).toBe(15555)
+    })
+  })
+
+  describe('registerHandlersForSlug — groups.upsert / chats.upsert / groups.update', () => {
+    let registerHandlersForSlug: (slug: string, socket: any) => void
+    let makeSocket: () => { socket: any; fire: (events: any) => Promise<void>; fireConnection: (u: any) => Promise<void> }
+
+    beforeAll(async () => {
+      const mod: any = await import('./main')
+      registerHandlersForSlug = mod.registerHandlersForSlug
+      expect(typeof registerHandlersForSlug).toBe('function')
+      makeSocket = () => {
+        let processCb: ((ev: any) => Promise<void>) | null = null
+        const connectionHandlers: Array<(u: any) => any> = []
+        const socket: any = {
+          user: { id: '123@s.whatsapp.net' },
+          ev: {
+            on: (name: string, cb: any) => {
+              if (name === 'connection.update') connectionHandlers.push(cb)
+            },
+            process: (cb: any) => { processCb = cb },
+          },
+          groupMetadata: vi.fn().mockResolvedValue({ participants: [] }),
+        }
+        return {
+          socket,
+          fire: async (events: any) => { if (processCb) await processCb(events) },
+          fireConnection: async (u: any) => { for (const h of connectionHandlers) await h(u) },
+        }
+      }
+    })
+
+    beforeEach(() => {
+      resetGroupMetadataFetchers()
+    })
+
+    const setupAccount = (slug: string) => { addAccount(slug); initializeDatabase(slug) }
+
+    it('groups.upsert inserts each group with enabled=0 and queues metadata when contact sync complete', async () => {
+      const slug = 'grp-upsert'
+      setupAccount(slug)
+      settingOps.set(slug, 'initial_sync_complete', 'true')
+
+      const fetcher = initializeGroupMetadataFetcher(slug)
+      const queueSpy = vi.spyOn(fetcher, 'queueGroups').mockImplementation(() => {})
+      const startSpy = vi.spyOn(fetcher, 'start').mockImplementation(() => {})
+
+      const { socket, fire, fireConnection } = makeSocket()
+      registerHandlersForSlug(slug, socket)
+      await fireConnection({ connection: 'open' })
+
+      await fire({
+        'messaging-history.set': { chats: [], contacts: [], messages: [], isLatest: true, syncType: 0, progress: 100 },
+      })
+
+      await fire({
+        'groups.upsert': [
+          { id: 'new-group@g.us', subject: 'New Group' },
+          { id: 'newsletter@newsletter', subject: 'Skip me' },
+        ],
+      })
+
+      const inserted = chatOps.getByWhatsappJid(slug, 'new-group@g.us') as any
+      expect(inserted).toBeDefined()
+      expect(inserted.chat_type).toBe('group')
+      expect(inserted.enabled).toBe(0)
+      expect(inserted.name).toBe('New Group')
+
+      expect(chatOps.getByWhatsappJid(slug, 'newsletter@newsletter')).toBeUndefined()
+      expect(queueSpy).toHaveBeenCalledWith([{ chatId: inserted.id, jid: 'new-group@g.us' }])
+      expect(startSpy).toHaveBeenCalled()
+    })
+
+    it('chats.upsert handles mixed DM/group entries with correct enabled values', async () => {
+      const slug = 'chats-upsert'
+      setupAccount(slug)
+      settingOps.set(slug, 'initial_sync_complete', 'true')
+
+      const fetcher = initializeGroupMetadataFetcher(slug)
+      const queueSpy = vi.spyOn(fetcher, 'queueGroups').mockImplementation(() => {})
+      vi.spyOn(fetcher, 'start').mockImplementation(() => {})
+
+      const { socket, fire, fireConnection } = makeSocket()
+      registerHandlersForSlug(slug, socket)
+      await fireConnection({ connection: 'open' })
+      await fire({
+        'messaging-history.set': { chats: [], contacts: [], messages: [], isLatest: true, syncType: 0, progress: 100 },
+      })
+
+      await fire({
+        'chats.upsert': [
+          { id: 'grp1@g.us', name: 'Team Chat' },
+          { id: '111@s.whatsapp.net', name: 'Alice' },
+          { id: '999@newsletter' },
+        ],
+      })
+
+      const grp = chatOps.getByWhatsappJid(slug, 'grp1@g.us') as any
+      const dm = chatOps.getByWhatsappJid(slug, '111@s.whatsapp.net') as any
+      expect(grp.chat_type).toBe('group')
+      expect(grp.enabled).toBe(0)
+      expect(grp.name).toBe('Team Chat')
+      expect(dm.chat_type).toBe('dm')
+      expect(dm.enabled).toBe(1)
+      expect(dm.name).toBe('Alice')
+      expect(chatOps.getByWhatsappJid(slug, '999@newsletter')).toBeUndefined()
+
+      expect(queueSpy).toHaveBeenCalledWith([{ chatId: grp.id, jid: 'grp1@g.us' }])
+    })
+
+    it('buffers groups when contact sync not complete, flushes them when messaging-history.set completes', async () => {
+      const slug = 'buf-flush'
+      setupAccount(slug)
+
+      const fetcher = initializeGroupMetadataFetcher(slug)
+      const queueSpy = vi.spyOn(fetcher, 'queueGroups').mockImplementation(() => {})
+      const startSpy = vi.spyOn(fetcher, 'start').mockImplementation(() => {})
+
+      const { socket, fire, fireConnection } = makeSocket()
+      registerHandlersForSlug(slug, socket)
+      await fireConnection({ connection: 'open' })
+
+      await fire({
+        'groups.upsert': [{ id: 'buffered@g.us', subject: 'Buffered' }],
+      })
+
+      const inserted = chatOps.getByWhatsappJid(slug, 'buffered@g.us') as any
+      expect(inserted).toBeDefined()
+      expect(inserted.enabled).toBe(0)
+      expect(queueSpy).not.toHaveBeenCalled()
+      expect(startSpy).not.toHaveBeenCalled()
+
+      await fire({
+        'messaging-history.set': { chats: [], contacts: [], messages: [], isLatest: true, syncType: 0, progress: 100 },
+      })
+
+      expect(queueSpy).toHaveBeenCalledWith([{ chatId: inserted.id, jid: 'buffered@g.us' }])
+      expect(startSpy).toHaveBeenCalled()
+    })
+
+    it('groups.update refreshes subject and delegates to handleGroupUpdate', async () => {
+      const slug = 'grp-update'
+      setupAccount(slug)
+      settingOps.set(slug, 'initial_sync_complete', 'true')
+
+      chatOps.insert(slug, 'existing@g.us', 'group', undefined, 'Old Name', 0)
+      const existing = chatOps.getByWhatsappJid(slug, 'existing@g.us') as any
+
+      const fetcher = initializeGroupMetadataFetcher(slug)
+      const handleSpy = vi.spyOn(fetcher, 'handleGroupUpdate').mockResolvedValue(undefined)
+
+      const { socket, fire, fireConnection } = makeSocket()
+      registerHandlersForSlug(slug, socket)
+      await fireConnection({ connection: 'open' })
+
+      await fire({
+        'groups.update': [{ id: 'existing@g.us', subject: 'New Name' }],
+      })
+
+      const after = chatOps.getByWhatsappJid(slug, 'existing@g.us') as any
+      expect(after.name).toBe('New Name')
+      expect(existing.id).toBe(after.id)
+      expect(handleSpy).toHaveBeenCalledWith([{ id: 'existing@g.us', subject: 'New Name' }])
+    })
+
+    it('group-participants.update delegates to handleParticipantsUpdate', async () => {
+      const slug = 'grp-parts'
+      setupAccount(slug)
+      settingOps.set(slug, 'initial_sync_complete', 'true')
+
+      const fetcher = initializeGroupMetadataFetcher(slug)
+      const handleSpy = vi.spyOn(fetcher, 'handleParticipantsUpdate').mockResolvedValue(undefined)
+
+      const { socket, fire, fireConnection } = makeSocket()
+      registerHandlersForSlug(slug, socket)
+      await fireConnection({ connection: 'open' })
+
+      const payload = { id: 'g@g.us', participants: ['1@lid'], action: 'add' }
+      await fire({ 'group-participants.update': payload })
+      expect(handleSpy).toHaveBeenCalledWith(payload)
+    })
+
+    it('messages.upsert fallback inserts new groups with enabled=0 and queues metadata', async () => {
+      const slug = 'msgs-fallback'
+      setupAccount(slug)
+      settingOps.set(slug, 'initial_sync_complete', 'true')
+
+      const fetcher = initializeGroupMetadataFetcher(slug)
+      const queueSpy = vi.spyOn(fetcher, 'queueGroups').mockImplementation(() => {})
+      vi.spyOn(fetcher, 'start').mockImplementation(() => {})
+
+      const { socket, fire, fireConnection } = makeSocket()
+      registerHandlersForSlug(slug, socket)
+      await fireConnection({ connection: 'open' })
+      await fire({
+        'messaging-history.set': { chats: [], contacts: [], messages: [], isLatest: true, syncType: 0, progress: 100 },
+      })
+
+      await fire({
+        'messages.upsert': {
+          messages: [
+            { key: { remoteJid: 'surprise@g.us', id: 'm1', fromMe: false }, messageTimestamp: 1 },
+          ],
+        },
+      })
+
+      const chat = chatOps.getByWhatsappJid(slug, 'surprise@g.us') as any
+      expect(chat).toBeDefined()
+      expect(chat.chat_type).toBe('group')
+      expect(chat.enabled).toBe(0)
+      expect(queueSpy).toHaveBeenCalledWith([{ chatId: chat.id, jid: 'surprise@g.us' }])
     })
   })
 })

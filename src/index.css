@@ -175,7 +175,7 @@ button.danger { background-color: hsl(var(--destructive)); color: hsl(var(--dest
 button.danger:hover:not(:disabled) { background-color: hsl(var(--destructive) / 0.9); box-shadow: 0 4px 12px hsl(var(--destructive) / 0.3); }
 
 /* Settings Page */
-.settings-page { display: grid; grid-template-rows: auto auto 1fr auto; height: 100vh; background-color: hsl(var(--background)); }
+.settings-page { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto auto; flex: 1; min-height: 0; background-color: hsl(var(--background)); }
 .settings-header { display: flex; flex-direction: column; gap: 0.25rem; padding: 1rem 1.5rem 1rem; background-color: hsl(var(--sidebar)); border-bottom: 1px solid hsl(var(--border)); }
 .settings-header-top { display: flex; align-items: center; gap: 1rem; }
 .settings-back-btn, .settings-back-btn:hover, .settings-back-btn:focus, .settings-back-btn:active, .settings-back-btn:hover:not(:disabled) {
@@ -191,7 +191,7 @@ button.danger:hover:not(:disabled) { background-color: hsl(var(--destructive) / 
 .tab-btn:hover { background: none; color: hsl(var(--foreground)); transform: none; box-shadow: none; }
 .tab-btn.active { color: hsl(var(--foreground)); background: none; }
 .tab-btn.active::after { content: ''; position: absolute; bottom: -1px; left: 0; right: 0; height: 2px; background-color: hsl(var(--primary)); border-radius: 1px 1px 0 0; }
-.settings-content { overflow-y: auto; padding: 1.5rem; max-width: 100%; margin: 0 auto; width: 100%; }
+.settings-content { overflow-y: auto; min-height: 0; padding: 1.5rem; max-width: 100%; margin: 0 auto; width: 100%; }
 .settings-content-inner { max-width: 50rem; margin: 0 auto; padding: 1.5rem; }
 .settings-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.5rem; border-top: 1px solid hsl(var(--border)); background-color: hsl(var(--sidebar)); font-size: 0.875rem; color: hsl(var(--muted-foreground)); }
 .settings-footer-left { display: flex; align-items: center; gap: 0.5rem; }
