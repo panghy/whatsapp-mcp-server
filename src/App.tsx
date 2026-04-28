@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import Settings from './Settings'
 import AccountSwitcher, { AddAccountModal } from './AccountSwitcher'
 import type {
@@ -47,6 +47,9 @@ export default function App() {
   const [nameConfirmed, setNameConfirmed] = useState(false)
   const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null)
   const [pendingInitialTab, setPendingInitialTab] = useState<SettingsTab | null>(null)
+
+  const accountsRef = useRef<Account[]>([])
+  useEffect(() => { accountsRef.current = accounts }, [accounts])
 
   const refreshAccounts = useCallback(async (): Promise<Account[]> => {
     const { accounts: list, defaultSlug: nextDefault } = await window.electron.accounts.list()
@@ -171,6 +174,21 @@ export default function App() {
     setSelectedSlug(slug)
     localStorage.setItem(SELECTED_SLUG_KEY, slug)
   }, [])
+
+  useEffect(() => {
+    const handleFocusAccount = (...args: unknown[]) => {
+      const slug = args[0]
+      if (typeof slug !== 'string') return
+      const known = accountsRef.current.some((a) => a.slug === slug)
+      if (known || accountsRef.current.length === 0) handleSelectSlug(slug)
+    }
+    const ipcRenderer = (window as { ipcRenderer?: { on: (c: string, l: (...a: unknown[]) => void) => void; removeListener: (c: string, l: (...a: unknown[]) => void) => void } }).ipcRenderer
+    if (ipcRenderer) {
+      ipcRenderer.on('focus-account', handleFocusAccount)
+      return () => { ipcRenderer.removeListener('focus-account', handleFocusAccount) }
+    }
+    return undefined
+  }, [handleSelectSlug])
 
   const handleAccountAdded = useCallback((account: Account) => {
     setShowAddModal(false)
