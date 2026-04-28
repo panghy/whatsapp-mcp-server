@@ -82,8 +82,11 @@ import {
   disconnectWhatsApp,
   clearWhatsAppSession,
   initializeWhatsApp,
+  handleConnectionClose,
   WhatsAppManager,
 } from './whatsapp-manager'
+
+const SLUG = 'default'
 
 describe('WhatsAppManager Tests', () => {
   beforeAll(() => {
@@ -107,6 +110,7 @@ describe('WhatsAppManager Tests', () => {
   describe('WhatsAppManager interface', () => {
     it('should define all required properties', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -121,6 +125,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should allow optional properties', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connected',
         qrCode: 'data:image/png;base64,test',
@@ -139,6 +144,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should allow state transitions', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -164,6 +170,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'connected',
         qrCode: null,
@@ -183,6 +190,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'connected',
         qrCode: null,
@@ -199,6 +207,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'connected',
         qrCode: null,
@@ -212,6 +221,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle already-null socket gracefully', async () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -228,6 +238,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'connecting',
         qrCode: 'data:image/png;base64,testqr',
@@ -240,21 +251,21 @@ describe('WhatsAppManager Tests', () => {
     })
   })
 
-  describe('clearWhatsAppSession()', () => {
+  describe('clearWhatsAppSession(SLUG)', () => {
     it('should remove auth directory if it exists', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       fs.mkdirSync(authDir, { recursive: true })
       fs.writeFileSync(path.join(authDir, 'test-file.json'), '{}')
 
       expect(fs.existsSync(authDir)).toBe(true)
 
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
 
       expect(fs.existsSync(authDir)).toBe(false)
     })
 
     it('should handle non-existent directory without error', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       if (fs.existsSync(authDir)) {
         fs.rmSync(authDir, { recursive: true, force: true })
       }
@@ -262,18 +273,18 @@ describe('WhatsAppManager Tests', () => {
       expect(fs.existsSync(authDir)).toBe(false)
 
       // Should not throw
-      await expect(clearWhatsAppSession()).resolves.not.toThrow()
+      await expect(clearWhatsAppSession(SLUG)).resolves.not.toThrow()
     })
 
     it('should remove nested directories in auth folder', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       const nestedDir = path.join(authDir, 'nested', 'deep')
       fs.mkdirSync(nestedDir, { recursive: true })
       fs.writeFileSync(path.join(nestedDir, 'deep-file.txt'), 'data')
 
       expect(fs.existsSync(nestedDir)).toBe(true)
 
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
 
       expect(fs.existsSync(authDir)).toBe(false)
     })
@@ -282,6 +293,7 @@ describe('WhatsAppManager Tests', () => {
   describe('Manager state management', () => {
     it('should handle error state correctly', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -298,6 +310,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should track reconnect delay', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -315,6 +328,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should store QR code data URL', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -337,6 +351,7 @@ describe('WhatsAppManager Tests', () => {
       } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -352,6 +367,7 @@ describe('WhatsAppManager Tests', () => {
     it('should handle socket callbacks', () => {
       const onSocketCreated = vi.fn()
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -397,6 +413,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should reset delay on successful connection', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connected',
         qrCode: null,
@@ -411,6 +428,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should clear qrCode and error on connection success', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: 'data:image/png;base64,testqr',
@@ -432,6 +450,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should transition to connecting on close with reconnect', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connected',
         qrCode: null,
@@ -445,6 +464,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle QR code data URL format', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -462,6 +482,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle error state with message', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -481,6 +502,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSaveCreds = vi.fn()
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -498,6 +520,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { ev: { on: vi.fn() }, end: vi.fn() }
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket as any,
         state: 'connecting',
         qrCode: null,
@@ -521,6 +544,7 @@ describe('WhatsAppManager Tests', () => {
 
       states.forEach(state => {
         const manager: WhatsAppManager = {
+          slug: SLUG,
           socket: null,
           state,
           qrCode: null,
@@ -537,6 +561,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'connected',
         qrCode: null,
@@ -554,6 +579,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'connecting',
         qrCode: 'data:image/png;base64,test',
@@ -574,11 +600,11 @@ describe('WhatsAppManager Tests', () => {
     it('should handle permission errors gracefully', async () => {
       // This tests that clearWhatsAppSession doesn't throw on file system errors
       // The actual implementation catches errors and logs them
-      await expect(clearWhatsAppSession()).resolves.not.toThrow()
+      await expect(clearWhatsAppSession(SLUG)).resolves.not.toThrow()
     })
 
     it('should handle fs.rmSync throwing error', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       fs.mkdirSync(authDir, { recursive: true })
 
       // Temporarily spy on console.error to verify error handling
@@ -593,7 +619,7 @@ describe('WhatsAppManager Tests', () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       ;(fs as any).rmSync = rmSyncMock
 
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
 
       // Restore original
       ;(fs as any).rmSync = originalRmSync
@@ -604,20 +630,20 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should be idempotent', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
 
       // Create and clear
       fs.mkdirSync(authDir, { recursive: true })
       fs.writeFileSync(path.join(authDir, 'creds.json'), '{}')
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
       expect(fs.existsSync(authDir)).toBe(false)
 
       // Calling again should not throw
-      await expect(clearWhatsAppSession()).resolves.not.toThrow()
+      await expect(clearWhatsAppSession(SLUG)).resolves.not.toThrow()
     })
 
     it('should remove multiple files in auth directory', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       fs.mkdirSync(authDir, { recursive: true })
       fs.writeFileSync(path.join(authDir, 'creds.json'), '{"creds": true}')
       fs.writeFileSync(path.join(authDir, 'app-state-sync-key.json'), '{"key": "value"}')
@@ -625,19 +651,19 @@ describe('WhatsAppManager Tests', () => {
 
       expect(fs.readdirSync(authDir).length).toBe(3)
 
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
 
       expect(fs.existsSync(authDir)).toBe(false)
     })
 
     it('should handle empty auth directory', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       fs.mkdirSync(authDir, { recursive: true })
 
       expect(fs.existsSync(authDir)).toBe(true)
       expect(fs.readdirSync(authDir).length).toBe(0)
 
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
 
       expect(fs.existsSync(authDir)).toBe(false)
     })
@@ -649,6 +675,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'connected',
         qrCode: null,
@@ -670,6 +697,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'connecting',
         qrCode: 'data:image/png;base64,test',
@@ -687,14 +715,14 @@ describe('WhatsAppManager Tests', () => {
 
   describe('Concurrent clearWhatsAppSession operations', () => {
     it('should handle concurrent clear calls', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       fs.mkdirSync(authDir, { recursive: true })
       fs.writeFileSync(path.join(authDir, 'test.json'), '{}')
 
       // Call clear twice concurrently
       await Promise.all([
-        clearWhatsAppSession(),
-        clearWhatsAppSession(),
+        clearWhatsAppSession(SLUG),
+        clearWhatsAppSession(SLUG),
       ])
 
       expect(fs.existsSync(authDir)).toBe(false)
@@ -707,6 +735,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'connecting',
         qrCode: 'data:image/png;base64,longqrcode123456789',
@@ -723,6 +752,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'error',
         qrCode: null,
@@ -744,6 +774,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSocket = { end: mockEnd } as any
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: mockSocket,
         state: 'connected',
         qrCode: null,
@@ -761,6 +792,7 @@ describe('WhatsAppManager Tests', () => {
       const updatedAuthState = { creds: { me: { id: '123@s.whatsapp.net' } }, keys: { preKeys: {} } }
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -779,6 +811,7 @@ describe('WhatsAppManager Tests', () => {
       const mockSaveCreds = vi.fn().mockResolvedValue(undefined)
 
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connected',
         qrCode: null,
@@ -793,6 +826,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle missing saveCreds gracefully', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connected',
         qrCode: null,
@@ -807,6 +841,7 @@ describe('WhatsAppManager Tests', () => {
   describe('Connection state transitions', () => {
     it('should handle all valid state transitions', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -840,6 +875,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle rapid state changes', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -862,6 +898,7 @@ describe('WhatsAppManager Tests', () => {
   describe('QR code handling', () => {
     it('should accept various QR code formats', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -880,6 +917,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle very long QR code data URLs', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -898,6 +936,7 @@ describe('WhatsAppManager Tests', () => {
   describe('Reconnect delay edge cases', () => {
     it('should handle zero delay', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -915,6 +954,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle undefined delay with default', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -928,6 +968,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle delay exactly at cap boundary', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -942,6 +983,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle delay just below cap', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -956,6 +998,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle delay just above half of cap', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -972,6 +1015,7 @@ describe('WhatsAppManager Tests', () => {
   describe('Error message handling', () => {
     it('should store various error message types', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'error',
         qrCode: null,
@@ -993,6 +1037,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle very long error messages', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'error',
         qrCode: null,
@@ -1009,34 +1054,34 @@ describe('WhatsAppManager Tests', () => {
 
   describe('Multiple session clear operations', () => {
     it('should clear session after multiple writes', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
 
       // First session
       fs.mkdirSync(authDir, { recursive: true })
       fs.writeFileSync(path.join(authDir, 'creds.json'), '{"session": 1}')
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
       expect(fs.existsSync(authDir)).toBe(false)
 
       // Second session
       fs.mkdirSync(authDir, { recursive: true })
       fs.writeFileSync(path.join(authDir, 'creds.json'), '{"session": 2}')
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
       expect(fs.existsSync(authDir)).toBe(false)
 
       // Third session with more files
       fs.mkdirSync(authDir, { recursive: true })
       fs.writeFileSync(path.join(authDir, 'creds.json'), '{"session": 3}')
       fs.writeFileSync(path.join(authDir, 'keys.json'), '{"keys": []}')
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
       expect(fs.existsSync(authDir)).toBe(false)
     })
   })
 
-  describe('initializeWhatsApp()', () => {
+  describe('initializeWhatsApp(SLUG)', () => {
     it('should return a manager object', async () => {
       // This will attempt to load Baileys which may or may not be available
       // Either way, the function should return a manager
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       expect(manager).toBeDefined()
       expect(manager).toHaveProperty('socket')
@@ -1046,13 +1091,13 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should initialize with default reconnectDelay of 2000', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       expect(manager.reconnectDelay).toBe(2000)
     })
 
     it('should have qrCode property initialized to null', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // qrCode should be null initially (or if error)
       expect(manager.qrCode === null || manager.qrCode === undefined).toBe(true)
@@ -1060,11 +1105,11 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle initialization gracefully', async () => {
       // Should not throw, but return manager even on failure
-      await expect(initializeWhatsApp()).resolves.toBeDefined()
+      await expect(initializeWhatsApp(SLUG)).resolves.toBeDefined()
     })
 
     it('should set error state if Baileys fails to load', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // If Baileys isn't available, should be in error state
       // If Baileys is available, state could be connecting
@@ -1072,7 +1117,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should populate error message on failure', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // If failed, error should have a message
       if (manager.state === 'error') {
@@ -1081,7 +1126,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should return manager with all interface properties', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // Check all WhatsAppManager properties
       expect('socket' in manager).toBe(true)
@@ -1092,8 +1137,8 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should allow calling multiple times', async () => {
-      const manager1 = await initializeWhatsApp()
-      const manager2 = await initializeWhatsApp()
+      const manager1 = await initializeWhatsApp(SLUG)
+      const manager2 = await initializeWhatsApp(SLUG)
 
       expect(manager1).toBeDefined()
       expect(manager2).toBeDefined()
@@ -1101,7 +1146,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should return consistent structure on failure', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // Regardless of success/failure, structure should be consistent
       expect(manager.reconnectDelay).toBe(2000)
@@ -1109,7 +1154,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should create manager with mutable properties', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // Properties should be mutable
       const originalState = manager.state
@@ -1123,7 +1168,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should allow setting onSocketCreated callback', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
       const callback = vi.fn()
 
       manager.onSocketCreated = callback
@@ -1132,7 +1177,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should allow authState and saveCreds to be set after init', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // These may already be set if initialization succeeded
       // We test that we can still modify them
@@ -1147,7 +1192,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should handle disconnect after initialize', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // Disconnect should work regardless of initialization state
       await expect(disconnectWhatsApp(manager)).resolves.not.toThrow()
@@ -1164,17 +1209,17 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should allow clearing session after initialize', async () => {
-      await initializeWhatsApp()
+      await initializeWhatsApp(SLUG)
 
       // Clear session should work
-      await expect(clearWhatsAppSession()).resolves.not.toThrow()
+      await expect(clearWhatsAppSession(SLUG)).resolves.not.toThrow()
     })
   })
 
   describe('Full lifecycle', () => {
     it('should support init -> disconnect -> clear cycle', async () => {
       // Initialize
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
       expect(manager).toBeDefined()
 
       // Disconnect (works even if init failed)
@@ -1184,21 +1229,21 @@ describe('WhatsAppManager Tests', () => {
       expect(manager.socket).toBeNull()
 
       // Clear session
-      await clearWhatsAppSession()
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      await clearWhatsAppSession(SLUG)
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       expect(fs.existsSync(authDir)).toBe(false)
     })
 
     it('should support multiple init cycles', async () => {
       // First cycle
-      const manager1 = await initializeWhatsApp()
+      const manager1 = await initializeWhatsApp(SLUG)
       await disconnectWhatsApp(manager1)
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
 
       // Second cycle
-      const manager2 = await initializeWhatsApp()
+      const manager2 = await initializeWhatsApp(SLUG)
       await disconnectWhatsApp(manager2)
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
 
       expect(manager1).toBeDefined()
       expect(manager2).toBeDefined()
@@ -1207,9 +1252,9 @@ describe('WhatsAppManager Tests', () => {
     it('should allow rapid init calls', async () => {
       // Start multiple initializations
       const [m1, m2, m3] = await Promise.all([
-        initializeWhatsApp(),
-        initializeWhatsApp(),
-        initializeWhatsApp(),
+        initializeWhatsApp(SLUG),
+        initializeWhatsApp(SLUG),
+        initializeWhatsApp(SLUG),
       ])
 
       expect(m1).toBeDefined()
@@ -1225,11 +1270,11 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should handle init with existing auth directory', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       fs.mkdirSync(authDir, { recursive: true })
       fs.writeFileSync(path.join(authDir, 'creds.json'), '{"existing": true}')
 
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       expect(manager).toBeDefined()
       expect(manager.reconnectDelay).toBe(2000)
@@ -1239,11 +1284,11 @@ describe('WhatsAppManager Tests', () => {
 
     it('should handle init after previous failure', async () => {
       // First init (will likely fail)
-      const manager1 = await initializeWhatsApp()
+      const manager1 = await initializeWhatsApp(SLUG)
       expect(manager1).toBeDefined()
 
       // Second init (should also work)
-      const manager2 = await initializeWhatsApp()
+      const manager2 = await initializeWhatsApp(SLUG)
       expect(manager2).toBeDefined()
 
       // They should be different manager instances
@@ -1253,7 +1298,7 @@ describe('WhatsAppManager Tests', () => {
 
   describe('Error recovery scenarios', () => {
     it('should recover gracefully from init failure', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // Even on failure, basic operations should work
       manager.qrCode = 'test'
@@ -1265,7 +1310,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should allow manual state recovery', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // Simulate recovery
       manager.state = 'disconnected'
@@ -1281,7 +1326,7 @@ describe('WhatsAppManager Tests', () => {
 
   describe('Auth directory creation', () => {
     it('should create auth directory on module load', () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       // The module should have created this on import
       // (or it may not exist if init failed before that)
       // Either is valid
@@ -1295,26 +1340,26 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should handle nested auth directory structure', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       const nestedDir = path.join(authDir, 'keys', 'pre-key')
       fs.mkdirSync(nestedDir, { recursive: true })
       fs.writeFileSync(path.join(nestedDir, 'key1.json'), '{}')
 
       // Init should still work
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
       expect(manager).toBeDefined()
 
       // Clear should remove nested structure
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
       expect(fs.existsSync(authDir)).toBe(false)
     })
   })
 
   describe('Sequential initialization tests', () => {
     it('should handle sequential init calls', async () => {
-      const manager1 = await initializeWhatsApp()
-      const manager2 = await initializeWhatsApp()
-      const manager3 = await initializeWhatsApp()
+      const manager1 = await initializeWhatsApp(SLUG)
+      const manager2 = await initializeWhatsApp(SLUG)
+      const manager3 = await initializeWhatsApp(SLUG)
 
       // Each should return a manager
       expect(manager1).toBeDefined()
@@ -1328,17 +1373,17 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should handle init followed by clear followed by init', async () => {
-      const manager1 = await initializeWhatsApp()
-      await clearWhatsAppSession()
-      const manager2 = await initializeWhatsApp()
+      const manager1 = await initializeWhatsApp(SLUG)
+      await clearWhatsAppSession(SLUG)
+      const manager2 = await initializeWhatsApp(SLUG)
 
       expect(manager1).toBeDefined()
       expect(manager2).toBeDefined()
     })
 
     it('should not share state between managers', async () => {
-      const manager1 = await initializeWhatsApp()
-      const manager2 = await initializeWhatsApp()
+      const manager1 = await initializeWhatsApp(SLUG)
+      const manager2 = await initializeWhatsApp(SLUG)
 
       manager1.qrCode = 'test1'
       manager2.qrCode = 'test2'
@@ -1350,7 +1395,7 @@ describe('WhatsAppManager Tests', () => {
 
   describe('Manager property types', () => {
     it('should have correct initial property types', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       expect(typeof manager.reconnectDelay).toBe('number')
       expect(manager.socket === null || typeof manager.socket === 'object').toBe(true)
@@ -1360,7 +1405,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should allow all ConnectionState values', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       const validStates: Array<'disconnected' | 'connecting' | 'connected' | 'error'> = [
         'disconnected', 'connecting', 'connected', 'error'
@@ -1376,6 +1421,7 @@ describe('WhatsAppManager Tests', () => {
   describe('Disconnect behavior verification', () => {
     it('should not throw when disconnecting null socket', async () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'error',
         qrCode: null,
@@ -1390,6 +1436,7 @@ describe('WhatsAppManager Tests', () => {
     it('should preserve error message after disconnect', async () => {
       const mockEnd = vi.fn().mockResolvedValue(undefined)
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: { end: mockEnd } as any,
         state: 'error',
         qrCode: null,
@@ -1405,6 +1452,7 @@ describe('WhatsAppManager Tests', () => {
     it('should preserve reconnectDelay after disconnect', async () => {
       const mockEnd = vi.fn().mockResolvedValue(undefined)
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: { end: mockEnd } as any,
         state: 'connecting',
         qrCode: null,
@@ -1420,27 +1468,27 @@ describe('WhatsAppManager Tests', () => {
 
   describe('Clear session with files', () => {
     it('should clear session with large files', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       fs.mkdirSync(authDir, { recursive: true })
 
       // Create a larger file
       const largeContent = 'x'.repeat(10000)
       fs.writeFileSync(path.join(authDir, 'large-file.json'), largeContent)
 
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
 
       expect(fs.existsSync(authDir)).toBe(false)
     })
 
     it('should clear session with multiple file types', async () => {
-      const authDir = path.join(testDir, 'whatsapp-auth')
+      const authDir = path.join(testDir, 'accounts', SLUG, 'whatsapp-auth')
       fs.mkdirSync(authDir, { recursive: true })
 
       fs.writeFileSync(path.join(authDir, 'creds.json'), '{}')
       fs.writeFileSync(path.join(authDir, 'data.txt'), 'text')
       fs.writeFileSync(path.join(authDir, 'binary.bin'), Buffer.from([0, 1, 2, 3]))
 
-      await clearWhatsAppSession()
+      await clearWhatsAppSession(SLUG)
 
       expect(fs.existsSync(authDir)).toBe(false)
     })
@@ -1449,6 +1497,7 @@ describe('WhatsAppManager Tests', () => {
   describe('ConnectionState type', () => {
     it('should accept disconnected state', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'disconnected',
         qrCode: null,
@@ -1459,6 +1508,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should accept connecting state', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connecting',
         qrCode: null,
@@ -1469,6 +1519,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should accept connected state', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'connected',
         qrCode: null,
@@ -1479,6 +1530,7 @@ describe('WhatsAppManager Tests', () => {
 
     it('should accept error state', () => {
       const manager: WhatsAppManager = {
+        slug: SLUG,
         socket: null,
         state: 'error',
         qrCode: null,
@@ -1490,7 +1542,7 @@ describe('WhatsAppManager Tests', () => {
 
   describe('initializeWhatsApp error states', () => {
     it('should capture unknown error type gracefully', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // If in error state, error should be a string (from Error.message or 'Unknown error')
       if (manager.state === 'error') {
@@ -1499,7 +1551,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should have consistent manager structure after error', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // Structure should always be present
       expect(manager).toHaveProperty('socket')
@@ -1510,7 +1562,7 @@ describe('WhatsAppManager Tests', () => {
     })
 
     it('should preserve manager even when socket fails', async () => {
-      const manager = await initializeWhatsApp()
+      const manager = await initializeWhatsApp(SLUG)
 
       // Manager should exist
       expect(manager).not.toBeNull()
@@ -1521,5 +1573,90 @@ describe('WhatsAppManager Tests', () => {
       expect(manager.state).toBe('disconnected')
     })
   })
+
+  describe('handleConnectionClose() — device removed', () => {
+    const TEST_SLUG = 'test-slug'
+    let actualDb: typeof import('./database')
+    let actualAccounts: typeof import('./accounts')
+
+    beforeAll(async () => {
+      actualDb = await vi.importActual<typeof import('./database')>('./database')
+      actualAccounts = await vi.importActual<typeof import('./accounts')>('./accounts')
+    })
+
+    beforeEach(() => {
+      // Wipe any prior accounts.json / account dir so addAccount succeeds fresh.
+      const accountsJsonPath = path.join(testDir, 'accounts.json')
+      if (fs.existsSync(accountsJsonPath)) fs.rmSync(accountsJsonPath, { force: true })
+      const acctDir = path.join(testDir, 'accounts', TEST_SLUG)
+      if (fs.existsSync(acctDir)) {
+        try { actualDb.closeDatabase(TEST_SLUG) } catch { /* ignore */ }
+        fs.rmSync(acctDir, { recursive: true, force: true })
+      }
+      actualAccounts.addAccount(TEST_SLUG)
+      actualDb.initializeDatabase(TEST_SLUG)
+    })
+
+    afterEach(() => {
+      try { actualDb.closeDatabase(TEST_SLUG) } catch { /* ignore */ }
+    })
+
+    it('preserves DB rows and disables MCP on DisconnectReason.loggedOut', async () => {
+      // Prime Baileys module-level vars (DisconnectReason, etc.) via mocked init path.
+      await initializeWhatsApp(TEST_SLUG)
+
+      // Insert sentinel rows BEFORE triggering the handler.
+      const chatResult = actualDb.chatOps.insert(
+        TEST_SLUG, '1234@s.whatsapp.net', 'dm', undefined, 'Sentinel Chat'
+      )
+      const chatId = Number((chatResult as any).lastInsertRowid)
+      actualDb.messageOps.insert(
+        TEST_SLUG, chatId, 'msg-sentinel-1', Date.now(),
+        '1234@s.whatsapp.net', '{"text":"hi"}'
+      )
+      actualDb.contactOps.insert(TEST_SLUG, '1234@s.whatsapp.net', 'Sentinel Contact')
+      actualDb.logOps.insert(TEST_SLUG, 'info', 'test', 'pre-event sentinel log')
+
+      // Sanity: all sentinel rows present and mcpEnabled=true.
+      expect((actualDb.chatOps.getAll(TEST_SLUG) as any[]).length).toBe(1)
+      expect((actualDb.contactOps.getAll(TEST_SLUG) as any[]).length).toBe(1)
+      expect(actualDb.messageOps.getCount(TEST_SLUG)).toBe(1)
+      const logsBefore = actualDb.logOps.getAll(TEST_SLUG) as any[]
+      expect(logsBefore.length).toBeGreaterThanOrEqual(1)
+      expect(actualAccounts.getAccount(TEST_SLUG)?.mcpEnabled).toBe(true)
+
+      // Trigger the device-removed branch (statusCode === DisconnectReason.loggedOut).
+      const manager: WhatsAppManager = {
+        slug: TEST_SLUG,
+        socket: null,
+        state: 'connected',
+        qrCode: null,
+        error: null,
+        reconnectDelay: 2000,
+      }
+      handleConnectionClose(manager, {
+        error: { output: { statusCode: 401 } }, // DisconnectReason.loggedOut per baileys mock
+      })
+
+      // MCP endpoint disabled for this slug.
+      expect(actualAccounts.getAccount(TEST_SLUG)?.mcpEnabled).toBe(false)
+
+      // Manager state updated for device-removed (no reconnect scheduled).
+      expect(manager.state).toBe('disconnected')
+      expect(manager.error).toContain('Device removed')
+
+      // DB rows preserved — nothing was mass-deleted (spec §6).
+      expect((actualDb.chatOps.getAll(TEST_SLUG) as any[]).length).toBe(1)
+      expect((actualDb.contactOps.getAll(TEST_SLUG) as any[]).length).toBe(1)
+      expect(actualDb.messageOps.getCount(TEST_SLUG)).toBe(1)
+      const logsAfter = actualDb.logOps.getAll(TEST_SLUG) as any[]
+      expect(logsAfter.length).toBeGreaterThanOrEqual(logsBefore.length)
+
+      // Auth dir left on disk — handler no longer wipes it.
+      const authDir = path.join(testDir, 'accounts', TEST_SLUG, 'whatsapp-auth')
+      expect(fs.existsSync(authDir)).toBe(true)
+    })
+  })
+
 })
 

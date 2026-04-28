@@ -25,6 +25,8 @@ vi.mock('@whiskeysockets/baileys', () => ({
 import { initializeDatabase, closeDatabase, chatOps, messageOps, logOps } from './database'
 import { MessageTransformer, extractPhoneFromJid, normalizePhoneNumber, initializeMessageTransformer } from './message-transformer'
 
+const SLUG = 'default'
+
 describe('Message Transformer Tests', () => {
   const mockSocket = { ev: { on: vi.fn() } }
 
@@ -33,31 +35,31 @@ describe('Message Transformer Tests', () => {
   })
 
   afterAll(() => {
-    closeDatabase()
+    closeDatabase(SLUG)
     if (fs.existsSync(testDir)) {
       fs.rmSync(testDir, { recursive: true, force: true })
     }
   })
 
   beforeEach(() => {
-    closeDatabase()
-    const dbDir = path.join(testDir, 'nodexa-whatsapp')
+    closeDatabase(SLUG)
+    const dbDir = path.join(testDir, 'accounts', SLUG)
     if (fs.existsSync(dbDir)) {
       fs.rmSync(dbDir, { recursive: true, force: true })
     }
     fs.mkdirSync(dbDir, { recursive: true })
-    initializeDatabase()
+    initializeDatabase(SLUG)
     mockDownloadMediaMessage.mockClear()
   })
 
   afterEach(() => {
-    closeDatabase()
+    closeDatabase(SLUG)
   })
 
   // Helper to create a chat and return its ID
   function createTestChat(jid = '1234567890@s.whatsapp.net'): number {
-    chatOps.insert(jid, 'dm', undefined, 'Test Chat')
-    const chat = chatOps.getByWhatsappJid(jid) as { id: number }
+    chatOps.insert(SLUG, jid, 'dm', undefined, 'Test Chat')
+    const chat = chatOps.getByWhatsappJid(SLUG, jid) as { id: number }
     return chat.id
   }
 
@@ -115,7 +117,7 @@ describe('Message Transformer Tests', () => {
 
   describe('initializeMessageTransformer', () => {
     it('should return a MessageTransformer instance', async () => {
-      const transformer = await initializeMessageTransformer(mockSocket)
+      const transformer = await initializeMessageTransformer(SLUG, mockSocket)
       expect(transformer).toBeInstanceOf(MessageTransformer)
       expect(transformer.getSocket()).toBe(mockSocket)
     })
@@ -123,10 +125,10 @@ describe('Message Transformer Tests', () => {
 
   describe('fetchChatHistory', () => {
     it('should log info message', async () => {
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
       await transformer.fetchChatHistory('1234567890@s.whatsapp.net')
 
-      const logs = logOps.getRecent(10) as { message: string; level: string; category: string }[]
+      const logs = logOps.getRecent(SLUG, 10) as { message: string; level: string; category: string }[]
       const historyLog = logs.find(l => l.message.includes('History fetch requested'))
       expect(historyLog).toBeDefined()
       expect(historyLog!.category).toBe('transformer')
@@ -136,7 +138,7 @@ describe('Message Transformer Tests', () => {
   describe('processMessage - text messages', () => {
     it('should process simple text message (conversation field)', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-text-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -146,7 +148,7 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-text-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-text-1') as { content_json: string }
       expect(stored).toBeDefined()
       const content = JSON.parse(stored.content_json)
       expect(content.type).toBe('message')
@@ -155,7 +157,7 @@ describe('Message Transformer Tests', () => {
 
     it('should process extended text message with mentions', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-mention-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -173,14 +175,14 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-mention-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-mention-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.mentionedJids).toContain('9876543210@s.whatsapp.net')
     })
 
     it('should process extended text message with reply (stanzaId)', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-reply-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -195,14 +197,14 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-reply-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-reply-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.replyToMessageId).toBe('original-msg-123')
     })
 
     it('should process forwarded message', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-fwd-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -217,14 +219,14 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-fwd-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-fwd-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.forwarded).toBe(true)
     })
 
     it('should process fromMe message', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-fromme-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: true },
@@ -234,7 +236,7 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-fromme-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-fromme-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.isFromMe).toBe(true)
     })
@@ -243,7 +245,7 @@ describe('Message Transformer Tests', () => {
   describe('processMessage - wrapper unwrapping', () => {
     it('should unwrap ephemeral message', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-eph-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -257,14 +259,14 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-eph-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-eph-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.text).toBe('Disappearing message')
     })
 
     it('should unwrap viewOnceMessage', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-vo-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -278,14 +280,14 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-vo-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-vo-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.text).toBe('View once message')
     })
 
     it('should unwrap documentWithCaptionMessage', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-dwc-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -299,7 +301,7 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-dwc-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-dwc-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.text).toBe('Document caption')
     })
@@ -308,7 +310,7 @@ describe('Message Transformer Tests', () => {
   describe('processMessage - attachments', () => {
     it('should process image with supported MIME type', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-img-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -325,7 +327,7 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-img-1') as { content_json: string; has_attachment: number }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-img-1') as { content_json: string; has_attachment: number }
       expect(stored).toBeDefined()
       const content = JSON.parse(stored.content_json)
       expect(content.type).toBe('message')
@@ -336,7 +338,7 @@ describe('Message Transformer Tests', () => {
 
     it('should return unsupported_attachment for unsupported MIME type', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-video-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -352,7 +354,7 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-video-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-video-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.type).toBe('unsupported_attachment')
       expect(content.reason).toBe('unsupported_type')
@@ -360,7 +362,7 @@ describe('Message Transformer Tests', () => {
 
     it('should return unsupported_attachment for file exceeding size limit', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-big-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -376,7 +378,7 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-big-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-big-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.type).toBe('unsupported_attachment')
       expect(content.reason).toBe('exceeds_size_limit')
@@ -384,7 +386,7 @@ describe('Message Transformer Tests', () => {
 
     it('should return unsupported_attachment on download failure', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
       mockDownloadMediaMessage.mockRejectedValueOnce(new Error('Download failed'))
 
       const msg = {
@@ -401,7 +403,7 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-fail-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-fail-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.type).toBe('unsupported_attachment')
       expect(content.reason).toBe('download_failed')
@@ -409,7 +411,7 @@ describe('Message Transformer Tests', () => {
 
     it('should handle attachment with reply context', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-img-reply-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -426,7 +428,7 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-img-reply-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-img-reply-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.replyToMessageId).toBe('original-msg-456')
     })
@@ -435,7 +437,7 @@ describe('Message Transformer Tests', () => {
   describe('processMessage - system/edge cases', () => {
     it('should process protocol message type 5 as system message', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-proto-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -447,7 +449,7 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-proto-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-proto-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.type).toBe('system')
       expect(content.systemType).toBe('number_change')
@@ -455,7 +457,7 @@ describe('Message Transformer Tests', () => {
 
     it('should not store message without content', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: { id: 'msg-empty-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
@@ -465,13 +467,13 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId('msg-empty-1')
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-empty-1')
       expect(stored).toBeUndefined()
     })
 
     it('should not store message without key', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const msg = {
         key: null,
@@ -481,7 +483,7 @@ describe('Message Transformer Tests', () => {
 
       await transformer.processMessage(msg, chatId)
 
-      const messages = messageOps.getByChatId(chatId) as { whatsapp_message_id: string }[]
+      const messages = messageOps.getByChatId(SLUG, chatId) as { whatsapp_message_id: string }[]
       expect(messages).toHaveLength(0)
     })
   })
@@ -489,7 +491,7 @@ describe('Message Transformer Tests', () => {
   describe('processMessageDeletion', () => {
     it('should create deletion event with original message info', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       // First, insert an original message
       const originalMsg = {
@@ -504,7 +506,7 @@ describe('Message Transformer Tests', () => {
       await transformer.processMessageDeletion(deleteKey, chatId, '9876543210@s.whatsapp.net')
 
       // Find the deletion event
-      const messages = messageOps.getByChatId(chatId) as { whatsapp_message_id: string; content_json: string }[]
+      const messages = messageOps.getByChatId(SLUG, chatId) as { whatsapp_message_id: string; content_json: string }[]
       const deletionMsg = messages.find(m => m.whatsapp_message_id.startsWith('del-'))
       expect(deletionMsg).toBeDefined()
       const content = JSON.parse(deletionMsg!.content_json)
@@ -515,12 +517,12 @@ describe('Message Transformer Tests', () => {
 
     it('should handle missing original message gracefully', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const deleteKey = { id: 'non-existent-msg', remoteJid: '1234567890@s.whatsapp.net' }
       await transformer.processMessageDeletion(deleteKey, chatId)
 
-      const messages = messageOps.getByChatId(chatId) as { whatsapp_message_id: string; content_json: string }[]
+      const messages = messageOps.getByChatId(SLUG, chatId) as { whatsapp_message_id: string; content_json: string }[]
       const deletionMsg = messages.find(m => m.whatsapp_message_id.startsWith('del-'))
       expect(deletionMsg).toBeDefined()
       const content = JSON.parse(deletionMsg!.content_json)
@@ -530,12 +532,12 @@ describe('Message Transformer Tests', () => {
 
     it('should extract deletedBy from participant JID', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const deleteKey = { id: 'delete-test', remoteJid: '1234567890@s.whatsapp.net' }
       await transformer.processMessageDeletion(deleteKey, chatId, '5551234567@s.whatsapp.net')
 
-      const messages = messageOps.getByChatId(chatId) as { whatsapp_message_id: string; content_json: string }[]
+      const messages = messageOps.getByChatId(SLUG, chatId) as { whatsapp_message_id: string; content_json: string }[]
       const deletionMsg = messages.find(m => m.whatsapp_message_id.startsWith('del-'))
       const content = JSON.parse(deletionMsg!.content_json)
       expect(content.deletedBy.phone).toBe('+5551234567')
@@ -545,7 +547,7 @@ describe('Message Transformer Tests', () => {
   describe('processMessageEdit', () => {
     it('should create edit event with original and new text', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       // First insert original message
       const originalMsg = {
@@ -561,7 +563,7 @@ describe('Message Transformer Tests', () => {
       await transformer.processMessageEdit(editKey, editUpdate, chatId)
 
       // Find the edit event
-      const messages = messageOps.getByChatId(chatId) as { whatsapp_message_id: string; content_json: string }[]
+      const messages = messageOps.getByChatId(SLUG, chatId) as { whatsapp_message_id: string; content_json: string }[]
       const editMsg = messages.find(m => m.whatsapp_message_id.startsWith('edit-'))
       expect(editMsg).toBeDefined()
       const content = JSON.parse(editMsg!.content_json)
@@ -572,7 +574,7 @@ describe('Message Transformer Tests', () => {
 
     it('should update original message content_json', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       // First insert original message
       const originalMsg = {
@@ -588,20 +590,20 @@ describe('Message Transformer Tests', () => {
       await transformer.processMessageEdit(editKey, editUpdate, chatId)
 
       // Verify original message was updated
-      const original = messageOps.getByWhatsappMessageId('msg-edit-update') as { content_json: string }
+      const original = messageOps.getByWhatsappMessageId(SLUG, 'msg-edit-update') as { content_json: string }
       const content = JSON.parse(original.content_json)
       expect(content.text).toBe('Updated')
     })
 
     it('should handle edit without original message in DB', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const editKey = { id: 'non-existent-edit', remoteJid: '1234567890@s.whatsapp.net' }
       const editUpdate = { message: { conversation: 'New text' } }
       await transformer.processMessageEdit(editKey, editUpdate, chatId)
 
-      const messages = messageOps.getByChatId(chatId) as { whatsapp_message_id: string; content_json: string }[]
+      const messages = messageOps.getByChatId(SLUG, chatId) as { whatsapp_message_id: string; content_json: string }[]
       const editMsg = messages.find(m => m.whatsapp_message_id.startsWith('edit-'))
       expect(editMsg).toBeDefined()
       const content = JSON.parse(editMsg!.content_json)
@@ -611,7 +613,7 @@ describe('Message Transformer Tests', () => {
 
     it('should extract newText from extendedTextMessage', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const editKey = { id: 'edit-extended', remoteJid: '1234567890@s.whatsapp.net' }
       const editUpdate = {
@@ -621,7 +623,7 @@ describe('Message Transformer Tests', () => {
       }
       await transformer.processMessageEdit(editKey, editUpdate, chatId)
 
-      const messages = messageOps.getByChatId(chatId) as { whatsapp_message_id: string; content_json: string }[]
+      const messages = messageOps.getByChatId(SLUG, chatId) as { whatsapp_message_id: string; content_json: string }[]
       const editMsg = messages.find(m => m.whatsapp_message_id.startsWith('edit-'))
       const content = JSON.parse(editMsg!.content_json)
       expect(content.editedMessage.newText).toBe('Extended edit text')
@@ -629,13 +631,13 @@ describe('Message Transformer Tests', () => {
 
     it('should extract editedBy from participant', async () => {
       const chatId = createTestChat()
-      const transformer = new MessageTransformer(mockSocket)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
 
       const editKey = { id: 'edit-by-test', remoteJid: '1234567890@s.whatsapp.net' }
       const editUpdate = { message: { conversation: 'Edited' } }
       await transformer.processMessageEdit(editKey, editUpdate, chatId, '9998887777@s.whatsapp.net')
 
-      const messages = messageOps.getByChatId(chatId) as { whatsapp_message_id: string; content_json: string }[]
+      const messages = messageOps.getByChatId(SLUG, chatId) as { whatsapp_message_id: string; content_json: string }[]
       const editMsg = messages.find(m => m.whatsapp_message_id.startsWith('edit-'))
       const content = JSON.parse(editMsg!.content_json)
       expect(content.editedBy.phone).toBe('+9998887777')
