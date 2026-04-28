@@ -89,6 +89,11 @@ function runMigrations(database: Database.Database): void {
     applyMigration6(database)
     database.prepare('INSERT INTO schema_version (version) VALUES (?)').run(6)
   }
+
+  if (version < 7) {
+    applyMigration7(database)
+    database.prepare('INSERT INTO schema_version (version) VALUES (?)').run(7)
+  }
 }
 
 function applyMigration1(database: Database.Database): void {
@@ -251,6 +256,19 @@ function applyMigration6(database: Database.Database): void {
   `)
 }
 
+// One-time backfill for groups inserted with enabled=1 due to the bug where
+// the messages.upsert fallback relied on the SQLite column default instead of
+// explicitly passing enabled=0. Only touches rows where group_metadata_fetched=0
+// so we don't regress groups the user has already interacted with.
+function applyMigration7(database: Database.Database): void {
+  const result = database.prepare(`
+    UPDATE chats
+    SET enabled = 0
+    WHERE chat_type = 'group' AND group_metadata_fetched = 0 AND enabled = 1
+  `).run()
+  console.log(`[Migration7] Backfilled enabled=0 on ${result.changes} buggy group row(s)`)
+}
+
 
 // CRUD Operations for messages
 export const messageOps = {
@@ -305,7 +323,14 @@ export const messageOps = {
 
 // CRUD Operations for chats
 export const chatOps = {
-  insert: (slug: string, whatsappJid: string, chatType: string, backendStreamUuid?: string, name?: string) => {
+  insert: (slug: string, whatsappJid: string, chatType: string, backendStreamUuid?: string, name?: string, enabled?: number) => {
+    if (enabled !== undefined) {
+      const stmt = getDatabase(slug).prepare(`
+        INSERT INTO chats (whatsapp_jid, chat_type, backend_stream_uuid, name, enabled)
+        VALUES (?, ?, ?, ?, ?)
+      `)
+      return stmt.run(whatsappJid, chatType, backendStreamUuid || null, name || null, enabled ? 1 : 0)
+    }
     const stmt = getDatabase(slug).prepare(`
       INSERT INTO chats (whatsapp_jid, chat_type, backend_stream_uuid, name)
       VALUES (?, ?, ?, ?)

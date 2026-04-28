@@ -106,7 +106,7 @@ export class SyncOrchestrator {
           const contact = contactOps.getByJid(this.slug, jid) as any
           if (contact?.name) { chatName = contact.name }
         }
-        const result = chatOps.insert(this.slug, jid, chatType, undefined, chatName)
+        const result = chatOps.insert(this.slug, jid, chatType, undefined, chatName, enabled)
         dbChat = { id: (result as any).lastInsertRowid, whatsapp_jid: jid, chat_type: chatType, enabled, last_pushed_message_id: 0, name: chatName }
       }
 
