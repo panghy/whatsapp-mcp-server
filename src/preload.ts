@@ -4,8 +4,6 @@ contextBridge.exposeInMainWorld('electron', {
   // App-level settings (no slug)
   getAutoLaunch: () => ipcRenderer.invoke('get-auto-launch'),
   setAutoLaunch: (enabled: boolean) => ipcRenderer.invoke('set-auto-launch', enabled),
-  getMinimizeToTray: () => ipcRenderer.invoke('get-minimize-to-tray'),
-  setMinimizeToTray: (enabled: boolean) => ipcRenderer.invoke('set-minimize-to-tray', enabled),
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),

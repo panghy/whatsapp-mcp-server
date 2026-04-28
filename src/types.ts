@@ -61,8 +61,6 @@ declare global {
       // App-level settings
       getAutoLaunch: () => Promise<boolean>
       setAutoLaunch: (enabled: boolean) => Promise<boolean>
-      getMinimizeToTray: () => Promise<boolean>
-      setMinimizeToTray: (enabled: boolean) => Promise<boolean>
       getAppVersion: () => Promise<string>
       checkForUpdates: () => Promise<{ success: boolean; error?: string }>
       getUpdateStatus: () => Promise<UpdateStatusData>

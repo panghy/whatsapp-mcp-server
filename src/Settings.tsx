@@ -79,7 +79,6 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
   const [displayName, setDisplayName] = useState('')
   const [displayNameSaved, setDisplayNameSaved] = useState(false)
   const [autoLaunch, setAutoLaunch] = useState(false)
-  const [minimizeToTray, setMinimizeToTray] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   // MCP Server state
@@ -102,18 +101,16 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
   const loadSettings = useCallback(async () => {
     try {
       setLoading(true); setError(null)
-      const [groupsData, name, autoLaunchEnabled, trayEnabled, mcpStatusData, autoStart] = await Promise.all([
+      const [groupsData, name, autoLaunchEnabled, mcpStatusData, autoStart] = await Promise.all([
         window.electron.getGroups(slug),
         window.electron.getUserDisplayName(slug),
         window.electron.getAutoLaunch(),
-        window.electron.getMinimizeToTray(),
         window.electron.getMcpStatus(),
         window.electron.getMcpAutoStart(),
       ])
       setGroups(groupsData)
       setDisplayName(name || '')
       setAutoLaunch(autoLaunchEnabled)
-      setMinimizeToTray(trayEnabled)
       setMcpStatus(mcpStatusData); setMcpPort(String(mcpStatusData.port))
       setMcpAutoStart(autoStart)
     } catch (err) {
@@ -193,7 +190,6 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
 
   const handleDisplayNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') { void handleDisplayNameSave() } }
   const handleAutoLaunchChange = async (e: React.ChangeEvent<HTMLInputElement>) => { try { await window.electron.setAutoLaunch(e.target.checked); setAutoLaunch(e.target.checked) } catch (err) { console.error('Failed to update auto-launch:', err) } }
-  const handleMinimizeToTrayChange = async (e: React.ChangeEvent<HTMLInputElement>) => { try { await window.electron.setMinimizeToTray(e.target.checked); setMinimizeToTray(e.target.checked) } catch (err) { console.error('Failed to update tray setting:', err) } }
   const handleMcpAutoStartChange = async (e: React.ChangeEvent<HTMLInputElement>) => { try { await window.electron.setMcpAutoStart(e.target.checked); setMcpAutoStart(e.target.checked) } catch (err) { console.error('Failed to update MCP auto-start:', err) } }
 
   // MCP handlers
@@ -348,7 +344,6 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
               <p className="setting-description">Your name as it appears in synced messages for this account</p>
             </div>
             <div className="setting-item" style={{ marginTop: '1rem', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Launch on startup</span><label className="toggle-switch"><input type="checkbox" checked={autoLaunch} onChange={handleAutoLaunchChange} /><span className="slider"></span></label></div>
-            <div className="setting-item" style={{ marginTop: '1rem', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Minimize to tray on close</span><label className="toggle-switch"><input type="checkbox" checked={minimizeToTray} onChange={handleMinimizeToTrayChange} /><span className="slider"></span></label></div>
 
             {/* MCP Server Section */}
             <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid hsl(var(--border))' }}>

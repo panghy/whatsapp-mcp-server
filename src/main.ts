@@ -686,13 +686,6 @@ ipcMain.handle('set-auto-launch', async (_, enabled: boolean) => {
   return true
 })
 
-ipcMain.handle('get-minimize-to-tray', async () => (await Settings.get('minimizeToTray')) || false)
-
-ipcMain.handle('set-minimize-to-tray', async (_, enabled: boolean) => {
-  await Settings.set('minimizeToTray', enabled)
-  return true
-})
-
 ipcMain.handle('get-app-version', () => app.getVersion())
 
 ipcMain.handle('check-for-updates', async () => {
