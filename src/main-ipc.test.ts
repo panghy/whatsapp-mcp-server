@@ -52,6 +52,7 @@ vi.mock('electron', () => {
       focus: vi.fn(),
       restore: vi.fn(),
       moveTop: vi.fn(),
+      setAlwaysOnTop: vi.fn(),
     }
     browserWindowState.instances.push(inst)
     browserWindowState.lastInstance = inst
@@ -619,14 +620,26 @@ describe('main IPC surface', () => {
       expect(typeof raiseWindowAboveOthers).toBe('function')
     })
 
-    it('with no window, is a no-op (does not construct a BrowserWindow, does not call app.focus)', () => {
+    it('with no window, is a no-op (does not construct a BrowserWindow, does not call app.focus, does not toggle setAlwaysOnTop)', () => {
       const startCount = browserWindowState.constructorCount
       browserWindowState.appFocusCalls.length = 0
+      // Capture any pre-existing instance (from earlier suites) and clear its
+      // setAlwaysOnTop mock so we can assert it stays untouched. May be null
+      // when this test runs first.
+      const inst = browserWindowState.lastInstance
+      if (inst) {
+        inst.setAlwaysOnTop.mockClear()
+        inst.focus.mockClear()
+      }
 
       raiseWindowAboveOthers()
 
       expect(browserWindowState.constructorCount).toBe(startCount)
       expect(browserWindowState.appFocusCalls).toHaveLength(0)
+      if (inst) {
+        expect(inst.setAlwaysOnTop).not.toHaveBeenCalled()
+        expect(inst.focus).not.toHaveBeenCalled()
+      }
     })
   })
 
@@ -769,62 +782,89 @@ describe('main IPC surface', () => {
       browserWindowState.appFocusCalls.length = 0
     })
 
-    it('with a visible, non-minimized window, only calls moveTop() (no show/restore/app.focus)', () => {
+    it('with a visible, non-minimized window, calls setAlwaysOnTop(true) → moveTop() → setAlwaysOnTop(false) (no show/restore/focus/app.focus)', () => {
       const inst = browserWindowState.lastInstance!
       inst.isVisible.mockReturnValue(true)
       inst.isMinimized.mockReturnValue(false)
       inst.show.mockClear(); inst.restore.mockClear(); inst.moveTop.mockClear()
+      inst.setAlwaysOnTop.mockClear(); inst.focus.mockClear()
       browserWindowState.appFocusCalls.length = 0
 
       raiseWindowAboveOthers()
 
+      expect(inst.setAlwaysOnTop).toHaveBeenCalledTimes(2)
+      expect(inst.setAlwaysOnTop).toHaveBeenNthCalledWith(1, true)
+      expect(inst.setAlwaysOnTop).toHaveBeenNthCalledWith(2, false)
       expect(inst.moveTop).toHaveBeenCalledTimes(1)
+      // Sequence: setAlwaysOnTop(true) → moveTop() → setAlwaysOnTop(false).
+      const order1 = inst.setAlwaysOnTop.mock.invocationCallOrder[0]
+      const orderMove = inst.moveTop.mock.invocationCallOrder[0]
+      const order2 = inst.setAlwaysOnTop.mock.invocationCallOrder[1]
+      expect(order1).toBeLessThan(orderMove)
+      expect(orderMove).toBeLessThan(order2)
       expect(inst.show).not.toHaveBeenCalled()
       expect(inst.restore).not.toHaveBeenCalled()
+      expect(inst.focus).not.toHaveBeenCalled()
       expect(browserWindowState.appFocusCalls).toHaveLength(0)
     })
 
-    it('with a hidden window, calls show() then moveTop() (no restore, no app.focus)', () => {
+    it('with a hidden window, calls show() before setAlwaysOnTop(true) (no restore/focus/app.focus)', () => {
       const inst = browserWindowState.lastInstance!
       inst.isVisible.mockReturnValue(false)
       inst.isMinimized.mockReturnValue(false)
       inst.show.mockClear(); inst.restore.mockClear(); inst.moveTop.mockClear()
+      inst.setAlwaysOnTop.mockClear(); inst.focus.mockClear()
       browserWindowState.appFocusCalls.length = 0
 
       raiseWindowAboveOthers()
 
       expect(inst.show).toHaveBeenCalledTimes(1)
+      expect(inst.setAlwaysOnTop).toHaveBeenCalledTimes(2)
       expect(inst.moveTop).toHaveBeenCalledTimes(1)
+      // show() must happen before the first setAlwaysOnTop(true).
+      const orderShow = inst.show.mock.invocationCallOrder[0]
+      const orderAOTOn = inst.setAlwaysOnTop.mock.invocationCallOrder[0]
+      expect(orderShow).toBeLessThan(orderAOTOn)
       expect(inst.restore).not.toHaveBeenCalled()
+      expect(inst.focus).not.toHaveBeenCalled()
       expect(browserWindowState.appFocusCalls).toHaveLength(0)
     })
 
-    it('with a minimized window, calls restore() then show() then moveTop() (defensive; no app.focus)', () => {
+    it('with a minimized window, calls restore() before setAlwaysOnTop(true) (defensive; no focus/app.focus)', () => {
       // onTrayActivate gates this case out, but the helper itself must remain safe.
       const inst = browserWindowState.lastInstance!
       inst.isVisible.mockReturnValue(false)
       inst.isMinimized.mockReturnValue(true)
       inst.show.mockClear(); inst.restore.mockClear(); inst.moveTop.mockClear()
+      inst.setAlwaysOnTop.mockClear(); inst.focus.mockClear()
       browserWindowState.appFocusCalls.length = 0
 
       raiseWindowAboveOthers()
 
       expect(inst.restore).toHaveBeenCalledTimes(1)
       expect(inst.show).toHaveBeenCalledTimes(1)
+      expect(inst.setAlwaysOnTop).toHaveBeenCalledTimes(2)
       expect(inst.moveTop).toHaveBeenCalledTimes(1)
+      // restore() must happen before the first setAlwaysOnTop(true).
+      const orderRestore = inst.restore.mock.invocationCallOrder[0]
+      const orderAOTOn = inst.setAlwaysOnTop.mock.invocationCallOrder[0]
+      expect(orderRestore).toBeLessThan(orderAOTOn)
+      expect(inst.focus).not.toHaveBeenCalled()
       expect(browserWindowState.appFocusCalls).toHaveLength(0)
     })
 
-    it('on darwin, NEVER calls app.focus (the whole point: keep the tray menu open)', () => {
+    it('on darwin, NEVER calls app.focus or window.focus (the whole point: keep the tray menu open)', () => {
       Object.defineProperty(process, 'platform', { value: 'darwin' })
       const inst = browserWindowState.lastInstance!
       inst.isVisible.mockReturnValue(true)
       inst.isMinimized.mockReturnValue(false)
+      inst.focus.mockClear()
       browserWindowState.appFocusCalls.length = 0
 
       raiseWindowAboveOthers()
 
       expect(browserWindowState.appFocusCalls).toHaveLength(0)
+      expect(inst.focus).not.toHaveBeenCalled()
     })
   })
 

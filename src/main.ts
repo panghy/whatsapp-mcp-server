@@ -241,7 +241,13 @@ export function raiseWindowAboveOthers(): void {
   if (!mainWindow) return
   if (mainWindow.isMinimized()) mainWindow.restore()
   if (!mainWindow.isVisible()) mainWindow.show()
+  // Briefly elevate above other apps' windows (some apps sit at a higher
+  // window level on macOS), then drop the level so we don't stay pinned.
+  // The toggle is synchronous on purpose — that's enough on macOS to lift
+  // the window without leaving it always-on-top.
+  mainWindow.setAlwaysOnTop(true)
   mainWindow.moveTop()
+  mainWindow.setAlwaysOnTop(false)
 }
 
 export type WindowMenuItem = { label: 'Show Window' | 'Hide Window'; action: 'show' | 'hide' }
