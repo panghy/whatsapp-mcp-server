@@ -6,6 +6,7 @@ import {
   buildRemoveAccountMessage,
   getAccountStateLabel,
   performAccountRemoval,
+  sortGroupsByLastActivity,
 } from './Settings'
 import type { Account, WhatsAppStatus } from './types'
 
@@ -236,3 +237,64 @@ describe('performAccountRemoval', () => {
   })
 })
 
+describe('sortGroupsByLastActivity', () => {
+  type G = { id: number; last_activity: string | null }
+
+  it('sorts groups by last_activity descending', () => {
+    const input: G[] = [
+      { id: 1, last_activity: '2025-01-01T00:00:00Z' },
+      { id: 2, last_activity: '2026-04-01T00:00:00Z' },
+      { id: 3, last_activity: '2025-06-15T12:00:00Z' },
+    ]
+    expect(sortGroupsByLastActivity(input).map(g => g.id)).toEqual([2, 3, 1])
+  })
+
+  it('places null last_activity entries at the end, preserving their input order', () => {
+    const input: G[] = [
+      { id: 1, last_activity: null },
+      { id: 2, last_activity: '2026-04-01T00:00:00Z' },
+      { id: 3, last_activity: null },
+      { id: 4, last_activity: '2025-01-01T00:00:00Z' },
+      { id: 5, last_activity: null },
+    ]
+    expect(sortGroupsByLastActivity(input).map(g => g.id)).toEqual([2, 4, 1, 3, 5])
+  })
+
+  it('places unparseable last_activity entries at the end', () => {
+    const input: G[] = [
+      { id: 1, last_activity: 'not-a-date' },
+      { id: 2, last_activity: '2026-04-01T00:00:00Z' },
+      { id: 3, last_activity: 'also bogus' },
+    ]
+    expect(sortGroupsByLastActivity(input).map(g => g.id)).toEqual([2, 1, 3])
+  })
+
+  it('is stable for equal timestamps', () => {
+    const ts = '2026-04-01T00:00:00Z'
+    const input: G[] = [
+      { id: 1, last_activity: ts },
+      { id: 2, last_activity: ts },
+      { id: 3, last_activity: ts },
+    ]
+    expect(sortGroupsByLastActivity(input).map(g => g.id)).toEqual([1, 2, 3])
+  })
+
+  it('does not mutate the input array', () => {
+    const input: G[] = [
+      { id: 1, last_activity: '2025-01-01T00:00:00Z' },
+      { id: 2, last_activity: '2026-04-01T00:00:00Z' },
+      { id: 3, last_activity: null },
+    ]
+    const snapshot = input.map(g => g.id)
+    const result = sortGroupsByLastActivity(input)
+    expect(input.map(g => g.id)).toEqual(snapshot)
+    expect(result).not.toBe(input)
+  })
+
+  it('returns a new array even when input is already sorted', () => {
+    const input: G[] = [{ id: 1, last_activity: '2026-04-01T00:00:00Z' }]
+    const result = sortGroupsByLastActivity(input)
+    expect(result).not.toBe(input)
+    expect(result.map(g => g.id)).toEqual([1])
+  })
+})

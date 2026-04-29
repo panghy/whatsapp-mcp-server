@@ -59,6 +59,21 @@ interface Group {
   name?: string
 }
 
+export function sortGroupsByLastActivity<T extends { last_activity: string | null }>(groups: readonly T[]): T[] {
+  const parse = (v: string | null): number | null => {
+    if (!v) return null
+    const t = Date.parse(v)
+    return Number.isNaN(t) ? null : t
+  }
+  return [...groups].sort((a, b) => {
+    const ta = parse(a.last_activity); const tb = parse(b.last_activity)
+    if (ta === null && tb === null) return 0
+    if (ta === null) return 1
+    if (tb === null) return -1
+    return tb - ta
+  })
+}
+
 type SettingsTab = 'group-sync' | 'interface-system' | 'logs'
 
 interface SettingsProps {
@@ -264,7 +279,7 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
     catch (err) { console.error('Failed to quit and install:', err) }
   }
 
-  const filteredGroups = groups.filter(g => (g.name || g.whatsapp_jid).toLowerCase().includes(searchQuery.toLowerCase()))
+  const filteredGroups = sortGroupsByLastActivity(groups.filter(g => (g.name || g.whatsapp_jid).toLowerCase().includes(searchQuery.toLowerCase())))
 
   const formatLastActivity = (timestamp: string | null) => {
     if (!timestamp) return 'Never'
