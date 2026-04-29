@@ -2,7 +2,7 @@ import { vi, describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } 
 import path from 'path'
 import fs from 'fs'
 
-const { testDir, ipcHandlers } = vi.hoisted(() => {
+const { testDir, ipcHandlers, browserWindowState } = vi.hoisted(() => {
   const p = require('path')
   const os = require('os')
   const testDir = p.join(
@@ -10,7 +10,13 @@ const { testDir, ipcHandlers } = vi.hoisted(() => {
     'wa-main-ipc-test-' + Date.now() + '-' + Math.random().toString(36).slice(2)
   )
   const ipcHandlers = new Map<string, (event: any, ...args: any[]) => any>()
-  return { testDir, ipcHandlers }
+  const browserWindowState: {
+    constructorCount: number
+    instances: any[]
+    lastInstance: any | null
+    appFocusCalls: any[]
+  } = { constructorCount: 0, instances: [], lastInstance: null, appFocusCalls: [] }
+  return { testDir, ipcHandlers, browserWindowState }
 })
 
 // Mock electron: only what main.ts touches at import time.
@@ -23,6 +29,7 @@ vi.mock('electron', () => {
     whenReady: () => ({ then: () => {} }),
     on: () => {},
     quit: () => {},
+    focus: (opts?: any) => { browserWindowState.appFocusCalls.push(opts) },
     dock: { hide: () => {}, show: () => {} },
   }
   const ipcMain = {
@@ -30,7 +37,24 @@ vi.mock('electron', () => {
       ipcHandlers.set(channel, handler)
     },
   }
-  const BrowserWindow: any = function () { return { webContents: { send: () => {} }, on: () => {}, loadURL: () => {}, loadFile: () => {}, isVisible: () => false, show: () => {}, hide: () => {}, focus: () => {} } }
+  const BrowserWindow: any = function () {
+    browserWindowState.constructorCount++
+    const inst: any = {
+      webContents: { send: vi.fn(), once: vi.fn() },
+      on: vi.fn(),
+      loadURL: vi.fn(),
+      loadFile: vi.fn(),
+      isVisible: vi.fn(() => false),
+      isMinimized: vi.fn(() => false),
+      show: vi.fn(),
+      hide: vi.fn(),
+      focus: vi.fn(),
+      restore: vi.fn(),
+    }
+    browserWindowState.instances.push(inst)
+    browserWindowState.lastInstance = inst
+    return inst
+  }
   const Menu = { buildFromTemplate: () => ({}) }
   const Tray: any = function () { return { setToolTip: () => {}, setContextMenu: () => {}, on: () => {} } }
   const nativeImage = { createFromPath: () => ({ resize: () => ({ setTemplateImage: () => {} }) }) }
@@ -578,6 +602,95 @@ describe('main IPC surface', () => {
       expect(chat.chat_type).toBe('group')
       expect(chat.enabled).toBe(0)
       expect(queueSpy).toHaveBeenCalledWith([{ chatId: chat.id, jid: 'surprise@g.us' }])
+    })
+  })
+
+  describe('bringWindowToFront', () => {
+    let bringWindowToFront: () => void
+    const originalPlatform = process.platform
+
+    beforeAll(async () => {
+      const mod: any = await import('./main')
+      bringWindowToFront = mod.bringWindowToFront
+      expect(typeof bringWindowToFront).toBe('function')
+    })
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform })
+      browserWindowState.appFocusCalls.length = 0
+    })
+
+    it('with no window, constructs a BrowserWindow via createWindow', () => {
+      // Tests in this describe run in order; this one must run first so
+      // mainWindow inside main.ts is still null.
+      const startCount = browserWindowState.constructorCount
+      bringWindowToFront()
+      expect(browserWindowState.constructorCount).toBe(startCount + 1)
+      expect(browserWindowState.lastInstance).not.toBeNull()
+    })
+
+    it('with a hidden, non-minimized window, calls show() and focus() (no restore)', () => {
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(false)
+      inst.isMinimized.mockReturnValue(false)
+      inst.show.mockClear(); inst.focus.mockClear(); inst.restore.mockClear()
+
+      bringWindowToFront()
+
+      expect(inst.show).toHaveBeenCalledTimes(1)
+      expect(inst.focus).toHaveBeenCalledTimes(1)
+      expect(inst.restore).not.toHaveBeenCalled()
+    })
+
+    it('with a minimized window, calls restore() and focus()', () => {
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(true)
+      inst.isMinimized.mockReturnValue(true)
+      inst.show.mockClear(); inst.focus.mockClear(); inst.restore.mockClear()
+
+      bringWindowToFront()
+
+      expect(inst.restore).toHaveBeenCalledTimes(1)
+      expect(inst.focus).toHaveBeenCalledTimes(1)
+      expect(inst.show).not.toHaveBeenCalled()
+    })
+
+    it('with a visible, non-minimized window, only calls focus() (no show/restore)', () => {
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(true)
+      inst.isMinimized.mockReturnValue(false)
+      inst.show.mockClear(); inst.focus.mockClear(); inst.restore.mockClear()
+
+      bringWindowToFront()
+
+      expect(inst.focus).toHaveBeenCalledTimes(1)
+      expect(inst.show).not.toHaveBeenCalled()
+      expect(inst.restore).not.toHaveBeenCalled()
+    })
+
+    it('on darwin, calls app.focus({ steal: true })', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin' })
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(true)
+      inst.isMinimized.mockReturnValue(false)
+      browserWindowState.appFocusCalls.length = 0
+
+      bringWindowToFront()
+
+      expect(browserWindowState.appFocusCalls).toHaveLength(1)
+      expect(browserWindowState.appFocusCalls[0]).toEqual({ steal: true })
+    })
+
+    it('on non-darwin platforms, does NOT call app.focus', () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(true)
+      inst.isMinimized.mockReturnValue(false)
+      browserWindowState.appFocusCalls.length = 0
+
+      bringWindowToFront()
+
+      expect(browserWindowState.appFocusCalls).toHaveLength(0)
     })
   })
 })

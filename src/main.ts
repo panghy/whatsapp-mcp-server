@@ -218,21 +218,26 @@ const createWindow = () => {
 
   mainWindow.on('show', () => {
     if (process.platform === 'darwin') app.dock?.show()
-    updateTrayMenu()
   })
   mainWindow.on('hide', () => {
     if (process.platform === 'darwin') app.dock?.hide()
-    updateTrayMenu()
   })
 }
 
+export function bringWindowToFront(): void {
+  if (!mainWindow) { createWindow(); return }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
+  if (process.platform === 'darwin') app.focus({ steal: true })
+}
+
 const showMainWindowAndSend = (channel: string, payload?: any) => {
-  if (mainWindow) {
-    mainWindow.show()
-    mainWindow.focus()
-    mainWindow.webContents.send(channel, payload)
+  const hadWindow = mainWindow !== null
+  bringWindowToFront()
+  if (hadWindow) {
+    mainWindow!.webContents.send(channel, payload)
   } else {
-    createWindow()
     mainWindow!.webContents.once('did-finish-load', () => {
       mainWindow!.webContents.send(channel, payload)
     })
@@ -262,17 +267,7 @@ const updateTrayMenu = () => {
   const topStatus = accounts.length === 0 ? 'No accounts' : (anyConnected ? 'Connected' : 'Disconnected')
 
   const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: mainWindow?.isVisible() ? 'Hide Window' : 'Show Window',
-      click: () => {
-        if (mainWindow) {
-          if (mainWindow.isVisible()) mainWindow.hide()
-          else { mainWindow.show(); mainWindow.focus() }
-        } else {
-          createWindow()
-        }
-      }
-    },
+    { label: 'Show Window', click: () => { bringWindowToFront() } },
     { label: `Status: ${topStatus}`, enabled: false },
     { type: 'separator' }
   ]
@@ -297,13 +292,10 @@ const createTray = () => {
     trayIcon.setTemplateImage(true)
     tray = new Tray(trayIcon)
     tray.setToolTip('WhatsApp MCP Server')
-    // On macOS, Tray with setContextMenu already opens the menu on click.
-    // Also bring the window to the foreground if it's already visible.
-    tray.on('click', () => {
-      if (mainWindow && mainWindow.isVisible()) {
-        mainWindow.focus()
-      }
-    })
+    // On macOS the context menu opens via setContextMenu; on Windows the
+    // tray-icon double-click is the standard "show window" gesture.
+    tray.on('click', () => bringWindowToFront())
+    tray.on('double-click', () => bringWindowToFront())
     updateTrayMenu()
   } catch {
     console.log('Tray icon not found, continuing without tray')
