@@ -224,8 +224,6 @@ const createWindow = () => {
     if (process.platform === 'darwin') app.dock?.hide()
     updateTrayMenu()
   })
-  mainWindow.on('focus', () => { updateTrayMenu() })
-  mainWindow.on('blur', () => { updateTrayMenu() })
 }
 
 export function bringWindowToFront(): void {
@@ -241,9 +239,9 @@ export type WindowMenuItem = { label: 'Show Window' | 'Hide Window'; action: 'sh
 export function computeWindowMenuItem(state: {
   exists: boolean
   visible: boolean
-  focused: boolean
+  minimized: boolean
 }): WindowMenuItem {
-  if (state.exists && state.visible && state.focused) {
+  if (state.exists && state.visible && !state.minimized) {
     return { label: 'Hide Window', action: 'hide' }
   }
   return { label: 'Show Window', action: 'show' }
@@ -286,7 +284,7 @@ const updateTrayMenu = () => {
   const item = computeWindowMenuItem({
     exists: mainWindow !== null,
     visible: mainWindow?.isVisible() ?? false,
-    focused: mainWindow?.isFocused() ?? false,
+    minimized: mainWindow?.isMinimized() ?? false,
   })
   const firstItem: Electron.MenuItemConstructorOptions = {
     label: item.label,
@@ -325,8 +323,10 @@ const createTray = () => {
     // On macOS the context menu opens via setContextMenu; on Windows the
     // tray-icon double-click is the standard "show window" gesture.
     const onTrayActivate = () => {
+      if (mainWindow && mainWindow.isVisible() && !mainWindow.isMinimized()) {
+        bringWindowToFront()
+      }
       updateTrayMenu()
-      if (mainWindow && mainWindow.isVisible()) bringWindowToFront()
     }
     tray.on('click', onTrayActivate)
     tray.on('double-click', onTrayActivate)

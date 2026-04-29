@@ -696,7 +696,7 @@ describe('main IPC surface', () => {
   })
 
   describe('computeWindowMenuItem', () => {
-    let computeWindowMenuItem: (state: { exists: boolean; visible: boolean; focused: boolean }) =>
+    let computeWindowMenuItem: (state: { exists: boolean; visible: boolean; minimized: boolean }) =>
       { label: 'Show Window' | 'Hide Window'; action: 'show' | 'hide' }
 
     beforeAll(async () => {
@@ -706,49 +706,45 @@ describe('main IPC surface', () => {
     })
 
     it('no window → "Show Window" / "show"', () => {
-      expect(computeWindowMenuItem({ exists: false, visible: false, focused: false }))
+      expect(computeWindowMenuItem({ exists: false, visible: false, minimized: false }))
         .toEqual({ label: 'Show Window', action: 'show' })
     })
 
     it('hidden window → "Show Window" / "show"', () => {
-      expect(computeWindowMenuItem({ exists: true, visible: false, focused: false }))
+      expect(computeWindowMenuItem({ exists: true, visible: false, minimized: false }))
         .toEqual({ label: 'Show Window', action: 'show' })
     })
 
-    it('not-visible-but-focused (defensive) → "Show Window" / "show"', () => {
-      expect(computeWindowMenuItem({ exists: true, visible: false, focused: true }))
+    it('minimized window (visible=true, minimized=true) → "Show Window" / "show"', () => {
+      expect(computeWindowMenuItem({ exists: true, visible: true, minimized: true }))
         .toEqual({ label: 'Show Window', action: 'show' })
     })
 
-    it('visible-but-unfocused → "Show Window" / "show"', () => {
-      expect(computeWindowMenuItem({ exists: true, visible: true, focused: false }))
-        .toEqual({ label: 'Show Window', action: 'show' })
-    })
-
-    it('visible AND focused → "Hide Window" / "hide"', () => {
-      expect(computeWindowMenuItem({ exists: true, visible: true, focused: true }))
+    it('visible and not minimized → "Hide Window" / "hide"', () => {
+      expect(computeWindowMenuItem({ exists: true, visible: true, minimized: false }))
         .toEqual({ label: 'Hide Window', action: 'hide' })
     })
   })
 
-  describe('tray activate handler — hidden window guard', () => {
-    // Mirrors the lambda inside createTray() in src/main.ts. The goal is to
-    // lock in the rule that bringWindowToFront() must NOT run when the window
-    // exists but is hidden (close-to-tray on darwin), while still re-rendering
-    // the tray menu.
+  describe('tray activate handler — hidden/minimized window guard', () => {
+    // Mirrors the lambda inside createTray() in src/main.ts. Locks in:
+    //   1. bringWindowToFront() must NOT run when the window is hidden or
+    //      minimized (close-to-tray / minimize-to-tray on darwin).
+    //   2. updateTrayMenu() always runs AFTER bringWindowToFront() so the
+    //      menu opens with the correct label immediately.
     function onTrayActivate(
-      win: { isVisible: () => boolean } | null,
+      win: { isVisible: () => boolean; isMinimized: () => boolean } | null,
       updateMenu: () => void,
       bring: () => void
     ): void {
+      if (win && win.isVisible() && !win.isMinimized()) bring()
       updateMenu()
-      if (win && win.isVisible()) bring()
     }
 
     it('does NOT call bringWindowToFront when the window exists but is hidden', () => {
       const updateMenu = vi.fn()
       const bring = vi.fn()
-      const win = { isVisible: vi.fn(() => false) }
+      const win = { isVisible: vi.fn(() => false), isMinimized: vi.fn(() => false) }
 
       onTrayActivate(win, updateMenu, bring)
 
@@ -757,10 +753,21 @@ describe('main IPC surface', () => {
       expect(bring).not.toHaveBeenCalled()
     })
 
-    it('calls bringWindowToFront when the window is visible (even if unfocused)', () => {
+    it('does NOT call bringWindowToFront when the window is minimized', () => {
       const updateMenu = vi.fn()
       const bring = vi.fn()
-      const win = { isVisible: vi.fn(() => true) }
+      const win = { isVisible: vi.fn(() => true), isMinimized: vi.fn(() => true) }
+
+      onTrayActivate(win, updateMenu, bring)
+
+      expect(updateMenu).toHaveBeenCalledTimes(1)
+      expect(bring).not.toHaveBeenCalled()
+    })
+
+    it('calls bringWindowToFront when the window is visible and not minimized', () => {
+      const updateMenu = vi.fn()
+      const bring = vi.fn()
+      const win = { isVisible: vi.fn(() => true), isMinimized: vi.fn(() => false) }
 
       onTrayActivate(win, updateMenu, bring)
 
@@ -776,6 +783,17 @@ describe('main IPC surface', () => {
 
       expect(updateMenu).toHaveBeenCalledTimes(1)
       expect(bring).not.toHaveBeenCalled()
+    })
+
+    it('runs bringWindowToFront BEFORE updateTrayMenu (so menu opens with correct label)', () => {
+      const calls: string[] = []
+      const updateMenu = vi.fn(() => { calls.push('updateMenu') })
+      const bring = vi.fn(() => { calls.push('bring') })
+      const win = { isVisible: vi.fn(() => true), isMinimized: vi.fn(() => false) }
+
+      onTrayActivate(win, updateMenu, bring)
+
+      expect(calls).toEqual(['bring', 'updateMenu'])
     })
   })
 })
