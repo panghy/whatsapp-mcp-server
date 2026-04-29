@@ -730,5 +730,53 @@ describe('main IPC surface', () => {
         .toEqual({ label: 'Hide Window', action: 'hide' })
     })
   })
+
+  describe('tray activate handler — hidden window guard', () => {
+    // Mirrors the lambda inside createTray() in src/main.ts. The goal is to
+    // lock in the rule that bringWindowToFront() must NOT run when the window
+    // exists but is hidden (close-to-tray on darwin), while still re-rendering
+    // the tray menu.
+    function onTrayActivate(
+      win: { isVisible: () => boolean } | null,
+      updateMenu: () => void,
+      bring: () => void
+    ): void {
+      updateMenu()
+      if (win && win.isVisible()) bring()
+    }
+
+    it('does NOT call bringWindowToFront when the window exists but is hidden', () => {
+      const updateMenu = vi.fn()
+      const bring = vi.fn()
+      const win = { isVisible: vi.fn(() => false) }
+
+      onTrayActivate(win, updateMenu, bring)
+
+      expect(updateMenu).toHaveBeenCalledTimes(1)
+      expect(win.isVisible).toHaveBeenCalled()
+      expect(bring).not.toHaveBeenCalled()
+    })
+
+    it('calls bringWindowToFront when the window is visible (even if unfocused)', () => {
+      const updateMenu = vi.fn()
+      const bring = vi.fn()
+      const win = { isVisible: vi.fn(() => true) }
+
+      onTrayActivate(win, updateMenu, bring)
+
+      expect(updateMenu).toHaveBeenCalledTimes(1)
+      expect(bring).toHaveBeenCalledTimes(1)
+    })
+
+    it('with no window, only re-renders the tray menu', () => {
+      const updateMenu = vi.fn()
+      const bring = vi.fn()
+
+      onTrayActivate(null, updateMenu, bring)
+
+      expect(updateMenu).toHaveBeenCalledTimes(1)
+      expect(bring).not.toHaveBeenCalled()
+    })
+  })
 })
 

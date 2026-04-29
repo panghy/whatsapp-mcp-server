@@ -326,7 +326,7 @@ const createTray = () => {
     // tray-icon double-click is the standard "show window" gesture.
     const onTrayActivate = () => {
       updateTrayMenu()
-      if (mainWindow) bringWindowToFront()
+      if (mainWindow && mainWindow.isVisible()) bringWindowToFront()
     }
     tray.on('click', onTrayActivate)
     tray.on('double-click', onTrayActivate)
