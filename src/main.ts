@@ -234,6 +234,16 @@ export function bringWindowToFront(): void {
   if (process.platform === 'darwin') app.focus({ steal: true })
 }
 
+// Raise the window above other apps without stealing app-level focus. Used by
+// the tray-icon click handler so the just-opened tray context menu stays open
+// (calling app.focus({ steal: true }) on darwin would auto-dismiss it).
+export function raiseWindowAboveOthers(): void {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.moveTop()
+}
+
 export type WindowMenuItem = { label: 'Show Window' | 'Hide Window'; action: 'show' | 'hide' }
 
 export function computeWindowMenuItem(state: {
@@ -324,7 +334,7 @@ const createTray = () => {
     // tray-icon double-click is the standard "show window" gesture.
     const onTrayActivate = () => {
       if (mainWindow && mainWindow.isVisible() && !mainWindow.isMinimized()) {
-        bringWindowToFront()
+        raiseWindowAboveOthers()
       }
       updateTrayMenu()
     }

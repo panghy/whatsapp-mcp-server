@@ -51,6 +51,7 @@ vi.mock('electron', () => {
       hide: vi.fn(),
       focus: vi.fn(),
       restore: vi.fn(),
+      moveTop: vi.fn(),
     }
     browserWindowState.instances.push(inst)
     browserWindowState.lastInstance = inst
@@ -606,6 +607,29 @@ describe('main IPC surface', () => {
     })
   })
 
+  // Must run BEFORE the bringWindowToFront describe block: that block's first
+  // test relies on mainWindow inside main.ts still being null. raiseWindowAboveOthers
+  // must early-return on null mainWindow without constructing a BrowserWindow.
+  describe('raiseWindowAboveOthers — no-window guard', () => {
+    let raiseWindowAboveOthers: () => void
+
+    beforeAll(async () => {
+      const mod: any = await import('./main')
+      raiseWindowAboveOthers = mod.raiseWindowAboveOthers
+      expect(typeof raiseWindowAboveOthers).toBe('function')
+    })
+
+    it('with no window, is a no-op (does not construct a BrowserWindow, does not call app.focus)', () => {
+      const startCount = browserWindowState.constructorCount
+      browserWindowState.appFocusCalls.length = 0
+
+      raiseWindowAboveOthers()
+
+      expect(browserWindowState.constructorCount).toBe(startCount)
+      expect(browserWindowState.appFocusCalls).toHaveLength(0)
+    })
+  })
+
   describe('bringWindowToFront', () => {
     let bringWindowToFront: () => void
     const originalPlatform = process.platform
@@ -726,74 +750,180 @@ describe('main IPC surface', () => {
     })
   })
 
+  describe('raiseWindowAboveOthers — with window', () => {
+    // Runs after the bringWindowToFront block has constructed a BrowserWindow,
+    // so module-level mainWindow inside main.ts is set to lastInstance.
+    let raiseWindowAboveOthers: () => void
+    const originalPlatform = process.platform
+
+    beforeAll(async () => {
+      const mod: any = await import('./main')
+      raiseWindowAboveOthers = mod.raiseWindowAboveOthers
+      expect(typeof raiseWindowAboveOthers).toBe('function')
+      // Ensure mainWindow is set in case the bringWindowToFront block was filtered out.
+      if (!browserWindowState.lastInstance) mod.bringWindowToFront()
+    })
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform })
+      browserWindowState.appFocusCalls.length = 0
+    })
+
+    it('with a visible, non-minimized window, only calls moveTop() (no show/restore/app.focus)', () => {
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(true)
+      inst.isMinimized.mockReturnValue(false)
+      inst.show.mockClear(); inst.restore.mockClear(); inst.moveTop.mockClear()
+      browserWindowState.appFocusCalls.length = 0
+
+      raiseWindowAboveOthers()
+
+      expect(inst.moveTop).toHaveBeenCalledTimes(1)
+      expect(inst.show).not.toHaveBeenCalled()
+      expect(inst.restore).not.toHaveBeenCalled()
+      expect(browserWindowState.appFocusCalls).toHaveLength(0)
+    })
+
+    it('with a hidden window, calls show() then moveTop() (no restore, no app.focus)', () => {
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(false)
+      inst.isMinimized.mockReturnValue(false)
+      inst.show.mockClear(); inst.restore.mockClear(); inst.moveTop.mockClear()
+      browserWindowState.appFocusCalls.length = 0
+
+      raiseWindowAboveOthers()
+
+      expect(inst.show).toHaveBeenCalledTimes(1)
+      expect(inst.moveTop).toHaveBeenCalledTimes(1)
+      expect(inst.restore).not.toHaveBeenCalled()
+      expect(browserWindowState.appFocusCalls).toHaveLength(0)
+    })
+
+    it('with a minimized window, calls restore() then show() then moveTop() (defensive; no app.focus)', () => {
+      // onTrayActivate gates this case out, but the helper itself must remain safe.
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(false)
+      inst.isMinimized.mockReturnValue(true)
+      inst.show.mockClear(); inst.restore.mockClear(); inst.moveTop.mockClear()
+      browserWindowState.appFocusCalls.length = 0
+
+      raiseWindowAboveOthers()
+
+      expect(inst.restore).toHaveBeenCalledTimes(1)
+      expect(inst.show).toHaveBeenCalledTimes(1)
+      expect(inst.moveTop).toHaveBeenCalledTimes(1)
+      expect(browserWindowState.appFocusCalls).toHaveLength(0)
+    })
+
+    it('on darwin, NEVER calls app.focus (the whole point: keep the tray menu open)', () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin' })
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(true)
+      inst.isMinimized.mockReturnValue(false)
+      browserWindowState.appFocusCalls.length = 0
+
+      raiseWindowAboveOthers()
+
+      expect(browserWindowState.appFocusCalls).toHaveLength(0)
+    })
+  })
+
   describe('tray activate handler — hidden/minimized window guard', () => {
     // Mirrors the lambda inside createTray() in src/main.ts. Locks in:
-    //   1. bringWindowToFront() must NOT run when the window is hidden or
+    //   1. raiseWindowAboveOthers() must NOT run when the window is hidden or
     //      minimized (close-to-tray / minimize-to-tray on darwin).
-    //   2. updateTrayMenu() always runs AFTER bringWindowToFront() so the
+    //   2. updateTrayMenu() always runs AFTER raiseWindowAboveOthers() so the
     //      menu opens with the correct label immediately.
+    //   3. raiseWindowAboveOthers() (not bringWindowToFront) is used here, so
+    //      app.focus({ steal: true }) is never invoked — that would dismiss
+    //      the tray context menu on darwin.
+    let raiseWindowAboveOthers: () => void
+
+    beforeAll(async () => {
+      const mod: any = await import('./main')
+      raiseWindowAboveOthers = mod.raiseWindowAboveOthers
+    })
+
     function onTrayActivate(
       win: { isVisible: () => boolean; isMinimized: () => boolean } | null,
-      updateMenu: () => void,
-      bring: () => void
+      updateMenu: () => void
     ): void {
-      if (win && win.isVisible() && !win.isMinimized()) bring()
+      if (win && win.isVisible() && !win.isMinimized()) raiseWindowAboveOthers()
       updateMenu()
     }
 
-    it('does NOT call bringWindowToFront when the window exists but is hidden', () => {
+    it('does NOT call moveTop when the window exists but is hidden', () => {
       const updateMenu = vi.fn()
-      const bring = vi.fn()
-      const win = { isVisible: vi.fn(() => false), isMinimized: vi.fn(() => false) }
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(false)
+      inst.isMinimized.mockReturnValue(false)
+      inst.moveTop.mockClear()
+      browserWindowState.appFocusCalls.length = 0
 
-      onTrayActivate(win, updateMenu, bring)
+      onTrayActivate(inst, updateMenu)
 
       expect(updateMenu).toHaveBeenCalledTimes(1)
-      expect(win.isVisible).toHaveBeenCalled()
-      expect(bring).not.toHaveBeenCalled()
+      expect(inst.moveTop).not.toHaveBeenCalled()
+      expect(browserWindowState.appFocusCalls).toHaveLength(0)
     })
 
-    it('does NOT call bringWindowToFront when the window is minimized', () => {
+    it('does NOT call moveTop when the window is minimized', () => {
       const updateMenu = vi.fn()
-      const bring = vi.fn()
-      const win = { isVisible: vi.fn(() => true), isMinimized: vi.fn(() => true) }
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(true)
+      inst.isMinimized.mockReturnValue(true)
+      inst.moveTop.mockClear()
+      browserWindowState.appFocusCalls.length = 0
 
-      onTrayActivate(win, updateMenu, bring)
+      onTrayActivate(inst, updateMenu)
 
       expect(updateMenu).toHaveBeenCalledTimes(1)
-      expect(bring).not.toHaveBeenCalled()
+      expect(inst.moveTop).not.toHaveBeenCalled()
+      expect(browserWindowState.appFocusCalls).toHaveLength(0)
     })
 
-    it('calls bringWindowToFront when the window is visible and not minimized', () => {
+    it('calls moveTop (and NOT app.focus) when the window is visible and not minimized', () => {
       const updateMenu = vi.fn()
-      const bring = vi.fn()
-      const win = { isVisible: vi.fn(() => true), isMinimized: vi.fn(() => false) }
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(true)
+      inst.isMinimized.mockReturnValue(false)
+      inst.moveTop.mockClear()
+      browserWindowState.appFocusCalls.length = 0
 
-      onTrayActivate(win, updateMenu, bring)
+      onTrayActivate(inst, updateMenu)
 
       expect(updateMenu).toHaveBeenCalledTimes(1)
-      expect(bring).toHaveBeenCalledTimes(1)
+      expect(inst.moveTop).toHaveBeenCalledTimes(1)
+      expect(browserWindowState.appFocusCalls).toHaveLength(0)
     })
 
     it('with no window, only re-renders the tray menu', () => {
       const updateMenu = vi.fn()
-      const bring = vi.fn()
+      const inst = browserWindowState.lastInstance!
+      inst.moveTop.mockClear()
+      browserWindowState.appFocusCalls.length = 0
 
-      onTrayActivate(null, updateMenu, bring)
+      onTrayActivate(null, updateMenu)
 
       expect(updateMenu).toHaveBeenCalledTimes(1)
-      expect(bring).not.toHaveBeenCalled()
+      expect(inst.moveTop).not.toHaveBeenCalled()
+      expect(browserWindowState.appFocusCalls).toHaveLength(0)
     })
 
-    it('runs bringWindowToFront BEFORE updateTrayMenu (so menu opens with correct label)', () => {
+    it('runs raiseWindowAboveOthers BEFORE updateTrayMenu (so menu opens with correct label)', () => {
       const calls: string[] = []
       const updateMenu = vi.fn(() => { calls.push('updateMenu') })
-      const bring = vi.fn(() => { calls.push('bring') })
-      const win = { isVisible: vi.fn(() => true), isMinimized: vi.fn(() => false) }
+      const inst = browserWindowState.lastInstance!
+      inst.isVisible.mockReturnValue(true)
+      inst.isMinimized.mockReturnValue(false)
+      inst.moveTop.mockImplementation(() => { calls.push('moveTop') })
 
-      onTrayActivate(win, updateMenu, bring)
+      onTrayActivate(inst, updateMenu)
 
-      expect(calls).toEqual(['bring', 'updateMenu'])
+      expect(calls[0]).toBe('moveTop')
+      expect(calls[calls.length - 1]).toBe('updateMenu')
+      // Reset so subsequent tests get a fresh vi.fn() with no implementation.
+      inst.moveTop.mockReset()
     })
   })
 })
