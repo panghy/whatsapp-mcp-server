@@ -212,6 +212,17 @@ describe('Database Integration Tests', () => {
       const group = chatOps.getByWhatsappJid(SLUG, 'default-group@g.us') as any
       expect(group.enabled).toBe(1)
     })
+
+    it('getAllGroups should return only rows with chat_type = group', () => {
+      chatOps.insert(SLUG, 'g1@g.us', 'group', undefined, 'Group One')
+      chatOps.insert(SLUG, 'g2@g.us', 'group', undefined, 'Group Two')
+      chatOps.insert(SLUG, 'dm1@s.whatsapp.net', 'dm', undefined, 'DM One')
+      chatOps.insert(SLUG, 'dm2@lid', 'dm', undefined, 'DM Lid')
+
+      const groups = chatOps.getAllGroups(SLUG) as any[]
+      expect(groups).toHaveLength(2)
+      expect(groups.every((row) => row.chat_type === 'group')).toBe(true)
+    })
   })
 
   describe('messageOps', () => {

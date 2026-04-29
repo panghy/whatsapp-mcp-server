@@ -888,7 +888,7 @@ ipcMain.handle('get-chats', async (_, payload: { slug: string }) => {
 
 ipcMain.handle('get-groups', async (_, payload: { slug: string }) => {
   const { slug } = payload || ({} as any)
-  try { return chatOps.getAll(slug) }
+  try { return chatOps.getAllGroups(slug) }
   catch (error) { console.error('Failed to get groups:', error); throw error }
 })
 
