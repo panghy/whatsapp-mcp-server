@@ -350,6 +350,10 @@ export const chatOps = {
     return getDatabase(slug).prepare('SELECT * FROM chats').all()
   },
 
+  getAllGroups: (slug: string) => {
+    return getDatabase(slug).prepare("SELECT * FROM chats WHERE chat_type = 'group'").all()
+  },
+
   updateLastPushedMessageId: (slug: string, chatId: number, messageId: number) => {
     return getDatabase(slug).prepare('UPDATE chats SET last_pushed_message_id = ? WHERE id = ?').run(messageId, chatId)
   },

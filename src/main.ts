@@ -206,7 +206,7 @@ const createWindow = () => {
     mainWindow.loadFile(path.join(__dirname, 'index.html'))
   }
 
-  mainWindow.on('closed', () => { mainWindow = null })
+  mainWindow.on('closed', () => { mainWindow = null; updateTrayMenu() })
   mainWindow.on('minimize', () => { mainWindow?.hide() })
 
   mainWindow.on('close', (event) => {
@@ -226,13 +226,49 @@ const createWindow = () => {
   })
 }
 
+export function bringWindowToFront(): void {
+  if (!mainWindow) { createWindow(); return }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
+  if (process.platform === 'darwin') app.focus({ steal: true })
+}
+
+// Raise the window above other apps without stealing app-level focus. Used by
+// the tray-icon click handler so the just-opened tray context menu stays open
+// (calling app.focus({ steal: true }) on darwin would auto-dismiss it).
+export function raiseWindowAboveOthers(): void {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  // Briefly elevate above other apps' windows (some apps sit at a higher
+  // window level on macOS), then drop the level so we don't stay pinned.
+  // The toggle is synchronous on purpose — that's enough on macOS to lift
+  // the window without leaving it always-on-top.
+  mainWindow.setAlwaysOnTop(true)
+  mainWindow.moveTop()
+  mainWindow.setAlwaysOnTop(false)
+}
+
+export type WindowMenuItem = { label: 'Show Window' | 'Hide Window'; action: 'show' | 'hide' }
+
+export function computeWindowMenuItem(state: {
+  exists: boolean
+  visible: boolean
+  minimized: boolean
+}): WindowMenuItem {
+  if (state.exists && state.visible && !state.minimized) {
+    return { label: 'Hide Window', action: 'hide' }
+  }
+  return { label: 'Show Window', action: 'show' }
+}
+
 const showMainWindowAndSend = (channel: string, payload?: any) => {
-  if (mainWindow) {
-    mainWindow.show()
-    mainWindow.focus()
-    mainWindow.webContents.send(channel, payload)
+  const hadWindow = mainWindow !== null
+  bringWindowToFront()
+  if (hadWindow) {
+    mainWindow!.webContents.send(channel, payload)
   } else {
-    createWindow()
     mainWindow!.webContents.once('did-finish-load', () => {
       mainWindow!.webContents.send(channel, payload)
     })
@@ -261,18 +297,21 @@ const updateTrayMenu = () => {
   const anyConnected = accounts.some(a => getManager(a.slug)?.state === 'connected')
   const topStatus = accounts.length === 0 ? 'No accounts' : (anyConnected ? 'Connected' : 'Disconnected')
 
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: mainWindow?.isVisible() ? 'Hide Window' : 'Show Window',
-      click: () => {
-        if (mainWindow) {
-          if (mainWindow.isVisible()) mainWindow.hide()
-          else { mainWindow.show(); mainWindow.focus() }
-        } else {
-          createWindow()
-        }
-      }
+  const item = computeWindowMenuItem({
+    exists: mainWindow !== null,
+    visible: mainWindow?.isVisible() ?? false,
+    minimized: mainWindow?.isMinimized() ?? false,
+  })
+  const firstItem: Electron.MenuItemConstructorOptions = {
+    label: item.label,
+    click: () => {
+      if (item.action === 'hide') { mainWindow?.hide() }
+      else { bringWindowToFront() }
     },
+  }
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    firstItem,
     { label: `Status: ${topStatus}`, enabled: false },
     { type: 'separator' }
   ]
@@ -297,13 +336,16 @@ const createTray = () => {
     trayIcon.setTemplateImage(true)
     tray = new Tray(trayIcon)
     tray.setToolTip('WhatsApp MCP Server')
-    // On macOS, Tray with setContextMenu already opens the menu on click.
-    // Also bring the window to the foreground if it's already visible.
-    tray.on('click', () => {
-      if (mainWindow && mainWindow.isVisible()) {
-        mainWindow.focus()
+    // On macOS the context menu opens via setContextMenu; on Windows the
+    // tray-icon double-click is the standard "show window" gesture.
+    const onTrayActivate = () => {
+      if (mainWindow && mainWindow.isVisible() && !mainWindow.isMinimized()) {
+        raiseWindowAboveOthers()
       }
-    })
+      updateTrayMenu()
+    }
+    tray.on('click', onTrayActivate)
+    tray.on('double-click', onTrayActivate)
     updateTrayMenu()
   } catch {
     console.log('Tray icon not found, continuing without tray')
@@ -862,7 +904,7 @@ ipcMain.handle('get-chats', async (_, payload: { slug: string }) => {
 
 ipcMain.handle('get-groups', async (_, payload: { slug: string }) => {
   const { slug } = payload || ({} as any)
-  try { return chatOps.getAll(slug) }
+  try { return chatOps.getAllGroups(slug) }
   catch (error) { console.error('Failed to get groups:', error); throw error }
 })
 
