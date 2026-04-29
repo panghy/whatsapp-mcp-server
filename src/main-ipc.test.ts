@@ -46,6 +46,7 @@ vi.mock('electron', () => {
       loadFile: vi.fn(),
       isVisible: vi.fn(() => false),
       isMinimized: vi.fn(() => false),
+      isFocused: vi.fn(() => false),
       show: vi.fn(),
       hide: vi.fn(),
       focus: vi.fn(),
@@ -691,6 +692,42 @@ describe('main IPC surface', () => {
       bringWindowToFront()
 
       expect(browserWindowState.appFocusCalls).toHaveLength(0)
+    })
+  })
+
+  describe('computeWindowMenuItem', () => {
+    let computeWindowMenuItem: (state: { exists: boolean; visible: boolean; focused: boolean }) =>
+      { label: 'Show Window' | 'Hide Window'; action: 'show' | 'hide' }
+
+    beforeAll(async () => {
+      const mod: any = await import('./main')
+      computeWindowMenuItem = mod.computeWindowMenuItem
+      expect(typeof computeWindowMenuItem).toBe('function')
+    })
+
+    it('no window → "Show Window" / "show"', () => {
+      expect(computeWindowMenuItem({ exists: false, visible: false, focused: false }))
+        .toEqual({ label: 'Show Window', action: 'show' })
+    })
+
+    it('hidden window → "Show Window" / "show"', () => {
+      expect(computeWindowMenuItem({ exists: true, visible: false, focused: false }))
+        .toEqual({ label: 'Show Window', action: 'show' })
+    })
+
+    it('not-visible-but-focused (defensive) → "Show Window" / "show"', () => {
+      expect(computeWindowMenuItem({ exists: true, visible: false, focused: true }))
+        .toEqual({ label: 'Show Window', action: 'show' })
+    })
+
+    it('visible-but-unfocused → "Show Window" / "show"', () => {
+      expect(computeWindowMenuItem({ exists: true, visible: true, focused: false }))
+        .toEqual({ label: 'Show Window', action: 'show' })
+    })
+
+    it('visible AND focused → "Hide Window" / "hide"', () => {
+      expect(computeWindowMenuItem({ exists: true, visible: true, focused: true }))
+        .toEqual({ label: 'Hide Window', action: 'hide' })
     })
   })
 })

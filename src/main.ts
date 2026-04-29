@@ -206,7 +206,7 @@ const createWindow = () => {
     mainWindow.loadFile(path.join(__dirname, 'index.html'))
   }
 
-  mainWindow.on('closed', () => { mainWindow = null })
+  mainWindow.on('closed', () => { mainWindow = null; updateTrayMenu() })
   mainWindow.on('minimize', () => { mainWindow?.hide() })
 
   mainWindow.on('close', (event) => {
@@ -218,10 +218,14 @@ const createWindow = () => {
 
   mainWindow.on('show', () => {
     if (process.platform === 'darwin') app.dock?.show()
+    updateTrayMenu()
   })
   mainWindow.on('hide', () => {
     if (process.platform === 'darwin') app.dock?.hide()
+    updateTrayMenu()
   })
+  mainWindow.on('focus', () => { updateTrayMenu() })
+  mainWindow.on('blur', () => { updateTrayMenu() })
 }
 
 export function bringWindowToFront(): void {
@@ -230,6 +234,19 @@ export function bringWindowToFront(): void {
   if (!mainWindow.isVisible()) mainWindow.show()
   mainWindow.focus()
   if (process.platform === 'darwin') app.focus({ steal: true })
+}
+
+export type WindowMenuItem = { label: 'Show Window' | 'Hide Window'; action: 'show' | 'hide' }
+
+export function computeWindowMenuItem(state: {
+  exists: boolean
+  visible: boolean
+  focused: boolean
+}): WindowMenuItem {
+  if (state.exists && state.visible && state.focused) {
+    return { label: 'Hide Window', action: 'hide' }
+  }
+  return { label: 'Show Window', action: 'show' }
 }
 
 const showMainWindowAndSend = (channel: string, payload?: any) => {
@@ -266,8 +283,21 @@ const updateTrayMenu = () => {
   const anyConnected = accounts.some(a => getManager(a.slug)?.state === 'connected')
   const topStatus = accounts.length === 0 ? 'No accounts' : (anyConnected ? 'Connected' : 'Disconnected')
 
+  const item = computeWindowMenuItem({
+    exists: mainWindow !== null,
+    visible: mainWindow?.isVisible() ?? false,
+    focused: mainWindow?.isFocused() ?? false,
+  })
+  const firstItem: Electron.MenuItemConstructorOptions = {
+    label: item.label,
+    click: () => {
+      if (item.action === 'hide') { mainWindow?.hide() }
+      else { bringWindowToFront() }
+    },
+  }
+
   const template: Electron.MenuItemConstructorOptions[] = [
-    { label: 'Show Window', click: () => { bringWindowToFront() } },
+    firstItem,
     { label: `Status: ${topStatus}`, enabled: false },
     { type: 'separator' }
   ]
@@ -294,8 +324,12 @@ const createTray = () => {
     tray.setToolTip('WhatsApp MCP Server')
     // On macOS the context menu opens via setContextMenu; on Windows the
     // tray-icon double-click is the standard "show window" gesture.
-    tray.on('click', () => bringWindowToFront())
-    tray.on('double-click', () => bringWindowToFront())
+    const onTrayActivate = () => {
+      updateTrayMenu()
+      if (mainWindow) bringWindowToFront()
+    }
+    tray.on('click', onTrayActivate)
+    tray.on('double-click', onTrayActivate)
     updateTrayMenu()
   } catch {
     console.log('Tray icon not found, continuing without tray')
