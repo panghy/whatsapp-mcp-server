@@ -325,7 +325,9 @@ export function createMcpServer(slug: string): McpServer {
         const phoneRows = db.prepare(`
           SELECT c.id AS chatId
           FROM contacts ct
-          JOIN chats c ON c.whatsapp_jid = ct.jid AND c.chat_type = 'dm'
+          JOIN chats c
+            ON (c.whatsapp_jid = ct.jid OR (ct.lid IS NOT NULL AND c.whatsapp_jid = ct.lid))
+           AND c.chat_type = 'dm'
           WHERE ct.phone_digits IS NOT NULL AND ct.phone_digits LIKE '%' || ? || '%'
         `).all(digitQuery) as { chatId: number }[]
         for (const r of phoneRows) upsert({ chatId: r.chatId, rank: -1e6, matchedVia: 'phone' })
