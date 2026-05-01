@@ -24,6 +24,11 @@ import { initializeSyncOrchestrator, getSyncOrchestrator } from './sync-orchestr
 import { MessageTransformer, extractPhoneFromJid, normalizePhoneNumber } from './message-transformer'
 import { initializeGroupMetadataFetcher, getGroupMetadataFetcher } from './group-metadata-fetcher'
 import {
+  recordContactFromBaileys,
+  recordLidPnFromMessageKey,
+  recordLidMappingUpdate
+} from './lid-pn-mapper'
+import {
   startMcpServer,
   stopMcpServer,
   isMcpServerRunning,
@@ -543,6 +548,8 @@ export function registerHandlersForSlug(slug: string, socket: any): void {
         for (const msg of newMessages) {
           const jid = msg.key?.remoteJid
           if (!jid || isNewsletterOrBroadcast(jid)) continue
+          try { recordLidPnFromMessageKey(slug, msg.key) }
+          catch (error) { console.error(`[RealTime:${slug}] Failed to record LID/PN from message key:`, error) }
           let chat = chatOps.getByWhatsappJid(slug, jid) as any
           if (!chat) {
             const chatType = jid.includes('@g.us') ? 'group' : 'dm'
@@ -639,6 +646,36 @@ export function registerHandlersForSlug(slug: string, socket: any): void {
     if (events['group-participants.update']) {
       try { await groupMetadataFetcher.handleParticipantsUpdate(events['group-participants.update']) }
       catch (error) { console.error(`[RealTime:${slug}] group-participants.update failed:`, error) }
+    }
+
+    if (events['contacts.upsert']) {
+      const list = events['contacts.upsert'] as any[]
+      let count = 0
+      for (const contact of list) {
+        try { if (recordContactFromBaileys(slug, contact)) count++ }
+        catch (error) { console.error(`[RealTime:${slug}] contacts.upsert row failed:`, error) }
+      }
+      if (count > 0) console.log(`[RealTime:${slug}] contacts.upsert: persisted ${count}/${list.length}`)
+    }
+
+    if (events['contacts.update']) {
+      const list = events['contacts.update'] as any[]
+      let count = 0
+      for (const contact of list) {
+        try { if (recordContactFromBaileys(slug, contact)) count++ }
+        catch (error) { console.error(`[RealTime:${slug}] contacts.update row failed:`, error) }
+      }
+      if (count > 0) console.log(`[RealTime:${slug}] contacts.update: persisted ${count}/${list.length}`)
+    }
+
+    if (events['lid-mapping.update']) {
+      try {
+        if (recordLidMappingUpdate(slug, events['lid-mapping.update'])) {
+          console.log(`[RealTime:${slug}] lid-mapping.update persisted`)
+        }
+      } catch (error) {
+        console.error(`[RealTime:${slug}] lid-mapping.update failed:`, error)
+      }
     }
   })
 }
