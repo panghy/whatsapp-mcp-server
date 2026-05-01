@@ -470,6 +470,23 @@ describe('MCP Server', () => {
       expect(chats[0].matchedVia).toBe('phone')
     })
 
+    it('matches @lid DM chats via the contact lid → whatsapp_jid bridge', async () => {
+      // Contact is keyed by its phone JID; the lid column points at the
+      // separate @lid identity. The DM chat row is stored under the @lid JID
+      // (real-world layout for LID-only conversations), so the digit-path
+      // join must follow contacts.lid → chats.whatsapp_jid to surface it.
+      const lidJid = '1234567890@lid'
+      contactOps.insert(DEFAULT, '85298081467@s.whatsapp.net', 'LID Owner', '+85298081467', lidJid)
+      chatOps.insert(DEFAULT, lidJid, 'dm', undefined, 'LID Chat')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: '85298081467' })
+      const chats = JSON.parse(result.result.content[0].text)
+      const lidHit = chats.find((c: any) => c.jid === lidJid)
+      expect(lidHit).toBeDefined()
+      expect(lidHit.matchedVia).toBe('phone')
+    })
+
     it('drops digit-only-name FTS hits when a phone hit exists', async () => {
       contactOps.insert(DEFAULT, 'A@s.whatsapp.net', 'Ingrid P', '+852 9243 9919')
       chatOps.insert(DEFAULT, 'A@s.whatsapp.net', 'dm', undefined, 'Ingrid P')
