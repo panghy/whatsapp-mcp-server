@@ -479,8 +479,6 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
             selectedSlug={slug}
             defaultSlug={defaultSlug}
             statusByAccount={statusByAccount}
-            mcpPort={mcpStatus.port}
-            mcpUrls={mcpUrls}
             renameSlug={renameSlug}
             renameValue={renameValue}
             renameError={renameError}
@@ -603,8 +601,6 @@ interface AccountsTabBodyProps {
   selectedSlug: string
   defaultSlug: string | null
   statusByAccount: Record<string, WhatsAppStatus>
-  mcpPort: number
-  mcpUrls: Record<string, McpUrlInfo>
   renameSlug: string | null
   renameValue: string
   renameError: string | null
@@ -618,7 +614,7 @@ interface AccountsTabBodyProps {
 }
 
 export function AccountsTabBody({
-  accounts, selectedSlug, defaultSlug, statusByAccount, mcpPort, mcpUrls,
+  accounts, selectedSlug, defaultSlug, statusByAccount,
   renameSlug, renameValue, renameError,
   onRenameValueChange, onSubmitRename, onCancelRename, onStartRename,
   onSetDefault, onRemoveAccount, onAddAccount,
@@ -641,8 +637,6 @@ export function AccountsTabBody({
           const isViewing = a.slug === selectedSlug
           const isDefault = a.slug === defaultSlug
           const editing = renameSlug === a.slug
-          const info = mcpUrls[a.slug]
-          const url = `http://localhost:${mcpPort}${info?.path || `/mcp/${a.slug}`}`
           return (
             <div key={a.slug} className="account-row" data-slug={a.slug} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid hsl(var(--border))', marginBottom: '0.75rem', backgroundColor: isViewing ? 'hsl(var(--muted) / 0.4)' : 'transparent' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -683,7 +677,6 @@ export function AccountsTabBody({
                 )}
               </div>
               {editing && renameError && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', margin: 0 }}>{renameError}</p>)}
-              <code style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))' }}>{url}</code>
             </div>
           )
         })}

@@ -20,8 +20,6 @@ function render(overrides: Partial<React.ComponentProps<typeof AccountsTabBody>>
     selectedSlug: 'alpha',
     defaultSlug: 'alpha',
     statusByAccount: {} as Record<string, WhatsAppStatus>,
-    mcpPort: 13491,
-    mcpUrls: {},
     renameSlug: null,
     renameValue: '',
     renameError: null,
