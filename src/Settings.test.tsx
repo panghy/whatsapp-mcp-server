@@ -141,6 +141,27 @@ describe('Settings AccountsTabBody', () => {
     expect(match).not.toBeNull()
     expect(match![0]).not.toContain('disabled')
   })
+
+  it('omits the "Add account" button when no onAddAccount handler is provided', () => {
+    const html = render()
+    expect(html).not.toContain('data-testid="settings-add-account-btn"')
+  })
+
+  it('renders an "Add account" button at the top of the section when onAddAccount is provided', () => {
+    const onAddAccount = () => {}
+    const html = render({ onAddAccount })
+    expect(html).toContain('data-testid="settings-add-account-btn"')
+    // The Add-account row sits above the accounts list.
+    const addBtnIdx = html.indexOf('data-testid="settings-add-account-btn"')
+    const listIdx = html.indexOf('class="accounts-list"')
+    expect(addBtnIdx).toBeGreaterThan(-1)
+    expect(listIdx).toBeGreaterThan(addBtnIdx)
+  })
+
+  it('renders an Accounts heading inside the section header', () => {
+    const html = render()
+    expect(html).toMatch(/<h3>Accounts<\/h3>/)
+  })
 })
 
 describe('getAccountStateLabel', () => {
