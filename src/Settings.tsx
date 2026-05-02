@@ -354,7 +354,7 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
         </div>
         <nav>
           <div className="settings-sidebar-group" data-group="this-account">
-            <label htmlFor="settings-account-select" className="settings-sidebar-account-select-label">This account</label>
+            <label htmlFor="settings-account-select" className="settings-sidebar-account-select-label">Account</label>
             <select
               id="settings-account-select"
               data-testid="settings-account-select"
@@ -365,11 +365,9 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
             >
               {accounts.map((a) => {
                 const isDefault = a.slug === defaultSlug
-                const accountState = statusByAccount[a.slug]?.state ?? 'disconnected'
-                const stateSuffix = ` — ${accountState === 'connecting' ? 'connecting' : accountState}`
                 const defaultSuffix = isDefault ? ' (default)' : ''
                 return (
-                  <option key={a.slug} value={a.slug}>{`${a.slug}${defaultSuffix}${stateSuffix}`}</option>
+                  <option key={a.slug} value={a.slug}>{`${a.slug}${defaultSuffix}`}</option>
                 )
               })}
             </select>

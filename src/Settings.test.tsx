@@ -356,19 +356,8 @@ describe('Settings sidebar', () => {
 
   it('marks the default account with a "(default)" suffix in its option label', () => {
     const html = renderSidebar()
-    expect(html).toMatch(/<option[^>]*value="alpha"[^>]*>alpha \(default\) — connected<\/option>/)
-    expect(html).toMatch(/<option[^>]*value="beta"[^>]*>beta — disconnected<\/option>/)
-  })
-
-  it('includes a connection-state suffix per option', () => {
-    const html = renderSidebar({
-      statusByAccount: {
-        alpha: { state: 'connecting', qrCode: null, error: null },
-        beta: { state: 'error', qrCode: null, error: 'x' },
-      },
-    })
-    expect(html).toContain('alpha (default) — connecting')
-    expect(html).toContain('beta — error')
+    expect(html).toMatch(/<option[^>]*value="alpha"[^>]*>alpha \(default\)<\/option>/)
+    expect(html).toMatch(/<option[^>]*value="beta"[^>]*>beta<\/option>/)
   })
 
   it('selects the current slug in the dropdown', () => {
