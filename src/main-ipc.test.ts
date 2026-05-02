@@ -82,7 +82,7 @@ vi.mock('electron-updater', () => {
 
 import Settings from 'electron-settings'
 import { addAccount, getAccount, accountAuthDir, accountDbPath } from './accounts'
-import { settingOps, chatOps, contactOps, logOps, closeAllDatabases, initializeDatabase } from './database'
+import { settingOps, chatOps, contactOps, logOps, messageOps, closeAllDatabases, initializeDatabase } from './database'
 import { setManager, listManagers, type WhatsAppManager, type ConnectionState } from './whatsapp-manager'
 import { initializeGroupMetadataFetcher, resetGroupMetadataFetchers } from './group-metadata-fetcher'
 
@@ -432,7 +432,7 @@ describe('main IPC surface', () => {
 
     const setupAccount = (slug: string) => { addAccount(slug); initializeDatabase(slug) }
 
-    it('groups.upsert inserts each group with enabled=0 and queues metadata when contact sync complete', async () => {
+    it('groups.upsert inserts each group with enabled=1 and queues metadata when contact sync complete', async () => {
       const slug = 'grp-upsert'
       setupAccount(slug)
       settingOps.set(slug, 'initial_sync_complete', 'true')
@@ -459,7 +459,7 @@ describe('main IPC surface', () => {
       const inserted = chatOps.getByWhatsappJid(slug, 'new-group@g.us') as any
       expect(inserted).toBeDefined()
       expect(inserted.chat_type).toBe('group')
-      expect(inserted.enabled).toBe(0)
+      expect(inserted.enabled).toBe(1)
       expect(inserted.name).toBe('New Group')
 
       expect(chatOps.getByWhatsappJid(slug, 'newsletter@newsletter')).toBeUndefined()
@@ -494,7 +494,7 @@ describe('main IPC surface', () => {
       const grp = chatOps.getByWhatsappJid(slug, 'grp1@g.us') as any
       const dm = chatOps.getByWhatsappJid(slug, '111@s.whatsapp.net') as any
       expect(grp.chat_type).toBe('group')
-      expect(grp.enabled).toBe(0)
+      expect(grp.enabled).toBe(1)
       expect(grp.name).toBe('Team Chat')
       expect(dm.chat_type).toBe('dm')
       expect(dm.enabled).toBe(1)
@@ -522,7 +522,7 @@ describe('main IPC surface', () => {
 
       const inserted = chatOps.getByWhatsappJid(slug, 'buffered@g.us') as any
       expect(inserted).toBeDefined()
-      expect(inserted.enabled).toBe(0)
+      expect(inserted.enabled).toBe(1)
       expect(queueSpy).not.toHaveBeenCalled()
       expect(startSpy).not.toHaveBeenCalled()
 
@@ -576,7 +576,7 @@ describe('main IPC surface', () => {
       expect(handleSpy).toHaveBeenCalledWith(payload)
     })
 
-    it('messages.upsert fallback inserts new groups with enabled=0 and queues metadata', async () => {
+    it('messages.upsert fallback inserts new groups with enabled=1 and queues metadata', async () => {
       const slug = 'msgs-fallback'
       setupAccount(slug)
       settingOps.set(slug, 'initial_sync_complete', 'true')
@@ -603,8 +603,69 @@ describe('main IPC surface', () => {
       const chat = chatOps.getByWhatsappJid(slug, 'surprise@g.us') as any
       expect(chat).toBeDefined()
       expect(chat.chat_type).toBe('group')
-      expect(chat.enabled).toBe(0)
+      expect(chat.enabled).toBe(1)
       expect(queueSpy).toHaveBeenCalledWith([{ chatId: chat.id, jid: 'surprise@g.us' }])
+    })
+
+    it('messages.upsert persists message and updates last_activity for manually-disabled groups', async () => {
+      const slug = 'msgs-disabled-persist'
+      setupAccount(slug)
+      settingOps.set(slug, 'initial_sync_complete', 'true')
+
+      const fetcher = initializeGroupMetadataFetcher(slug)
+      vi.spyOn(fetcher, 'queueGroups').mockImplementation(() => {})
+      vi.spyOn(fetcher, 'start').mockImplementation(() => {})
+
+      const { socket, fire, fireConnection } = makeSocket()
+      registerHandlersForSlug(slug, socket)
+      await fireConnection({ connection: 'open' })
+      await fire({
+        'messaging-history.set': { chats: [], contacts: [], messages: [], isLatest: true, syncType: 0, progress: 100 },
+      })
+
+      // First upsert auto-creates the chat (now enabled=1 by default).
+      await fire({
+        'messages.upsert': {
+          messages: [
+            {
+              key: { remoteJid: 'newgroup@g.us', id: 'm1', fromMe: false },
+              message: { conversation: 'first msg' },
+              messageTimestamp: 1700000000,
+            },
+          ],
+        },
+      })
+
+      const chat = chatOps.getByWhatsappJid(slug, 'newgroup@g.us') as any
+      expect(chat).toBeDefined()
+      const firstActivity = chat.last_activity
+      expect(firstActivity).toBeTruthy()
+
+      // Manually disable the chat, then fire a second message at a later timestamp.
+      chatOps.updateEnabled(slug, chat.id, false)
+      const disabled = chatOps.getByWhatsappJid(slug, 'newgroup@g.us') as any
+      expect(disabled.enabled).toBe(0)
+
+      await fire({
+        'messages.upsert': {
+          messages: [
+            {
+              key: { remoteJid: 'newgroup@g.us', id: 'm2', fromMe: false },
+              message: { conversation: 'second msg after disable' },
+              messageTimestamp: 1700000100,
+            },
+          ],
+        },
+      })
+
+      // last_activity must advance and both messages must persist even though
+      // the chat is disabled — proving the realtime gate is gone.
+      const after = chatOps.getByWhatsappJid(slug, 'newgroup@g.us') as any
+      expect(after.enabled).toBe(0)
+      expect(after.last_activity).toBeTruthy()
+      expect(String(after.last_activity) > String(firstActivity)).toBe(true)
+      const rows = messageOps.getByChatId(slug, after.id, 10) as any[]
+      expect(rows.length).toBeGreaterThanOrEqual(2)
     })
   })
 

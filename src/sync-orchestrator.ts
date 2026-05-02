@@ -100,7 +100,7 @@ export class SyncOrchestrator {
 
       if (!dbChat) {
         const chatType = jid.includes('@g.us') ? 'group' : 'dm'
-        const enabled = chatType === 'dm' ? 1 : 0
+        const enabled = 1
         let chatName: string | undefined = undefined
         if (chatType === 'dm') {
           const contact = contactOps.getByJid(this.slug, jid) as any

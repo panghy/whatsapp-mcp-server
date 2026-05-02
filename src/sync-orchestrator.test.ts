@@ -264,7 +264,7 @@ describe('SyncOrchestrator Tests', () => {
   })
 
   describe('syncChat() insert', () => {
-    it('inserts a new group with enabled=0', async () => {
+    it('inserts a new group with enabled=1', async () => {
       const mockSocket = {}
       const orchestrator = new SyncOrchestrator(SLUG, mockSocket)
 
@@ -273,7 +273,7 @@ describe('SyncOrchestrator Tests', () => {
       const row = chatOps.getByWhatsappJid(SLUG, 'newgroup@g.us') as any
       expect(row).toBeDefined()
       expect(row.chat_type).toBe('group')
-      expect(row.enabled).toBe(0)
+      expect(row.enabled).toBe(1)
     })
 
     it('inserts a new DM with enabled=1', async () => {
