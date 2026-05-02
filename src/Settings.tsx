@@ -80,11 +80,10 @@ export type SettingsTab =
   | 'this-account-groups'
   | 'this-account-endpoint'
   | 'this-account-logs'
-  | 'this-account-danger'
+  | 'this-account-logoff'
   | 'app-accounts'
   | 'app-mcp'
   | 'app-system'
-  | 'app-updates'
 
 // Legacy tab IDs accepted via the `initialTab` prop (used by IPC `open-logs` and any
 // existing callers). Mapped onto the new section IDs by `resolveInitialTab` below.
@@ -110,10 +109,11 @@ interface SettingsProps {
   onBack?: () => void
   onLogoff?: () => void
   onAddAccount?: () => void
+  onSelectAccount?: (slug: string) => void
   initialTab?: SettingsTab | LegacySettingsTab | null
 }
 
-export default function Settings({ slug, accounts, defaultSlug, statusByAccount, onAccountsChanged, onBack, onLogoff, onAddAccount, initialTab }: SettingsProps) {
+export default function Settings({ slug, accounts, defaultSlug, statusByAccount, onAccountsChanged, onBack, onLogoff, onAddAccount, onSelectAccount, initialTab }: SettingsProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(resolveInitialTab(initialTab))
   const [groups, setGroups] = useState<Group[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -375,19 +375,36 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
         </div>
         <nav>
           <div className="settings-sidebar-group" data-group="this-account">
-            <div className="settings-sidebar-group-header">This account — {slug}</div>
+            <label htmlFor="settings-account-select" className="settings-sidebar-account-select-label">This account</label>
+            <select
+              id="settings-account-select"
+              data-testid="settings-account-select"
+              className="settings-sidebar-account-select"
+              aria-label="Select account to configure"
+              value={slug}
+              onChange={(e) => { if (onSelectAccount) onSelectAccount(e.target.value) }}
+            >
+              {accounts.map((a) => {
+                const isDefault = a.slug === defaultSlug
+                const accountState = statusByAccount[a.slug]?.state ?? 'disconnected'
+                const stateSuffix = ` — ${accountState === 'connecting' ? 'connecting' : accountState}`
+                const defaultSuffix = isDefault ? ' (default)' : ''
+                return (
+                  <option key={a.slug} value={a.slug}>{`${a.slug}${defaultSuffix}${stateSuffix}`}</option>
+                )
+              })}
+            </select>
             {navBtn('this-account-profile', 'Profile')}
             {navBtn('this-account-groups', 'Group Visibility')}
             {navBtn('this-account-endpoint', 'Endpoint')}
             {navBtn('this-account-logs', 'Logs')}
-            {navBtn('this-account-danger', 'Danger zone', true)}
+            {navBtn('this-account-logoff', 'Log-off', true)}
           </div>
           <div className="settings-sidebar-group" data-group="application">
             <div className="settings-sidebar-group-header">Application</div>
             {navBtn('app-accounts', 'Accounts')}
             {navBtn('app-mcp', 'MCP Server')}
             {navBtn('app-system', 'System')}
-            {navBtn('app-updates', 'Updates')}
           </div>
         </nav>
       </aside>
@@ -464,9 +481,9 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
           </div>
         )}
 
-        {activeTab === 'this-account-danger' && (
+        {activeTab === 'this-account-logoff' && (
           <div>
-            <div className="settings-section-header"><h3>Danger zone</h3><span className="settings-section-slug">— {slug}</span></div>
+            <div className="settings-section-header"><h3>Log-off</h3><span className="settings-section-slug">— {slug}</span></div>
             <div className="action-group" style={{ marginTop: '1rem' }}><h5>Re-link WhatsApp</h5><p>Clear <strong>{slug}</strong>'s WhatsApp session and scan a new QR code. Messages are preserved.</p><button className="action-btn" onClick={handleRelinkWhatsApp}>Re-link WhatsApp</button></div>
             <div className="action-group danger" style={{ marginTop: '1.5rem' }}><h5>Log out</h5><p>Sign <strong>{slug}</strong> out of WhatsApp. Messages and settings are kept; the MCP endpoint is disabled until you re-link.</p><button className="action-btn danger" style={{ color: 'white' }} onClick={handleLogout}>Log out</button></div>
             <div className="action-group danger" style={{ marginTop: '1.5rem' }}><h5>Remove account</h5><p>Permanently remove <strong>{slug}</strong>. This logs out of WhatsApp on this device and clears all local data for this account. {accounts.length <= 1 && (<em>You can&apos;t remove the last account.</em>)}</p><button className="action-btn danger" style={{ color: 'white' }} onClick={() => handleRemoveAccount(slug)} disabled={accounts.length <= 1}>Remove account</button></div>
@@ -554,12 +571,7 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
           <div>
             <div className="settings-section-header"><h3>System</h3></div>
             <div className="setting-item" style={{ marginTop: '1rem', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Launch on startup</span><label className="toggle-switch"><input type="checkbox" checked={autoLaunch} onChange={handleAutoLaunchChange} /><span className="slider"></span></label></div>
-          </div>
-        )}
-
-        {activeTab === 'app-updates' && (
-          <div>
-            <div className="settings-section-header"><h3>Updates</h3></div>
+            <h4 className="settings-subheading" data-testid="system-updates-subheading" style={{ marginTop: '1.5rem' }}>Updates</h4>
             <div className="setting-item">
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
                 <span style={{ fontSize: '0.875rem' }}>Current version: <strong>v{appVersion}</strong></span>

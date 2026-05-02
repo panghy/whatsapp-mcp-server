@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import {
+import Settings, {
   AccountsTabBody,
   buildRemoveAccountMessage,
   getAccountStateLabel,
@@ -315,5 +315,105 @@ describe('sortGroupsByLastActivity', () => {
     const result = sortGroupsByLastActivity(input)
     expect(result).not.toBe(input)
     expect(result.map(g => g.id)).toEqual([1])
+  })
+})
+
+describe('Settings sidebar', () => {
+  function renderSidebar(overrides: Partial<React.ComponentProps<typeof Settings>> = {}): string {
+    const defaults: React.ComponentProps<typeof Settings> = {
+      slug: 'alpha',
+      accounts: [{ slug: 'alpha', mcpEnabled: true }, { slug: 'beta', mcpEnabled: true }],
+      defaultSlug: 'alpha',
+      statusByAccount: {
+        alpha: { state: 'connected', qrCode: null, error: null },
+        beta: { state: 'disconnected', qrCode: null, error: null },
+      },
+      onAccountsChanged: () => {},
+    }
+    return renderToStaticMarkup(createElement(Settings, { ...defaults, ...overrides }))
+  }
+
+  it('does not render a "This account — slug" group header', () => {
+    const html = renderSidebar()
+    expect(html).not.toContain('This account — alpha')
+    expect(html).not.toMatch(/This account — [a-z]+/)
+  })
+
+  it('renders the Application group header', () => {
+    const html = renderSidebar()
+    expect(html).toContain('>Application<')
+  })
+
+  it('renders the dropdown selector with one option per account', () => {
+    const html = renderSidebar()
+    expect(html).toContain('data-testid="settings-account-select"')
+    expect(html).toMatch(/aria-label="Select account to configure"/)
+    // Two accounts → two options.
+    const optionMatches = html.match(/<option /g) || []
+    expect(optionMatches.length).toBe(2)
+  })
+
+  it('marks the default account with a "(default)" suffix in its option label', () => {
+    const html = renderSidebar()
+    expect(html).toMatch(/<option[^>]*value="alpha"[^>]*>alpha \(default\) — connected<\/option>/)
+    expect(html).toMatch(/<option[^>]*value="beta"[^>]*>beta — disconnected<\/option>/)
+  })
+
+  it('includes a connection-state suffix per option', () => {
+    const html = renderSidebar({
+      statusByAccount: {
+        alpha: { state: 'connecting', qrCode: null, error: null },
+        beta: { state: 'error', qrCode: null, error: 'x' },
+      },
+    })
+    expect(html).toContain('alpha (default) — connecting')
+    expect(html).toContain('beta — error')
+  })
+
+  it('selects the current slug in the dropdown', () => {
+    const html = renderSidebar({ slug: 'beta' })
+    // React SSR adds `selected` on the matching option element.
+    expect(html).toMatch(/<option value="beta" selected/)
+    expect(html).not.toMatch(/<option value="alpha" selected/)
+  })
+
+  it('renders the "Log-off" nav button under the This-account group', () => {
+    const html = renderSidebar()
+    expect(html).toMatch(/data-section="this-account-logoff"[^>]*>[^<]*Log-off/)
+    // Old section ID and label must not appear anywhere.
+    expect(html).not.toMatch(/this-account-dan[g]er/)
+    expect(html).not.toMatch(/Dan[g]er zone/)
+  })
+
+  it('does not render an Updates nav button under Application', () => {
+    const html = renderSidebar()
+    expect(html).not.toMatch(/data-section="app-updates"/)
+    // No top-level "Updates" nav button label in the sidebar nav.
+    expect(html).not.toMatch(/<button[^>]*data-section="[^"]*"[^>]*>Updates<\/button>/)
+  })
+})
+
+describe('Settings System tab', () => {
+  function renderWithInitialTab(initialTab: 'app-system'): string {
+    return renderToStaticMarkup(createElement(Settings, {
+      slug: 'alpha',
+      accounts: [{ slug: 'alpha', mcpEnabled: true }],
+      defaultSlug: 'alpha',
+      statusByAccount: { alpha: { state: 'connected', qrCode: null, error: null } },
+      onAccountsChanged: () => {},
+      initialTab,
+    }))
+  }
+
+  it('renders an Updates sub-heading inside the System section content', () => {
+    const html = renderWithInitialTab('app-system')
+    expect(html).toContain('data-testid="system-updates-subheading"')
+    expect(html).toMatch(/<h4[^>]*data-testid="system-updates-subheading"[^>]*>Updates<\/h4>/)
+  })
+
+  it('renders the Check for Updates button inside the System section', () => {
+    const html = renderWithInitialTab('app-system')
+    expect(html).toContain('Check for Updates')
+    expect(html).toContain('Current version:')
   })
 })

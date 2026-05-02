@@ -350,6 +350,7 @@ export default function App() {
           onBack={() => { whatsappStatus.state === 'connected' ? setCurrentView('sync-status') : whatsappStatus.state === 'connecting' ? setCurrentView('loading') : setCurrentView('hero') }}
           onLogoff={() => { setNameConfirmed(false); setUserName(''); setStatusByAccount((prev) => ({ ...prev, [slug]: { state: 'disconnected', qrCode: null, error: null } })); setCurrentView('hero') }}
           onAddAccount={() => setShowAddModal(true)}
+          onSelectAccount={handleSelectSlug}
           initialTab={pendingInitialTab}
         />
         {addModal}
