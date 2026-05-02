@@ -564,10 +564,8 @@ export function registerHandlersForSlug(slug: string, socket: any): void {
               else { pendingGroupsBuffer.push(...newGroup) }
             }
           }
-          if (chat.enabled) {
-            try { await messageTransformer.processMessage(msg, chat.id) }
-            catch (error) { console.error(`[RealTime:${slug}] Failed to process message:`, error) }
-          }
+          try { await messageTransformer.processMessage(msg, chat.id) }
+          catch (error) { console.error(`[RealTime:${slug}] Failed to process message:`, error) }
         }
         console.log(`[RealTime:${slug}] Processed ${newMessages.length} new message(s)`)
       }
@@ -579,7 +577,7 @@ export function registerHandlersForSlug(slug: string, socket: any): void {
           const jid = update.key?.remoteJid
           if (!jid || isNewsletterOrBroadcast(jid)) continue
           const chat = chatOps.getByWhatsappJid(slug, jid) as any
-          if (chat?.enabled) {
+          if (chat) {
             try { await messageTransformer.processMessageEdit(update.key, update.update, chat.id, update.key?.participant) }
             catch (error) { console.error(`[RealTime:${slug}] Failed to process message edit:`, error) }
           }
@@ -594,7 +592,7 @@ export function registerHandlersForSlug(slug: string, socket: any): void {
           const jid = key.remoteJid
           if (!jid || isNewsletterOrBroadcast(jid)) continue
           const chat = chatOps.getByWhatsappJid(slug, jid) as any
-          if (chat?.enabled) {
+          if (chat) {
             try { await messageTransformer.processMessageDeletion(key, chat.id, deleteEvent.participant || key.participant) }
             catch (error) { console.error(`[RealTime:${slug}] Failed to process message deletion:`, error) }
           }

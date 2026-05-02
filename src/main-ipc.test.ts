@@ -82,7 +82,7 @@ vi.mock('electron-updater', () => {
 
 import Settings from 'electron-settings'
 import { addAccount, getAccount, accountAuthDir, accountDbPath } from './accounts'
-import { settingOps, chatOps, contactOps, logOps, closeAllDatabases, initializeDatabase } from './database'
+import { settingOps, chatOps, contactOps, logOps, messageOps, closeAllDatabases, initializeDatabase } from './database'
 import { setManager, listManagers, type WhatsAppManager, type ConnectionState } from './whatsapp-manager'
 import { initializeGroupMetadataFetcher, resetGroupMetadataFetchers } from './group-metadata-fetcher'
 
@@ -605,6 +605,42 @@ describe('main IPC surface', () => {
       expect(chat.chat_type).toBe('group')
       expect(chat.enabled).toBe(0)
       expect(queueSpy).toHaveBeenCalledWith([{ chatId: chat.id, jid: 'surprise@g.us' }])
+    })
+
+    it('messages.upsert persists message and updates last_activity even for disabled groups', async () => {
+      const slug = 'msgs-disabled-persist'
+      setupAccount(slug)
+      settingOps.set(slug, 'initial_sync_complete', 'true')
+
+      const fetcher = initializeGroupMetadataFetcher(slug)
+      vi.spyOn(fetcher, 'queueGroups').mockImplementation(() => {})
+      vi.spyOn(fetcher, 'start').mockImplementation(() => {})
+
+      const { socket, fire, fireConnection } = makeSocket()
+      registerHandlersForSlug(slug, socket)
+      await fireConnection({ connection: 'open' })
+      await fire({
+        'messaging-history.set': { chats: [], contacts: [], messages: [], isLatest: true, syncType: 0, progress: 100 },
+      })
+
+      await fire({
+        'messages.upsert': {
+          messages: [
+            {
+              key: { remoteJid: 'newgroup@g.us', id: 'm1', fromMe: false },
+              message: { conversation: 'hi from disabled group' },
+              messageTimestamp: 1700000000,
+            },
+          ],
+        },
+      })
+
+      const chat = chatOps.getByWhatsappJid(slug, 'newgroup@g.us') as any
+      expect(chat).toBeDefined()
+      expect(chat.enabled).toBe(0)
+      expect(chat.last_activity).toBeTruthy()
+      const rows = messageOps.getByChatId(slug, chat.id, 10) as any[]
+      expect(rows.length).toBeGreaterThanOrEqual(1)
     })
   })
 
