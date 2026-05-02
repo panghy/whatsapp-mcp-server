@@ -5,6 +5,7 @@ import Settings, {
   AccountsTabBody,
   buildRemoveAccountMessage,
   getAccountStateLabel,
+  makeAccountSelectChangeHandler,
   performAccountRemoval,
   sortGroupsByLastActivity,
 } from './Settings'
@@ -390,6 +391,16 @@ describe('Settings sidebar', () => {
     expect(html).not.toMatch(/data-section="app-updates"/)
     // No top-level "Updates" nav button label in the sidebar nav.
     expect(html).not.toMatch(/<button[^>]*data-section="[^"]*"[^>]*>Updates<\/button>/)
+  })
+
+  it('dropdown onChange invokes onSelectAccount with the picked slug', () => {
+    // No jsdom is configured, so the dropdown's onChange wiring is extracted to
+    // makeAccountSelectChangeHandler and exercised directly with a synthetic event.
+    const onSelectAccount = vi.fn()
+    const handler = makeAccountSelectChangeHandler(onSelectAccount)
+    handler({ target: { value: 'beta' } })
+    expect(onSelectAccount).toHaveBeenCalledTimes(1)
+    expect(onSelectAccount).toHaveBeenCalledWith('beta')
   })
 })
 

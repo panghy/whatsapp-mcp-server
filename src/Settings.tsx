@@ -50,6 +50,14 @@ export function getAccountStateLabel(status: WhatsAppStatus | undefined): string
   return STATE_PILL_LABELS[state]
 }
 
+// Sidebar account-selector onChange wiring. Extracted so it can be unit-tested
+// without spinning up a DOM (no jsdom is configured in this repo).
+export function makeAccountSelectChangeHandler(
+  onSelectAccount: ((slug: string) => void) | undefined,
+): (e: { target: { value: string } }) => void {
+  return (e) => { if (onSelectAccount) onSelectAccount(e.target.value) }
+}
+
 interface Group {
   id: number
   whatsapp_jid: string
@@ -335,16 +343,6 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
     return undefined
   }, [])
 
-  // Active-account chip color/label, used in the sidebar header.
-  const activeState = statusByAccount[slug]?.state ?? 'disconnected'
-  const activeStateColor = activeState === 'connected'
-    ? 'hsl(var(--success))'
-    : activeState === 'connecting'
-      ? 'hsl(var(--warning))'
-      : activeState === 'error'
-        ? 'hsl(var(--destructive))'
-        : 'hsl(var(--muted-foreground))'
-
   const navBtn = (id: SettingsTab, label: string, danger = false) => (
     <button
       className={`settings-sidebar-nav-btn ${activeTab === id ? 'active' : ''} ${danger ? 'danger' : ''}`}
@@ -360,18 +358,6 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
       <aside className="settings-sidebar">
         <div className="settings-sidebar-top">
           {onBack && (<button className="settings-back-btn" onClick={onBack}>← Back<kbd>Esc</kbd></button>)}
-          <div className="settings-sidebar-account" data-testid="settings-active-account">
-            <div className="account-dot" style={{ backgroundColor: activeStateColor }} />
-            <span className="settings-sidebar-account-slug">{slug}</span>
-            <span
-              className="settings-sidebar-account-pill"
-              data-testid="settings-active-account-pill"
-              data-state={activeState}
-              style={{ backgroundColor: activeStateColor }}
-            >
-              {getAccountStateLabel(statusByAccount[slug])}
-            </span>
-          </div>
         </div>
         <nav>
           <div className="settings-sidebar-group" data-group="this-account">
@@ -382,7 +368,7 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
               className="settings-sidebar-account-select"
               aria-label="Select account to configure"
               value={slug}
-              onChange={(e) => { if (onSelectAccount) onSelectAccount(e.target.value) }}
+              onChange={makeAccountSelectChangeHandler(onSelectAccount)}
             >
               {accounts.map((a) => {
                 const isDefault = a.slug === defaultSlug
