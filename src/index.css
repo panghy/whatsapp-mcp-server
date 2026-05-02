@@ -169,10 +169,10 @@ button {
   background-color: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
 }
-button:hover:not(:disabled) { background-color: hsl(var(--primary) / 0.9); transform: translateY(-2px); box-shadow: 0 4px 12px hsl(var(--primary) / 0.3); }
+button:hover:not(:disabled) { background-color: hsl(var(--primary) / 0.9); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.danger { background-color: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
-button.danger:hover:not(:disabled) { background-color: hsl(var(--destructive) / 0.9); box-shadow: 0 4px 12px hsl(var(--destructive) / 0.3); }
+button.danger:hover:not(:disabled) { background-color: hsl(var(--destructive) / 0.9); }
 
 /* Settings Page */
 .settings-page {
@@ -320,9 +320,9 @@ input:checked + .slider:before { transform: translateX(14px); }
 .action-group h4 { margin: 0 0 8px 0; font-size: 1rem; color: hsl(var(--foreground)); font-weight: 600; }
 .action-group p { margin: 0 0 12px 0; font-size: 0.9rem; color: hsl(var(--muted-foreground)); }
 .action-btn { padding: 10px 16px; background-color: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border: none; border-radius: 6px; font-weight: 500; cursor: pointer; transition: all 0.2s; width: 100%; min-width: auto; }
-.action-btn:hover { background-color: hsl(var(--primary) / 0.9); transform: translateY(-2px); box-shadow: 0 4px 12px hsl(var(--primary) / 0.3); }
+.action-btn:hover { background-color: hsl(var(--primary) / 0.9); }
 .action-btn.danger { background-color: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
-.action-btn.danger:hover { background-color: hsl(var(--destructive) / 0.9); box-shadow: 0 4px 12px hsl(var(--destructive) / 0.3); }
+.action-btn.danger:hover { background-color: hsl(var(--destructive) / 0.9); }
 .action-group.danger { background-color: hsl(var(--destructive) / 0.05); border-color: hsl(var(--destructive) / 0.2); }
 
 /* Logs Viewer */
@@ -331,9 +331,9 @@ input:checked + .slider:before { transform: translateX(14px); }
 .logs-header h3 { margin: 0; font-size: 1.1rem; color: hsl(var(--foreground)); flex: 0 0 auto; font-weight: 600; }
 .logs-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .logs-btn { padding: 8px 12px; background-color: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border: none; border-radius: 4px; font-size: 0.85rem; font-weight: 500; cursor: pointer; transition: all 0.2s; white-space: nowrap; min-width: auto; flex: 0 0 auto; }
-.logs-btn:hover { background-color: hsl(var(--primary) / 0.9); transform: translateY(-1px); box-shadow: 0 2px 8px hsl(var(--primary) / 0.3); }
+.logs-btn:hover { background-color: hsl(var(--primary) / 0.9); }
 .logs-btn.danger { background-color: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
-.logs-btn.danger:hover { background-color: hsl(var(--destructive) / 0.9); box-shadow: 0 2px 8px hsl(var(--destructive) / 0.3); }
+.logs-btn.danger:hover { background-color: hsl(var(--destructive) / 0.9); }
 .logs-filters { display: flex; flex-direction: column; gap: 12px; padding: 12px; background-color: hsl(var(--muted) / 0.3); border-radius: 6px; border: 1px solid hsl(var(--border)); }
 .filter-group { display: flex; flex-direction: column; gap: 8px; }
 .filter-label { font-weight: 500; color: hsl(var(--foreground)); font-size: 0.9rem; }
