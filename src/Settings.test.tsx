@@ -1,10 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import {
+import Settings, {
   AccountsTabBody,
   buildRemoveAccountMessage,
   getAccountStateLabel,
+  makeAccountSelectChangeHandler,
   performAccountRemoval,
   sortGroupsByLastActivity,
 } from './Settings'
@@ -20,8 +21,6 @@ function render(overrides: Partial<React.ComponentProps<typeof AccountsTabBody>>
     selectedSlug: 'alpha',
     defaultSlug: 'alpha',
     statusByAccount: {} as Record<string, WhatsAppStatus>,
-    mcpPort: 13491,
-    mcpUrls: {},
     renameSlug: null,
     renameValue: '',
     renameError: null,
@@ -140,6 +139,27 @@ describe('Settings AccountsTabBody', () => {
     const match = row.match(/<button[^>]*>Remove<\/button>/)
     expect(match).not.toBeNull()
     expect(match![0]).not.toContain('disabled')
+  })
+
+  it('omits the "Add account" button when no onAddAccount handler is provided', () => {
+    const html = render()
+    expect(html).not.toContain('data-testid="settings-add-account-btn"')
+  })
+
+  it('renders an "Add account" button at the top of the section when onAddAccount is provided', () => {
+    const onAddAccount = () => {}
+    const html = render({ onAddAccount })
+    expect(html).toContain('data-testid="settings-add-account-btn"')
+    // The Add-account row sits above the accounts list.
+    const addBtnIdx = html.indexOf('data-testid="settings-add-account-btn"')
+    const listIdx = html.indexOf('class="accounts-list"')
+    expect(addBtnIdx).toBeGreaterThan(-1)
+    expect(listIdx).toBeGreaterThan(addBtnIdx)
+  })
+
+  it('renders an Accounts heading inside the section header', () => {
+    const html = render()
+    expect(html).toMatch(/<h3>Accounts<\/h3>/)
   })
 })
 
@@ -296,5 +316,181 @@ describe('sortGroupsByLastActivity', () => {
     const result = sortGroupsByLastActivity(input)
     expect(result).not.toBe(input)
     expect(result.map(g => g.id)).toEqual([1])
+  })
+})
+
+describe('Settings sidebar', () => {
+  function renderSidebar(overrides: Partial<React.ComponentProps<typeof Settings>> = {}): string {
+    const defaults: React.ComponentProps<typeof Settings> = {
+      slug: 'alpha',
+      accounts: [{ slug: 'alpha', mcpEnabled: true }, { slug: 'beta', mcpEnabled: true }],
+      defaultSlug: 'alpha',
+      statusByAccount: {
+        alpha: { state: 'connected', qrCode: null, error: null },
+        beta: { state: 'disconnected', qrCode: null, error: null },
+      },
+      onAccountsChanged: () => {},
+    }
+    return renderToStaticMarkup(createElement(Settings, { ...defaults, ...overrides }))
+  }
+
+  it('does not render a "This account — slug" group header', () => {
+    const html = renderSidebar()
+    expect(html).not.toContain('This account — alpha')
+    expect(html).not.toMatch(/This account — [a-z]+/)
+  })
+
+  it('renders the Application group header', () => {
+    const html = renderSidebar()
+    expect(html).toContain('>Application<')
+  })
+
+  it('renders the dropdown selector with one option per account', () => {
+    const html = renderSidebar()
+    expect(html).toContain('data-testid="settings-account-select"')
+    expect(html).toMatch(/aria-label="Select account to configure"/)
+    // Two accounts → two options.
+    const optionMatches = html.match(/<option /g) || []
+    expect(optionMatches.length).toBe(2)
+  })
+
+  it('marks the default account with a "(default)" suffix in its option label', () => {
+    const html = renderSidebar()
+    expect(html).toMatch(/<option[^>]*value="alpha"[^>]*>alpha \(default\)<\/option>/)
+    expect(html).toMatch(/<option[^>]*value="beta"[^>]*>beta<\/option>/)
+  })
+
+  it('selects the current slug in the dropdown', () => {
+    const html = renderSidebar({ slug: 'beta' })
+    // React SSR adds `selected` on the matching option element.
+    expect(html).toMatch(/<option value="beta" selected/)
+    expect(html).not.toMatch(/<option value="alpha" selected/)
+  })
+
+  it('renders the "Log-off" nav button under the This-account group', () => {
+    const html = renderSidebar()
+    expect(html).toMatch(/data-section="this-account-logoff"[^>]*>[^<]*Log-off/)
+    // Old section ID and label must not appear anywhere.
+    expect(html).not.toMatch(/this-account-dan[g]er/)
+    expect(html).not.toMatch(/Dan[g]er zone/)
+  })
+
+  it('renders the Log-off nav button without the destructive (danger) accent', () => {
+    const html = renderSidebar()
+    const match = html.match(/<button[^>]*data-section="this-account-logoff"[^>]*>/)
+    expect(match).not.toBeNull()
+    expect(match![0]).not.toMatch(/class="[^"]*\bdanger\b/)
+  })
+
+  it('does not render an Endpoint nav button under the This-account group', () => {
+    const html = renderSidebar()
+    expect(html).not.toMatch(/data-section="this-account-endpoint"/)
+    expect(html).not.toMatch(/<button[^>]*data-section="[^"]*"[^>]*>Endpoint</)
+  })
+
+  it('does not render an Updates nav button under Application', () => {
+    const html = renderSidebar()
+    expect(html).not.toMatch(/data-section="app-updates"/)
+    // No top-level "Updates" nav button label in the sidebar nav.
+    expect(html).not.toMatch(/<button[^>]*data-section="[^"]*"[^>]*>Updates<\/button>/)
+  })
+
+  it('dropdown onChange invokes onSelectAccount with the picked slug', () => {
+    // No jsdom is configured, so the dropdown's onChange wiring is extracted to
+    // makeAccountSelectChangeHandler and exercised directly with a synthetic event.
+    const onSelectAccount = vi.fn()
+    const handler = makeAccountSelectChangeHandler(onSelectAccount)
+    handler({ target: { value: 'beta' } })
+    expect(onSelectAccount).toHaveBeenCalledTimes(1)
+    expect(onSelectAccount).toHaveBeenCalledWith('beta')
+  })
+})
+
+describe('Settings Profile tab', () => {
+  function renderProfile(): string {
+    return renderToStaticMarkup(createElement(Settings, {
+      slug: 'alpha',
+      accounts: [{ slug: 'alpha', mcpEnabled: true }, { slug: 'beta', mcpEnabled: false }],
+      defaultSlug: 'alpha',
+      statusByAccount: { alpha: { state: 'connected', qrCode: null, error: null } },
+      onAccountsChanged: () => {},
+      initialTab: 'this-account-profile' as const,
+    }))
+  }
+
+  it('renders a plain "Profile" heading without the "— {slug}" suffix', () => {
+    const html = renderProfile()
+    expect(html).toMatch(/<h3>Profile<\/h3>/)
+    expect(html).not.toContain('— alpha')
+    expect(html).not.toContain('settings-section-slug')
+  })
+
+  it('renders "Your Name" without the "({slug})" repetition', () => {
+    const html = renderProfile()
+    expect(html).toMatch(/<label[^>]*for="display-name"[^>]*>Your Name<\/label>/)
+    expect(html).not.toMatch(/Your Name[^<]*\(alpha\)/)
+  })
+
+  it('renders the per-account MCP endpoint URL with a Copy icon button inside Profile', () => {
+    const html = renderProfile()
+    // MCP Endpoint label and URL live in Profile now.
+    expect(html).toMatch(/<label[^>]*for="profile-mcp-url"[^>]*>MCP Endpoint/)
+    expect(html).toContain('/mcp/alpha')
+    // Copy is now a small icon-only button identified by aria-label, not text.
+    expect(html).toMatch(/<button[^>]*aria-label="Copy MCP endpoint URL"/)
+    expect(html).toContain('class="settings-icon-btn"')
+    // The URL <code> truncates with ellipsis when overflowing.
+    expect(html).toMatch(/<code[^>]*id="profile-mcp-url"[^>]*style="[^"]*white-space:nowrap/)
+  })
+})
+
+describe('Settings MCP Server tab', () => {
+  function renderMcp(): string {
+    return renderToStaticMarkup(createElement(Settings, {
+      slug: 'alpha',
+      accounts: [{ slug: 'alpha', mcpEnabled: true }],
+      defaultSlug: 'alpha',
+      statusByAccount: { alpha: { state: 'connected', qrCode: null, error: null } },
+      onAccountsChanged: () => {},
+      initialTab: 'app-mcp' as const,
+    }))
+  }
+
+  it('shows a single status word with no port number in the status row', () => {
+    const html = renderMcp()
+    // Status row has just a word (Stopped, since no IPC mock returns a running status here).
+    expect(html).not.toMatch(/Running on port \d+/)
+    expect(html).not.toMatch(/Port \d+ in use/)
+  })
+
+  it('uses the short "Restart required to apply changes." hint under the Server Port input', () => {
+    const html = renderMcp()
+    expect(html).toContain('Restart required to apply changes.')
+    expect(html).not.toContain('All accounts share this port and are routed by slug')
+  })
+})
+
+describe('Settings System tab', () => {
+  function renderWithInitialTab(initialTab: 'app-system'): string {
+    return renderToStaticMarkup(createElement(Settings, {
+      slug: 'alpha',
+      accounts: [{ slug: 'alpha', mcpEnabled: true }],
+      defaultSlug: 'alpha',
+      statusByAccount: { alpha: { state: 'connected', qrCode: null, error: null } },
+      onAccountsChanged: () => {},
+      initialTab,
+    }))
+  }
+
+  it('renders an Updates sub-heading inside the System section content', () => {
+    const html = renderWithInitialTab('app-system')
+    expect(html).toContain('data-testid="system-updates-subheading"')
+    expect(html).toMatch(/<h4[^>]*data-testid="system-updates-subheading"[^>]*>Updates<\/h4>/)
+  })
+
+  it('renders the Check for Updates button inside the System section', () => {
+    const html = renderWithInitialTab('app-system')
+    expect(html).toContain('Check for Updates')
+    expect(html).toContain('Current version:')
   })
 })

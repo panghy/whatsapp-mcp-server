@@ -337,9 +337,10 @@ export default function App() {
   }
 
   if (currentView === 'settings') {
+    // The redesigned Settings page has its own sidebar with an active-account chip,
+    // so the global AccountSwitcher is hidden while in Settings.
     return (
       <div className="app-shell">
-        {switcher}
         <Settings
           slug={slug}
           accounts={accounts}
@@ -348,6 +349,8 @@ export default function App() {
           onAccountsChanged={handleAccountsChanged}
           onBack={() => { whatsappStatus.state === 'connected' ? setCurrentView('sync-status') : whatsappStatus.state === 'connecting' ? setCurrentView('loading') : setCurrentView('hero') }}
           onLogoff={() => { setNameConfirmed(false); setUserName(''); setStatusByAccount((prev) => ({ ...prev, [slug]: { state: 'disconnected', qrCode: null, error: null } })); setCurrentView('hero') }}
+          onAddAccount={() => setShowAddModal(true)}
+          onSelectAccount={handleSelectSlug}
           initialTab={pendingInitialTab}
         />
         {addModal}

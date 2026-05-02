@@ -50,6 +50,14 @@ export function getAccountStateLabel(status: WhatsAppStatus | undefined): string
   return STATE_PILL_LABELS[state]
 }
 
+// Sidebar account-selector onChange wiring. Extracted so it can be unit-tested
+// without spinning up a DOM (no jsdom is configured in this repo).
+export function makeAccountSelectChangeHandler(
+  onSelectAccount: ((slug: string) => void) | undefined,
+): (e: { target: { value: string } }) => void {
+  return (e) => { if (onSelectAccount) onSelectAccount(e.target.value) }
+}
+
 interface Group {
   id: number
   whatsapp_jid: string
@@ -74,7 +82,30 @@ export function sortGroupsByLastActivity<T extends { last_activity: string | nul
   })
 }
 
-type SettingsTab = 'group-sync' | 'interface-system' | 'logs'
+// New sidebar section IDs. The sidebar groups them under "This account" and "Application".
+export type SettingsTab =
+  | 'this-account-profile'
+  | 'this-account-groups'
+  | 'this-account-logs'
+  | 'this-account-logoff'
+  | 'app-accounts'
+  | 'app-mcp'
+  | 'app-system'
+
+// Legacy tab IDs accepted via the `initialTab` prop (used by IPC `open-logs` and any
+// existing callers). Mapped onto the new section IDs by `resolveInitialTab` below.
+type LegacySettingsTab = 'group-sync' | 'interface-system' | 'logs'
+
+// Map legacy tab IDs to the new sidebar section IDs:
+// - 'group-sync'       -> 'this-account-groups' (Group Visibility now lives under This account)
+// - 'interface-system' -> 'app-system'          (System / Launch-on-startup lives under Application)
+// - 'logs'             -> 'this-account-logs'   (Logs remains per-account, just relocated)
+function resolveInitialTab(tab: SettingsTab | LegacySettingsTab | null | undefined): SettingsTab {
+  if (tab === 'group-sync') return 'this-account-groups'
+  if (tab === 'interface-system') return 'app-system'
+  if (tab === 'logs') return 'this-account-logs'
+  return tab ?? 'this-account-groups'
+}
 
 interface SettingsProps {
   slug: string
@@ -84,11 +115,13 @@ interface SettingsProps {
   onAccountsChanged: (nextSelected?: string) => Promise<void> | void
   onBack?: () => void
   onLogoff?: () => void
-  initialTab?: SettingsTab | null
+  onAddAccount?: () => void
+  onSelectAccount?: (slug: string) => void
+  initialTab?: SettingsTab | LegacySettingsTab | null
 }
 
-export default function Settings({ slug, accounts, defaultSlug, statusByAccount, onAccountsChanged, onBack, onLogoff, initialTab }: SettingsProps) {
-  const [activeTab, setActiveTab] = useState<SettingsTab | 'accounts'>(initialTab ?? 'group-sync')
+export default function Settings({ slug, accounts, defaultSlug, statusByAccount, onAccountsChanged, onBack, onAddAccount, onSelectAccount, initialTab }: SettingsProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>(resolveInitialTab(initialTab))
   const [groups, setGroups] = useState<Group[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -210,7 +243,7 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
   // MCP handlers
   const handleMcpPortSave = async () => {
     const portNum = parseInt(mcpPort, 10)
-    if (isNaN(portNum) || portNum < 1 || portNum > 65535) { setError('Invalid port number (must be 1-65535)'); return }
+    if (Number.isNaN(portNum) || portNum < 1 || portNum > 65535) return
     try { await window.electron.setMcpPort(portNum); setMcpPortSaved(true); setTimeout(() => setMcpPortSaved(false), 2000) }
     catch (err) { console.error('Failed to save MCP port:', err) }
   }
@@ -219,12 +252,6 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
   const handleRelinkWhatsApp = async () => {
     if (window.confirm(`Re-link account "${slug}"? This clears its WhatsApp session and shows a new QR code. Messages are preserved.`)) {
       try { await window.electron.relinkWhatsApp(slug); setError(null) } catch (err) { setError(err instanceof Error ? err.message : 'Failed to relink WhatsApp') }
-    }
-  }
-
-  const handleLogout = async () => {
-    if (window.confirm(`Log out of "${slug}"? Your messages and settings are kept — the MCP endpoint will be disabled until you re-link.`)) {
-      try { await window.electron.whatsappLogout(slug); setError(null); if (onLogoff) { onLogoff() } } catch (err) { setError(err instanceof Error ? err.message : 'Failed to log off') }
     }
   }
 
@@ -295,11 +322,12 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
   }, [onBack])
 
   useEffect(() => {
-    if (initialTab) { setActiveTab(initialTab) }
+    if (initialTab) { setActiveTab(resolveInitialTab(initialTab)) }
   }, [initialTab])
 
   useEffect(() => {
-    const handleOpenLogs = () => { setActiveTab('logs') }
+    // Tray "Open Logs" jumps straight to This account → Logs.
+    const handleOpenLogs = () => { setActiveTab('this-account-logs') }
     const ipcRenderer = (window as any).ipcRenderer
     if (ipcRenderer) {
       ipcRenderer.on('open-logs', handleOpenLogs)
@@ -308,27 +336,116 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
     return undefined
   }, [])
 
+  const navBtn = (id: SettingsTab, label: string, danger = false) => (
+    <button
+      className={`settings-sidebar-nav-btn ${activeTab === id ? 'active' : ''} ${danger ? 'danger' : ''}`}
+      data-section={id}
+      onClick={() => setActiveTab(id)}
+    >
+      {label}
+    </button>
+  )
+
   return (
     <div className="settings-page">
-      <div className="settings-header">
-        <div className="settings-header-top">
+      <aside className="settings-sidebar">
+        <div className="settings-sidebar-top">
           {onBack && (<button className="settings-back-btn" onClick={onBack}>← Back<kbd>Esc</kbd></button>)}
         </div>
-        <h1>Settings <span className="settings-header-slug">— {slug}</span></h1>
-      </div>
-      <div className="settings-tabs">
-        <button className={`tab-btn ${activeTab === 'group-sync' ? 'active' : ''}`} onClick={() => setActiveTab('group-sync')}>Group Visibility</button>
-        <button className={`tab-btn ${activeTab === 'accounts' ? 'active' : ''}`} onClick={() => setActiveTab('accounts')}>Accounts</button>
-        <button className={`tab-btn ${activeTab === 'interface-system' ? 'active' : ''}`} onClick={() => setActiveTab('interface-system')}>Interface & System</button>
-        <button className={`tab-btn ${activeTab === 'logs' ? 'active' : ''}`} onClick={() => setActiveTab('logs')}>Logs</button>
-      </div>
+        <nav>
+          <div className="settings-sidebar-group" data-group="this-account">
+            <label htmlFor="settings-account-select" className="settings-sidebar-account-select-label">Account</label>
+            <select
+              id="settings-account-select"
+              data-testid="settings-account-select"
+              className="settings-sidebar-account-select"
+              aria-label="Select account to configure"
+              value={slug}
+              onChange={makeAccountSelectChangeHandler(onSelectAccount)}
+            >
+              {accounts.map((a) => {
+                const isDefault = a.slug === defaultSlug
+                const defaultSuffix = isDefault ? ' (default)' : ''
+                return (
+                  <option key={a.slug} value={a.slug}>{`${a.slug}${defaultSuffix}`}</option>
+                )
+              })}
+            </select>
+            {navBtn('this-account-profile', 'Profile')}
+            {navBtn('this-account-groups', 'Group Visibility')}
+            {navBtn('this-account-logs', 'Logs')}
+            {navBtn('this-account-logoff', 'Log-off')}
+          </div>
+          <div className="settings-sidebar-group" data-group="application">
+            <div className="settings-sidebar-group-header">Application</div>
+            {navBtn('app-accounts', 'Accounts')}
+            {navBtn('app-mcp', 'MCP Server')}
+            {navBtn('app-system', 'System')}
+          </div>
+        </nav>
+      </aside>
       <div className="settings-content"><div className="settings-content-inner">
         {error && (<div style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: 'hsl(var(--destructive) / 0.1)', borderRadius: '0.375rem', color: 'hsl(var(--destructive))' }}><p>{error}</p></div>)}
 
-        {activeTab === 'group-sync' && (
+        {activeTab === 'this-account-profile' && (() => {
+          const info = mcpUrls[slug]
+          const path = info?.path || `/mcp/${slug}`
+          const url = `http://localhost:${mcpStatus.port}${path}`
+          const aliasUrl = info?.alias ? `http://localhost:${mcpStatus.port}${info.alias}` : null
+          const account = accounts.find((a) => a.slug === slug)
+          const disabled = !(account?.mcpEnabled ?? true)
+          return (
+            <div>
+              <div className="settings-section-header"><h3>Profile</h3></div>
+              <div className="setting-item" style={{ marginTop: '1rem' }}>
+                <label htmlFor="display-name">Your Name</label>
+                <div style={{ position: 'relative' }}>
+                  <input id="display-name" type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} onBlur={handleDisplayNameSave} onKeyDown={handleDisplayNameKeyDown} placeholder="Your name" />
+                  {displayNameSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
+                </div>
+              </div>
+              <div className="setting-item" style={{ marginTop: '2rem' }}>
+                <label htmlFor="profile-mcp-url" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                  MCP Endpoint
+                  <span
+                    className="settings-hint-icon"
+                    role="img"
+                    aria-label="What is the MCP Endpoint?"
+                    tabIndex={0}
+                    title="Point your MCP client (e.g. Claude Desktop, Cursor) at this URL to access this WhatsApp account."
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+                  </span>
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <code id="profile-mcp-url" style={{ fontSize: '0.85rem', color: disabled ? 'hsl(var(--muted-foreground))' : 'hsl(var(--foreground))', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0.4rem 0.6rem', borderRadius: '0.375rem', border: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--background))' }}>{url}</code>
+                  {disabled && (<button className="action-btn" onClick={handleRelinkWhatsApp} style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto', flex: '0 0 auto' }}>Re-link</button>)}
+                  <button
+                    type="button"
+                    className="settings-icon-btn"
+                    aria-label="Copy MCP endpoint URL"
+                    title={copiedSlug === slug ? 'Copied' : 'Copy MCP endpoint URL'}
+                    disabled={disabled}
+                    onClick={() => copyUrl(slug, url)}
+                    data-copied={copiedSlug === slug ? 'true' : undefined}
+                  >
+                    {copiedSlug === slug ? (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                    ) : (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                    )}
+                  </button>
+                </div>
+                {aliasUrl && (<p className="setting-description" style={{ marginTop: '0.4rem' }}>Default alias: <code>{aliasUrl}</code></p>)}
+              </div>
+            </div>
+          )
+        })()}
+
+        {activeTab === 'this-account-groups' && (
           <div className="groups-tab">
-            <h3>Group Visibility <span style={{ fontSize: '0.85rem', color: 'hsl(var(--muted-foreground))', fontWeight: 400 }}>— {slug}</span></h3>
-            <p className="tab-description">Turning off a chat hides it from account <strong>{slug}</strong>'s MCP operations. Messages are still synced in the background, so re-enabling restores full history.</p>
+            <div className="settings-section-header"><h3>Group Visibility</h3></div>
+            <p className="tab-description">Turning off a chat hides it from this account's MCP operations. Messages are still synced in the background, so re-enabling restores full history.</p>
             <div className="search-box"><input type="text" placeholder="Search groups..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
             {loading ? (<p className="loading">Loading groups...</p>) : filteredGroups.length === 0 ? (<p className="no-groups">No groups found</p>) : (
               <div className="groups-list">
@@ -347,116 +464,27 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
           </div>
         )}
 
-        {activeTab === 'interface-system' && (
+        {activeTab === 'this-account-logs' && (
           <div>
-            <h3>Interface & System</h3>
-            <div className="setting-item" style={{ marginTop: '1rem' }}>
-              <label htmlFor="display-name">Your Name <span style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))', fontWeight: 400 }}>({slug})</span></label>
-              <div style={{ position: 'relative' }}>
-                <input id="display-name" type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} onBlur={handleDisplayNameSave} onKeyDown={handleDisplayNameKeyDown} placeholder="Your name" />
-                {displayNameSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
-              </div>
-              <p className="setting-description">Your name as it appears in synced messages for this account</p>
-            </div>
-            <div className="setting-item" style={{ marginTop: '1rem', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Launch on startup</span><label className="toggle-switch"><input type="checkbox" checked={autoLaunch} onChange={handleAutoLaunchChange} /><span className="slider"></span></label></div>
-
-            {/* MCP Server Section */}
-            <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid hsl(var(--border))' }}>
-              <h4 style={{ marginBottom: '1rem' }}>MCP Server</h4>
-              <div className="setting-item">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                  <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: mcpStatus.status === 'running' ? 'hsl(var(--success, 142 76% 36%))' : mcpStatus.status === 'port_conflict' ? 'hsl(var(--warning, 45 93% 47%))' : mcpStatus.status === 'error' ? 'hsl(var(--destructive))' : 'hsl(var(--muted-foreground))' }} />
-                  <span style={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                    {mcpStatus.status === 'running' ? `Running on port ${mcpStatus.port}` : mcpStatus.status === 'starting' ? 'Starting...' : mcpStatus.status === 'port_conflict' ? `Port ${mcpStatus.port} in use` : mcpStatus.status === 'error' ? 'Error' : 'Stopped'}
-                  </span>
-                </div>
-                {mcpStatus.error && mcpStatus.status !== 'running' && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', marginBottom: '0.5rem' }}>{mcpStatus.error}</p>)}
-              </div>
-              <div className="setting-item">
-                <label htmlFor="mcp-port">Server Port</label>
-                <div style={{ position: 'relative' }}>
-                  <input id="mcp-port" type="text" inputMode="numeric" pattern="[0-9]*" value={mcpPort} onChange={(e) => setMcpPort(e.target.value)} onBlur={handleMcpPortSave} onKeyDown={handleMcpPortKeyDown} placeholder="13491" />
-                  {mcpPortSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
-                </div>
-                <p className="setting-description">Port for MCP HTTP server (requires restart). All accounts share this port and are routed by slug.</p>
-              </div>
-              <div className="setting-item" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Auto-start MCP server</span>
-                <label className="toggle-switch"><input type="checkbox" checked={mcpAutoStart} onChange={handleMcpAutoStartChange} /><span className="slider"></span></label>
-              </div>
-
-              <div className="mcp-url-list" style={{ marginTop: '1rem' }}>
-                <p className="setting-description" style={{ marginBottom: '0.5rem' }}>Account endpoints</p>
-                {accounts.length === 0 ? (
-                  <p style={{ fontSize: '0.85rem', color: 'hsl(var(--muted-foreground))' }}>No accounts configured.</p>
-                ) : accounts.map((a) => {
-                  const info = mcpUrls[a.slug]
-                  const path = info?.path || `/mcp/${a.slug}`
-                  const url = `http://localhost:${mcpStatus.port}${path}`
-                  const aliasUrl = info?.alias ? `http://localhost:${mcpStatus.port}${info.alias}` : null
-                  const st = statusByAccount[a.slug]
-                  const disabled = !a.mcpEnabled
-                  return (
-                    <div key={a.slug} className="mcp-url-row" style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', padding: '0.5rem 0.75rem', borderRadius: '0.375rem', border: '1px solid hsl(var(--border))', marginBottom: '0.5rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <strong style={{ fontSize: '0.9rem' }}>{a.slug}</strong>
-                        <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', color: 'hsl(var(--muted-foreground))' }}>{disabled ? 'Re-link required' : st?.state === 'connected' ? 'Connected' : 'Disconnected'}</span>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <code style={{ fontSize: '0.8rem', color: disabled ? 'hsl(var(--muted-foreground))' : 'hsl(var(--foreground))', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{url}</code>
-                        <button className="action-btn" disabled={disabled} onClick={() => copyUrl(a.slug, url)} style={{ padding: '4px 8px', fontSize: '0.7rem' }}>{copiedSlug === a.slug ? 'Copied' : 'Copy'}</button>
-                        {disabled && (<button className="action-btn" onClick={async () => { try { await window.electron.relinkWhatsApp(a.slug); await onAccountsChanged(a.slug) } catch (err) { setError(err instanceof Error ? err.message : 'Failed to re-link') } }} style={{ padding: '4px 8px', fontSize: '0.7rem' }}>Re-link</button>)}
-                      </div>
-                      {aliasUrl && (<p style={{ fontSize: '0.7rem', color: 'hsl(var(--muted-foreground))', margin: 0 }}>Default alias: <code>{aliasUrl}</code></p>)}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-
-            {/* Updates Section */}
-            <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid hsl(var(--border))' }}>
-              <h4 style={{ marginBottom: '1rem' }}>Updates</h4>
-              <div className="setting-item">
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                  <span style={{ fontSize: '0.875rem' }}>Current version: <strong>v{appVersion}</strong></span>
-                  {updateStatus.status === 'downloaded' && updateStatus.version && (
-                    <span style={{ fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))' }}>v{updateStatus.version} ready to install</span>
-                  )}
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
-                  {updateStatus.status === 'downloaded' ? (
-                    <button className="action-btn" onClick={handleQuitAndInstall} style={{ backgroundColor: 'hsl(var(--success, 142 76% 36%))', color: 'white' }}>
-                      Restart Now
-                    </button>
-                  ) : (
-                    <button className="action-btn" onClick={handleCheckForUpdates} disabled={checkingUpdates || updateStatus.status === 'checking' || updateStatus.status === 'downloading'}>
-                      {checkingUpdates || updateStatus.status === 'checking' ? 'Checking...' : updateStatus.status === 'downloading' ? `Downloading... ${updateStatus.progress ? Math.round(updateStatus.progress) + '%' : ''}` : 'Check for Updates'}
-                    </button>
-                  )}
-                </div>
-                {updateStatus.status === 'not-available' && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))', marginTop: '0.5rem' }}>You're on the latest version</p>)}
-                {updateStatus.status === 'available' && updateStatus.version && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', marginTop: '0.5rem' }}>Update v{updateStatus.version} is downloading...</p>)}
-                {updateStatus.status === 'error' && updateStatus.error && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', marginTop: '0.5rem' }}>{updateStatus.error}</p>)}
-              </div>
-            </div>
-
-            <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid hsl(var(--border))' }}>
-              <h4 style={{ marginBottom: '1rem' }}>Account actions <span style={{ fontSize: '0.8rem', color: 'hsl(var(--muted-foreground))', fontWeight: 400 }}>— {slug}</span></h4>
-              <div className="action-group"><h5>Re-link WhatsApp</h5><p>Clear <strong>{slug}</strong>'s WhatsApp session and scan a new QR code. Messages are preserved.</p><button className="action-btn" onClick={handleRelinkWhatsApp}>Re-link WhatsApp</button></div>
-              <div className="action-group danger" style={{ marginTop: '1.5rem' }}><h5>Log out</h5><p>Sign <strong>{slug}</strong> out of WhatsApp. Messages and settings are kept; the MCP endpoint is disabled until you re-link.</p><button className="action-btn danger" style={{ color: 'white' }} onClick={handleLogout}>Log out</button></div>
-            </div>
+            <div className="settings-section-header"><h3>Logs</h3></div>
+            <LogsViewer slug={slug} />
           </div>
         )}
 
-        {activeTab === 'accounts' && (
+        {activeTab === 'this-account-logoff' && (
+          <div>
+            <div className="settings-section-header"><h3>Log-off</h3></div>
+            <div className="action-group" style={{ marginTop: '1rem' }}><h5>Re-link WhatsApp</h5><p>Clear this account's WhatsApp session and scan a new QR code. Messages are preserved.</p><button className="action-btn" onClick={handleRelinkWhatsApp}>Re-link WhatsApp</button></div>
+            <div className="action-group" style={{ marginTop: '1.5rem' }}><h5>Remove account</h5><p>Permanently remove this account. This logs out of WhatsApp on this device and clears all local data for this account. {accounts.length <= 1 && (<em>You can&apos;t remove the last account.</em>)}</p><button className="action-btn danger" onClick={() => handleRemoveAccount(slug)} disabled={accounts.length <= 1}>Remove account</button></div>
+          </div>
+        )}
+
+        {activeTab === 'app-accounts' && (
           <AccountsTabBody
             accounts={accounts}
             selectedSlug={slug}
             defaultSlug={defaultSlug}
             statusByAccount={statusByAccount}
-            mcpPort={mcpStatus.port}
-            mcpUrls={mcpUrls}
             renameSlug={renameSlug}
             renameValue={renameValue}
             renameError={renameError}
@@ -466,16 +494,126 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
             onStartRename={startRename}
             onSetDefault={handleSetDefault}
             onRemoveAccount={handleRemoveAccount}
+            onAddAccount={onAddAccount}
           />
         )}
 
-        {activeTab === 'logs' && (<div><LogsViewer slug={slug} /></div>)}
+        {activeTab === 'app-mcp' && (
+          <div>
+            <div className="settings-section-header"><h3>MCP Server</h3></div>
+            <div className="setting-item">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: mcpStatus.status === 'running' ? 'hsl(var(--success, 142 76% 36%))' : mcpStatus.status === 'port_conflict' ? 'hsl(var(--warning, 45 93% 47%))' : mcpStatus.status === 'error' ? 'hsl(var(--destructive))' : 'hsl(var(--muted-foreground))' }} />
+                <span style={{ fontSize: '0.875rem', fontWeight: 500 }}>
+                  {mcpStatus.status === 'running' ? 'Running' : mcpStatus.status === 'starting' ? 'Starting…' : mcpStatus.status === 'port_conflict' ? 'Port in use' : mcpStatus.status === 'error' ? 'Error' : 'Stopped'}
+                </span>
+              </div>
+              {mcpStatus.error && mcpStatus.status !== 'running' && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', marginBottom: '0.5rem' }}>{mcpStatus.error}</p>)}
+            </div>
+            <div className="setting-item">
+              <label htmlFor="mcp-port">Server Port</label>
+              <div style={{ position: 'relative' }}>
+                <input id="mcp-port" type="number" inputMode="numeric" min={1} max={65535} step={1} value={mcpPort} onChange={(e) => setMcpPort(e.target.value)} onBlur={handleMcpPortSave} onKeyDown={handleMcpPortKeyDown} placeholder="13491" />
+                {mcpPortSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
+              </div>
+              <p className="setting-description">Restart required to apply changes.</p>
+            </div>
+            <div className="setting-item" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Auto-start MCP server</span>
+              <label className="toggle-switch"><input type="checkbox" checked={mcpAutoStart} onChange={handleMcpAutoStartChange} /><span className="slider"></span></label>
+            </div>
+
+            <div className="mcp-url-list" style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid hsl(var(--border))' }} data-testid="mcp-all-endpoints">
+              <h4 style={{ marginBottom: '0.5rem' }}>All endpoints</h4>
+              <p className="setting-description" style={{ marginBottom: '0.75rem' }}>Every account&apos;s MCP URL. The default account is also served at the bare <code>/mcp</code> alias.</p>
+              {accounts.length === 0 ? (
+                <p style={{ fontSize: '0.85rem', color: 'hsl(var(--muted-foreground))' }}>No accounts configured.</p>
+              ) : (
+                <>
+                  {accounts.map((a) => {
+                    const aInfo = mcpUrls[a.slug]
+                    const aPath = aInfo?.path || `/mcp/${a.slug}`
+                    const aUrl = `http://localhost:${mcpStatus.port}${aPath}`
+                    return (
+                      <div key={a.slug} className="mcp-url-row" data-slug={a.slug} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.6rem', borderRadius: '0.375rem', border: '1px solid hsl(var(--border))', marginBottom: '0.4rem' }}>
+                        <strong style={{ fontSize: '0.85rem', minWidth: '6rem' }}>{a.slug}</strong>
+                        <code style={{ fontSize: '0.85rem', color: 'hsl(var(--foreground))', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aUrl}</code>
+                        <button
+                          type="button"
+                          className="settings-icon-btn"
+                          aria-label="Copy MCP endpoint URL"
+                          title={copiedSlug === a.slug ? 'Copied' : 'Copy MCP endpoint URL'}
+                          onClick={() => copyUrl(a.slug, aUrl)}
+                          data-copied={copiedSlug === a.slug ? 'true' : undefined}
+                        >
+                          {copiedSlug === a.slug ? (
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                          ) : (
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                          )}
+                        </button>
+                      </div>
+                    )
+                  })}
+                  {defaultSlug && (
+                    <div className="mcp-url-row" data-slug="__alias__" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.6rem', borderRadius: '0.375rem', border: '1px dashed hsl(var(--border))', marginBottom: '0.4rem' }}>
+                      <strong style={{ fontSize: '0.85rem', minWidth: '6rem' }}>/mcp</strong>
+                      <code style={{ fontSize: '0.85rem', color: 'hsl(var(--foreground))', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{`http://localhost:${mcpStatus.port}/mcp`}</code>
+                      <button
+                        type="button"
+                        className="settings-icon-btn"
+                        aria-label="Copy MCP endpoint URL"
+                        title={copiedSlug === '__alias__' ? 'Copied' : 'Copy MCP endpoint URL'}
+                        onClick={() => copyUrl('__alias__', `http://localhost:${mcpStatus.port}/mcp`)}
+                        data-copied={copiedSlug === '__alias__' ? 'true' : undefined}
+                      >
+                        {copiedSlug === '__alias__' ? (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                        ) : (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'app-system' && (
+          <div>
+            <div className="settings-section-header"><h3>System</h3></div>
+            <div className="setting-item" style={{ marginTop: '1rem', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}><span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Launch on startup</span><label className="toggle-switch"><input type="checkbox" checked={autoLaunch} onChange={handleAutoLaunchChange} /><span className="slider"></span></label></div>
+            <h4 className="settings-subheading" data-testid="system-updates-subheading" style={{ marginTop: '1.5rem' }}>Updates</h4>
+            <div className="setting-item">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <span style={{ fontSize: '0.875rem' }}>Current version: <strong>v{appVersion}</strong></span>
+                {updateStatus.status === 'downloaded' && updateStatus.version && (
+                  <span style={{ fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))' }}>v{updateStatus.version} ready to install</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+                {updateStatus.status === 'downloaded' ? (
+                  <button className="action-btn" onClick={handleQuitAndInstall} style={{ backgroundColor: 'hsl(var(--success, 142 76% 36%))', color: 'white' }}>Restart Now</button>
+                ) : (
+                  <button className="action-btn" onClick={handleCheckForUpdates} disabled={checkingUpdates || updateStatus.status === 'checking' || updateStatus.status === 'downloading'}>
+                    {checkingUpdates || updateStatus.status === 'checking' ? 'Checking...' : updateStatus.status === 'downloading' ? `Downloading... ${updateStatus.progress ? Math.round(updateStatus.progress) + '%' : ''}` : 'Check for Updates'}
+                  </button>
+                )}
+              </div>
+              {updateStatus.status === 'not-available' && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))', marginTop: '0.5rem' }}>You're on the latest version</p>)}
+              {updateStatus.status === 'available' && updateStatus.version && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', marginTop: '0.5rem' }}>Update v{updateStatus.version} is downloading...</p>)}
+              {updateStatus.status === 'error' && updateStatus.error && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', marginTop: '0.5rem' }}>{updateStatus.error}</p>)}
+            </div>
+          </div>
+        )}
       </div></div>
       <div className="settings-footer">
         <div className="settings-footer-left"><strong>WhatsApp MCP Server</strong><span>v{appVersion}</span></div>
         <div className="settings-footer-right"><a href="https://github.com/panghy/whatsapp-mcp-server/issues" className="settings-footer-link" target="_blank" rel="noopener noreferrer">Help</a><span className="settings-footer-divider">•</span><a href="https://github.com/panghy/whatsapp-mcp-server" className="settings-footer-link" target="_blank" rel="noopener noreferrer">About</a></div>
       </div>
-      <div style={{ textAlign: 'center', padding: '0.5rem 1rem', fontSize: '0.65rem', color: 'hsl(var(--muted-foreground))', opacity: 0.6 }}>
+      <div className="settings-disclaimer">
         This software is provided as-is, without warranty. Not affiliated with WhatsApp or Meta.
       </div>
     </div>
@@ -489,8 +627,6 @@ interface AccountsTabBodyProps {
   selectedSlug: string
   defaultSlug: string | null
   statusByAccount: Record<string, WhatsAppStatus>
-  mcpPort: number
-  mcpUrls: Record<string, McpUrlInfo>
   renameSlug: string | null
   renameValue: string
   renameError: string | null
@@ -500,17 +636,23 @@ interface AccountsTabBodyProps {
   onStartRename: (slug: string) => void
   onSetDefault: (slug: string) => void
   onRemoveAccount: (slug: string) => void
+  onAddAccount?: () => void
 }
 
 export function AccountsTabBody({
-  accounts, selectedSlug, defaultSlug, statusByAccount, mcpPort, mcpUrls,
+  accounts, selectedSlug, defaultSlug, statusByAccount,
   renameSlug, renameValue, renameError,
   onRenameValueChange, onSubmitRename, onCancelRename, onStartRename,
-  onSetDefault, onRemoveAccount,
+  onSetDefault, onRemoveAccount, onAddAccount,
 }: AccountsTabBodyProps) {
   return (
     <div>
-      <h3>Accounts</h3>
+      <div className="settings-section-header"><h3>Accounts</h3></div>
+      {onAddAccount && (
+        <div className="settings-add-account-row">
+          <button className="settings-link-btn" data-testid="settings-add-account-btn" onClick={onAddAccount}>+ Add account</button>
+        </div>
+      )}
       <p className="tab-description">Each account has its own WhatsApp session, database, and MCP endpoint.</p>
       <p className="tab-description" data-testid="default-explainer" style={{ marginTop: '0.5rem', padding: '0.75rem', backgroundColor: 'hsl(var(--muted) / 0.4)', borderRadius: '0.375rem', fontSize: '0.85rem' }}>
         The default account is also served at the bare <code>/mcp</code> path for back-compat with single-account MCP clients. Changing which account you&apos;re viewing at the top of the window does not change the default — click &quot;Make default&quot; below to change it.
@@ -521,8 +663,6 @@ export function AccountsTabBody({
           const isViewing = a.slug === selectedSlug
           const isDefault = a.slug === defaultSlug
           const editing = renameSlug === a.slug
-          const info = mcpUrls[a.slug]
-          const url = `http://localhost:${mcpPort}${info?.path || `/mcp/${a.slug}`}`
           return (
             <div key={a.slug} className="account-row" data-slug={a.slug} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid hsl(var(--border))', marginBottom: '0.75rem', backgroundColor: isViewing ? 'hsl(var(--muted) / 0.4)' : 'transparent' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -535,7 +675,7 @@ export function AccountsTabBody({
                   </>
                 ) : (
                   <>
-                    <strong style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <strong style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
                       <span>{a.slug}</span>
                       {isDefault && (
                         <span
@@ -556,14 +696,15 @@ export function AccountsTabBody({
                         {getAccountStateLabel(st)}
                       </span>
                     </strong>
-                    <button className="action-btn" data-testid={`make-default-${a.slug}`} onClick={() => onSetDefault(a.slug)} disabled={isDefault} style={{ padding: '4px 8px', fontSize: '0.75rem' }} title="Make this the default account; MCP clients pointed at /mcp will route here.">Make default</button>
-                    <button className="action-btn" onClick={() => onStartRename(a.slug)} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Rename</button>
-                    <button className="action-btn danger" onClick={() => onRemoveAccount(a.slug)} disabled={accounts.length <= 1} style={{ padding: '4px 8px', fontSize: '0.75rem', color: 'white' }}>Remove</button>
+                    <div className="account-row-actions" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: 'auto' }}>
+                      <button className="action-btn" data-testid={`make-default-${a.slug}`} onClick={() => onSetDefault(a.slug)} disabled={isDefault} style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto' }} title="Make this the default account; MCP clients pointed at /mcp will route here.">Make default</button>
+                      <button className="action-btn" onClick={() => onStartRename(a.slug)} style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto' }}>Rename</button>
+                      <button className="action-btn danger" onClick={() => onRemoveAccount(a.slug)} disabled={accounts.length <= 1} style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto', color: 'white' }}>Remove</button>
+                    </div>
                   </>
                 )}
               </div>
               {editing && renameError && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', margin: 0 }}>{renameError}</p>)}
-              <code style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))' }}>{url}</code>
             </div>
           )
         })}
