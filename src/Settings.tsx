@@ -406,8 +406,19 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
                   {displayNameSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
                 </div>
               </div>
-              <div className="setting-item">
-                <label htmlFor="profile-mcp-url">MCP Endpoint</label>
+              <div className="setting-item" style={{ marginTop: '2rem' }}>
+                <label htmlFor="profile-mcp-url" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                  MCP Endpoint
+                  <span
+                    className="settings-hint-icon"
+                    role="img"
+                    aria-label="What is the MCP Endpoint?"
+                    tabIndex={0}
+                    title="Point your MCP client (e.g. Claude Desktop, Cursor) at this URL to access this WhatsApp account."
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>
+                  </span>
+                </label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <code id="profile-mcp-url" style={{ fontSize: '0.85rem', color: disabled ? 'hsl(var(--muted-foreground))' : 'hsl(var(--foreground))', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0.4rem 0.6rem', borderRadius: '0.375rem', border: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--background))' }}>{url}</code>
                   {disabled && (<button className="action-btn" onClick={handleRelinkWhatsApp} style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto', flex: '0 0 auto' }}>Re-link</button>)}

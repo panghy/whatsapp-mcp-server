@@ -445,7 +445,7 @@ describe('Settings Profile tab', () => {
   it('renders the per-account MCP endpoint URL with a Copy icon button inside Profile', () => {
     const html = renderProfile()
     // MCP Endpoint label and URL live in Profile now.
-    expect(html).toMatch(/<label[^>]*for="profile-mcp-url"[^>]*>MCP Endpoint<\/label>/)
+    expect(html).toMatch(/<label[^>]*for="profile-mcp-url"[^>]*>MCP Endpoint/)
     expect(html).toContain('/mcp/alpha')
     // Copy is now a small icon-only button identified by aria-label, not text.
     expect(html).toMatch(/<button[^>]*aria-label="Copy MCP endpoint URL"/)
