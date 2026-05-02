@@ -86,7 +86,6 @@ export function sortGroupsByLastActivity<T extends { last_activity: string | nul
 export type SettingsTab =
   | 'this-account-profile'
   | 'this-account-groups'
-  | 'this-account-endpoint'
   | 'this-account-logs'
   | 'this-account-logoff'
   | 'app-accounts'
@@ -382,9 +381,8 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
             </select>
             {navBtn('this-account-profile', 'Profile')}
             {navBtn('this-account-groups', 'Group Visibility')}
-            {navBtn('this-account-endpoint', 'Endpoint')}
             {navBtn('this-account-logs', 'Logs')}
-            {navBtn('this-account-logoff', 'Log-off', true)}
+            {navBtn('this-account-logoff', 'Log-off')}
           </div>
           <div className="settings-sidebar-group" data-group="application">
             <div className="settings-sidebar-group-header">Application</div>
@@ -397,24 +395,40 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
       <div className="settings-content"><div className="settings-content-inner">
         {error && (<div style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: 'hsl(var(--destructive) / 0.1)', borderRadius: '0.375rem', color: 'hsl(var(--destructive))' }}><p>{error}</p></div>)}
 
-        {activeTab === 'this-account-profile' && (
-          <div>
-            <div className="settings-section-header"><h3>Profile</h3><span className="settings-section-slug">— {slug}</span></div>
-            <div className="setting-item" style={{ marginTop: '1rem' }}>
-              <label htmlFor="display-name">Your Name <span style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))', fontWeight: 400 }}>({slug})</span></label>
-              <div style={{ position: 'relative' }}>
-                <input id="display-name" type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} onBlur={handleDisplayNameSave} onKeyDown={handleDisplayNameKeyDown} placeholder="Your name" />
-                {displayNameSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
+        {activeTab === 'this-account-profile' && (() => {
+          const info = mcpUrls[slug]
+          const path = info?.path || `/mcp/${slug}`
+          const url = `http://localhost:${mcpStatus.port}${path}`
+          const aliasUrl = info?.alias ? `http://localhost:${mcpStatus.port}${info.alias}` : null
+          const account = accounts.find((a) => a.slug === slug)
+          const disabled = !(account?.mcpEnabled ?? true)
+          return (
+            <div>
+              <div className="settings-section-header"><h3>Profile</h3></div>
+              <div className="setting-item" style={{ marginTop: '1rem' }}>
+                <label htmlFor="display-name">Your Name</label>
+                <div style={{ position: 'relative' }}>
+                  <input id="display-name" type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} onBlur={handleDisplayNameSave} onKeyDown={handleDisplayNameKeyDown} placeholder="Your name" />
+                  {displayNameSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
+                </div>
               </div>
-              <p className="setting-description">Your name as it appears in synced messages for this account</p>
+              <div className="setting-item">
+                <label htmlFor="profile-mcp-url">MCP Endpoint</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <code id="profile-mcp-url" style={{ fontSize: '0.85rem', color: disabled ? 'hsl(var(--muted-foreground))' : 'hsl(var(--foreground))', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', padding: '0.4rem 0.6rem', borderRadius: '0.375rem', border: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--background))' }}>{url}</code>
+                  <button className="action-btn" disabled={disabled} onClick={() => copyUrl(slug, url)} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>{copiedSlug === slug ? 'Copied' : 'Copy'}</button>
+                  {disabled && (<button className="action-btn" onClick={handleRelinkWhatsApp} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Re-link</button>)}
+                </div>
+                {aliasUrl && (<p className="setting-description" style={{ marginTop: '0.4rem' }}>Default alias: <code>{aliasUrl}</code></p>)}
+              </div>
             </div>
-          </div>
-        )}
+          )
+        })()}
 
         {activeTab === 'this-account-groups' && (
           <div className="groups-tab">
-            <div className="settings-section-header"><h3>Group Visibility</h3><span className="settings-section-slug">— {slug}</span></div>
-            <p className="tab-description">Turning off a chat hides it from account <strong>{slug}</strong>'s MCP operations. Messages are still synced in the background, so re-enabling restores full history.</p>
+            <div className="settings-section-header"><h3>Group Visibility</h3></div>
+            <p className="tab-description">Turning off a chat hides it from this account's MCP operations. Messages are still synced in the background, so re-enabling restores full history.</p>
             <div className="search-box"><input type="text" placeholder="Search groups..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
             {loading ? (<p className="loading">Loading groups...</p>) : filteredGroups.length === 0 ? (<p className="no-groups">No groups found</p>) : (
               <div className="groups-list">
@@ -433,46 +447,19 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
           </div>
         )}
 
-        {activeTab === 'this-account-endpoint' && (() => {
-          const info = mcpUrls[slug]
-          const path = info?.path || `/mcp/${slug}`
-          const url = `http://localhost:${mcpStatus.port}${path}`
-          const aliasUrl = info?.alias ? `http://localhost:${mcpStatus.port}${info.alias}` : null
-          const account = accounts.find((a) => a.slug === slug)
-          const disabled = !(account?.mcpEnabled ?? true)
-          return (
-            <div>
-              <div className="settings-section-header"><h3>Endpoint</h3><span className="settings-section-slug">— {slug}</span></div>
-              <p className="tab-description">MCP URL for this account. Point your MCP client at this URL.</p>
-              <div className="mcp-url-row" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid hsl(var(--border))', marginTop: '1rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <strong style={{ fontSize: '0.9rem' }}>{slug}</strong>
-                  <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', color: 'hsl(var(--muted-foreground))' }}>{disabled ? 'Re-link required' : statusByAccount[slug]?.state === 'connected' ? 'Connected' : 'Disconnected'}</span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <code style={{ fontSize: '0.85rem', color: disabled ? 'hsl(var(--muted-foreground))' : 'hsl(var(--foreground))', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{url}</code>
-                  <button className="action-btn" disabled={disabled} onClick={() => copyUrl(slug, url)} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>{copiedSlug === slug ? 'Copied' : 'Copy'}</button>
-                  {disabled && (<button className="action-btn" onClick={handleRelinkWhatsApp} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Re-link</button>)}
-                </div>
-                {aliasUrl && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--muted-foreground))', margin: 0 }}>Default alias: <code>{aliasUrl}</code></p>)}
-              </div>
-            </div>
-          )
-        })()}
-
         {activeTab === 'this-account-logs' && (
           <div>
-            <div className="settings-section-header"><h3>Logs</h3><span className="settings-section-slug">— {slug}</span></div>
+            <div className="settings-section-header"><h3>Logs</h3></div>
             <LogsViewer slug={slug} />
           </div>
         )}
 
         {activeTab === 'this-account-logoff' && (
           <div>
-            <div className="settings-section-header"><h3>Log-off</h3><span className="settings-section-slug">— {slug}</span></div>
-            <div className="action-group" style={{ marginTop: '1rem' }}><h5>Re-link WhatsApp</h5><p>Clear <strong>{slug}</strong>'s WhatsApp session and scan a new QR code. Messages are preserved.</p><button className="action-btn" onClick={handleRelinkWhatsApp}>Re-link WhatsApp</button></div>
-            <div className="action-group danger" style={{ marginTop: '1.5rem' }}><h5>Log out</h5><p>Sign <strong>{slug}</strong> out of WhatsApp. Messages and settings are kept; the MCP endpoint is disabled until you re-link.</p><button className="action-btn danger" style={{ color: 'white' }} onClick={handleLogout}>Log out</button></div>
-            <div className="action-group danger" style={{ marginTop: '1.5rem' }}><h5>Remove account</h5><p>Permanently remove <strong>{slug}</strong>. This logs out of WhatsApp on this device and clears all local data for this account. {accounts.length <= 1 && (<em>You can&apos;t remove the last account.</em>)}</p><button className="action-btn danger" style={{ color: 'white' }} onClick={() => handleRemoveAccount(slug)} disabled={accounts.length <= 1}>Remove account</button></div>
+            <div className="settings-section-header"><h3>Log-off</h3></div>
+            <div className="action-group" style={{ marginTop: '1rem' }}><h5>Re-link WhatsApp</h5><p>Clear this account's WhatsApp session and scan a new QR code. Messages are preserved.</p><button className="action-btn" onClick={handleRelinkWhatsApp}>Re-link WhatsApp</button></div>
+            <div className="action-group" style={{ marginTop: '1.5rem' }}><h5>Log out</h5><p>Sign this account out of WhatsApp. Messages and settings are kept; the MCP endpoint is disabled until you re-link.</p><button className="action-btn" onClick={handleLogout}>Log out</button></div>
+            <div className="action-group" style={{ marginTop: '1.5rem' }}><h5>Remove account</h5><p>Permanently remove this account. This logs out of WhatsApp on this device and clears all local data for this account. {accounts.length <= 1 && (<em>You can&apos;t remove the last account.</em>)}</p><button className="action-btn" onClick={() => handleRemoveAccount(slug)} disabled={accounts.length <= 1}>Remove account</button></div>
           </div>
         )}
 
@@ -502,7 +489,7 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
                 <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: mcpStatus.status === 'running' ? 'hsl(var(--success, 142 76% 36%))' : mcpStatus.status === 'port_conflict' ? 'hsl(var(--warning, 45 93% 47%))' : mcpStatus.status === 'error' ? 'hsl(var(--destructive))' : 'hsl(var(--muted-foreground))' }} />
                 <span style={{ fontSize: '0.875rem', fontWeight: 500 }}>
-                  {mcpStatus.status === 'running' ? `Running on port ${mcpStatus.port}` : mcpStatus.status === 'starting' ? 'Starting...' : mcpStatus.status === 'port_conflict' ? `Port ${mcpStatus.port} in use` : mcpStatus.status === 'error' ? 'Error' : 'Stopped'}
+                  {mcpStatus.status === 'running' ? 'Running' : mcpStatus.status === 'starting' ? 'Starting…' : mcpStatus.status === 'port_conflict' ? 'Port in use' : mcpStatus.status === 'error' ? 'Error' : 'Stopped'}
                 </span>
               </div>
               {mcpStatus.error && mcpStatus.status !== 'running' && (<p style={{ fontSize: '0.75rem', color: 'hsl(var(--destructive))', marginBottom: '0.5rem' }}>{mcpStatus.error}</p>)}
@@ -513,7 +500,7 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
                 <input id="mcp-port" type="text" inputMode="numeric" pattern="[0-9]*" value={mcpPort} onChange={(e) => setMcpPort(e.target.value)} onBlur={handleMcpPortSave} onKeyDown={handleMcpPortKeyDown} placeholder="13491" />
                 {mcpPortSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
               </div>
-              <p className="setting-description">Port for MCP HTTP server (requires restart). All accounts share this port and are routed by slug.</p>
+              <p className="setting-description">Restart required to apply changes.</p>
             </div>
             <div className="setting-item" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Auto-start MCP server</span>

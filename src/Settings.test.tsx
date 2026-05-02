@@ -386,6 +386,19 @@ describe('Settings sidebar', () => {
     expect(html).not.toMatch(/Dan[g]er zone/)
   })
 
+  it('renders the Log-off nav button without the destructive (danger) accent', () => {
+    const html = renderSidebar()
+    const match = html.match(/<button[^>]*data-section="this-account-logoff"[^>]*>/)
+    expect(match).not.toBeNull()
+    expect(match![0]).not.toMatch(/class="[^"]*\bdanger\b/)
+  })
+
+  it('does not render an Endpoint nav button under the This-account group', () => {
+    const html = renderSidebar()
+    expect(html).not.toMatch(/data-section="this-account-endpoint"/)
+    expect(html).not.toMatch(/<button[^>]*data-section="[^"]*"[^>]*>Endpoint</)
+  })
+
   it('does not render an Updates nav button under Application', () => {
     const html = renderSidebar()
     expect(html).not.toMatch(/data-section="app-updates"/)
@@ -401,6 +414,66 @@ describe('Settings sidebar', () => {
     handler({ target: { value: 'beta' } })
     expect(onSelectAccount).toHaveBeenCalledTimes(1)
     expect(onSelectAccount).toHaveBeenCalledWith('beta')
+  })
+})
+
+describe('Settings Profile tab', () => {
+  function renderProfile(): string {
+    return renderToStaticMarkup(createElement(Settings, {
+      slug: 'alpha',
+      accounts: [{ slug: 'alpha', mcpEnabled: true }, { slug: 'beta', mcpEnabled: false }],
+      defaultSlug: 'alpha',
+      statusByAccount: { alpha: { state: 'connected', qrCode: null, error: null } },
+      onAccountsChanged: () => {},
+      initialTab: 'this-account-profile' as const,
+    }))
+  }
+
+  it('renders a plain "Profile" heading without the "— {slug}" suffix', () => {
+    const html = renderProfile()
+    expect(html).toMatch(/<h3>Profile<\/h3>/)
+    expect(html).not.toContain('— alpha')
+    expect(html).not.toContain('settings-section-slug')
+  })
+
+  it('renders "Your Name" without the "({slug})" repetition', () => {
+    const html = renderProfile()
+    expect(html).toMatch(/<label[^>]*for="display-name"[^>]*>Your Name<\/label>/)
+    expect(html).not.toMatch(/Your Name[^<]*\(alpha\)/)
+  })
+
+  it('renders the per-account MCP endpoint URL with a Copy button inside Profile', () => {
+    const html = renderProfile()
+    // MCP Endpoint label and URL live in Profile now.
+    expect(html).toMatch(/<label[^>]*for="profile-mcp-url"[^>]*>MCP Endpoint<\/label>/)
+    expect(html).toContain('/mcp/alpha')
+    expect(html).toMatch(/<button[^>]*>Copy<\/button>/)
+  })
+})
+
+describe('Settings MCP Server tab', () => {
+  function renderMcp(): string {
+    return renderToStaticMarkup(createElement(Settings, {
+      slug: 'alpha',
+      accounts: [{ slug: 'alpha', mcpEnabled: true }],
+      defaultSlug: 'alpha',
+      statusByAccount: { alpha: { state: 'connected', qrCode: null, error: null } },
+      onAccountsChanged: () => {},
+      initialTab: 'app-mcp' as const,
+    }))
+  }
+
+  it('shows a single status word with no port number in the status row', () => {
+    const html = renderMcp()
+    // Status row has just a word (Stopped, since no IPC mock returns a running status here).
+    expect(html).not.toMatch(/Running on port \d+/)
+    expect(html).not.toMatch(/Port \d+ in use/)
+  })
+
+  it('uses the short "Restart required to apply changes." hint under the Server Port input', () => {
+    const html = renderMcp()
+    expect(html).toContain('Restart required to apply changes.')
+    expect(html).not.toContain('All accounts share this port and are routed by slug')
   })
 })
 
