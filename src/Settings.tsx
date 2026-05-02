@@ -539,17 +539,42 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
                     return (
                       <div key={a.slug} className="mcp-url-row" data-slug={a.slug} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.6rem', borderRadius: '0.375rem', border: '1px solid hsl(var(--border))', marginBottom: '0.4rem' }}>
                         <strong style={{ fontSize: '0.85rem', minWidth: '6rem' }}>{a.slug}</strong>
-                        <code style={{ fontSize: '0.78rem', color: 'hsl(var(--muted-foreground))', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{aUrl}</code>
-                        <button className="action-btn" onClick={() => copyUrl(a.slug, aUrl)} style={{ padding: '4px 8px', fontSize: '0.7rem' }}>{copiedSlug === a.slug ? 'Copied' : 'Copy'}</button>
+                        <code style={{ fontSize: '0.85rem', color: 'hsl(var(--foreground))', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{aUrl}</code>
+                        <button
+                          type="button"
+                          className="settings-icon-btn"
+                          aria-label="Copy MCP endpoint URL"
+                          title={copiedSlug === a.slug ? 'Copied' : 'Copy MCP endpoint URL'}
+                          onClick={() => copyUrl(a.slug, aUrl)}
+                          data-copied={copiedSlug === a.slug ? 'true' : undefined}
+                        >
+                          {copiedSlug === a.slug ? (
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                          ) : (
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                          )}
+                        </button>
                       </div>
                     )
                   })}
                   {defaultSlug && (
                     <div className="mcp-url-row" data-slug="__alias__" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.6rem', borderRadius: '0.375rem', border: '1px dashed hsl(var(--border))', marginBottom: '0.4rem' }}>
                       <strong style={{ fontSize: '0.85rem', minWidth: '6rem' }}>/mcp</strong>
-                      <code style={{ fontSize: '0.78rem', color: 'hsl(var(--muted-foreground))', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{`http://localhost:${mcpStatus.port}/mcp`}</code>
-                      <span style={{ fontSize: '0.7rem', color: 'hsl(var(--muted-foreground))' }}>Default — {defaultSlug}</span>
-                      <button className="action-btn" onClick={() => copyUrl('__alias__', `http://localhost:${mcpStatus.port}/mcp`)} style={{ padding: '4px 8px', fontSize: '0.7rem' }}>{copiedSlug === '__alias__' ? 'Copied' : 'Copy'}</button>
+                      <code style={{ fontSize: '0.85rem', color: 'hsl(var(--foreground))', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{`http://localhost:${mcpStatus.port}/mcp`}</code>
+                      <button
+                        type="button"
+                        className="settings-icon-btn"
+                        aria-label="Copy MCP endpoint URL"
+                        title={copiedSlug === '__alias__' ? 'Copied' : 'Copy MCP endpoint URL'}
+                        onClick={() => copyUrl('__alias__', `http://localhost:${mcpStatus.port}/mcp`)}
+                        data-copied={copiedSlug === '__alias__' ? 'true' : undefined}
+                      >
+                        {copiedSlug === '__alias__' ? (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                        ) : (
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                        )}
+                      </button>
                     </div>
                   )}
                 </>
