@@ -243,7 +243,7 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
   // MCP handlers
   const handleMcpPortSave = async () => {
     const portNum = parseInt(mcpPort, 10)
-    if (isNaN(portNum) || portNum < 1 || portNum > 65535) { setError('Invalid port number (must be 1-65535)'); return }
+    if (Number.isNaN(portNum) || portNum < 1 || portNum > 65535) return
     try { await window.electron.setMcpPort(portNum); setMcpPortSaved(true); setTimeout(() => setMcpPortSaved(false), 2000) }
     catch (err) { console.error('Failed to save MCP port:', err) }
   }
@@ -513,7 +513,7 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
             <div className="setting-item">
               <label htmlFor="mcp-port">Server Port</label>
               <div style={{ position: 'relative' }}>
-                <input id="mcp-port" type="text" inputMode="numeric" pattern="[0-9]*" value={mcpPort} onChange={(e) => setMcpPort(e.target.value)} onBlur={handleMcpPortSave} onKeyDown={handleMcpPortKeyDown} placeholder="13491" />
+                <input id="mcp-port" type="number" inputMode="numeric" min={1} max={65535} step={1} value={mcpPort} onChange={(e) => setMcpPort(e.target.value)} onBlur={handleMcpPortSave} onKeyDown={handleMcpPortKeyDown} placeholder="13491" />
                 {mcpPortSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
               </div>
               <p className="setting-description">Restart required to apply changes.</p>
