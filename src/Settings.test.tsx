@@ -442,12 +442,16 @@ describe('Settings Profile tab', () => {
     expect(html).not.toMatch(/Your Name[^<]*\(alpha\)/)
   })
 
-  it('renders the per-account MCP endpoint URL with a Copy button inside Profile', () => {
+  it('renders the per-account MCP endpoint URL with a Copy icon button inside Profile', () => {
     const html = renderProfile()
     // MCP Endpoint label and URL live in Profile now.
     expect(html).toMatch(/<label[^>]*for="profile-mcp-url"[^>]*>MCP Endpoint<\/label>/)
     expect(html).toContain('/mcp/alpha')
-    expect(html).toMatch(/<button[^>]*>Copy<\/button>/)
+    // Copy is now a small icon-only button identified by aria-label, not text.
+    expect(html).toMatch(/<button[^>]*aria-label="Copy MCP endpoint URL"/)
+    expect(html).toContain('class="settings-icon-btn"')
+    // The URL <code> truncates with ellipsis when overflowing.
+    expect(html).toMatch(/<code[^>]*id="profile-mcp-url"[^>]*style="[^"]*white-space:nowrap/)
   })
 })
 

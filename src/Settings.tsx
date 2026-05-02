@@ -120,7 +120,7 @@ interface SettingsProps {
   initialTab?: SettingsTab | LegacySettingsTab | null
 }
 
-export default function Settings({ slug, accounts, defaultSlug, statusByAccount, onAccountsChanged, onBack, onLogoff, onAddAccount, onSelectAccount, initialTab }: SettingsProps) {
+export default function Settings({ slug, accounts, defaultSlug, statusByAccount, onAccountsChanged, onBack, onAddAccount, onSelectAccount, initialTab }: SettingsProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(resolveInitialTab(initialTab))
   const [groups, setGroups] = useState<Group[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -252,12 +252,6 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
   const handleRelinkWhatsApp = async () => {
     if (window.confirm(`Re-link account "${slug}"? This clears its WhatsApp session and shows a new QR code. Messages are preserved.`)) {
       try { await window.electron.relinkWhatsApp(slug); setError(null) } catch (err) { setError(err instanceof Error ? err.message : 'Failed to relink WhatsApp') }
-    }
-  }
-
-  const handleLogout = async () => {
-    if (window.confirm(`Log out of "${slug}"? Your messages and settings are kept — the MCP endpoint will be disabled until you re-link.`)) {
-      try { await window.electron.whatsappLogout(slug); setError(null); if (onLogoff) { onLogoff() } } catch (err) { setError(err instanceof Error ? err.message : 'Failed to log off') }
     }
   }
 
@@ -415,9 +409,23 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
               <div className="setting-item">
                 <label htmlFor="profile-mcp-url">MCP Endpoint</label>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <code id="profile-mcp-url" style={{ fontSize: '0.85rem', color: disabled ? 'hsl(var(--muted-foreground))' : 'hsl(var(--foreground))', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', padding: '0.4rem 0.6rem', borderRadius: '0.375rem', border: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--background))' }}>{url}</code>
-                  <button className="action-btn" disabled={disabled} onClick={() => copyUrl(slug, url)} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>{copiedSlug === slug ? 'Copied' : 'Copy'}</button>
-                  {disabled && (<button className="action-btn" onClick={handleRelinkWhatsApp} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Re-link</button>)}
+                  <code id="profile-mcp-url" style={{ fontSize: '0.85rem', color: disabled ? 'hsl(var(--muted-foreground))' : 'hsl(var(--foreground))', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0.4rem 0.6rem', borderRadius: '0.375rem', border: '1px solid hsl(var(--border))', backgroundColor: 'hsl(var(--background))' }}>{url}</code>
+                  {disabled && (<button className="action-btn" onClick={handleRelinkWhatsApp} style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto', flex: '0 0 auto' }}>Re-link</button>)}
+                  <button
+                    type="button"
+                    className="settings-icon-btn"
+                    aria-label="Copy MCP endpoint URL"
+                    title={copiedSlug === slug ? 'Copied' : 'Copy MCP endpoint URL'}
+                    disabled={disabled}
+                    onClick={() => copyUrl(slug, url)}
+                    data-copied={copiedSlug === slug ? 'true' : undefined}
+                  >
+                    {copiedSlug === slug ? (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                    ) : (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                    )}
+                  </button>
                 </div>
                 {aliasUrl && (<p className="setting-description" style={{ marginTop: '0.4rem' }}>Default alias: <code>{aliasUrl}</code></p>)}
               </div>
@@ -458,8 +466,7 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
           <div>
             <div className="settings-section-header"><h3>Log-off</h3></div>
             <div className="action-group" style={{ marginTop: '1rem' }}><h5>Re-link WhatsApp</h5><p>Clear this account's WhatsApp session and scan a new QR code. Messages are preserved.</p><button className="action-btn" onClick={handleRelinkWhatsApp}>Re-link WhatsApp</button></div>
-            <div className="action-group" style={{ marginTop: '1.5rem' }}><h5>Log out</h5><p>Sign this account out of WhatsApp. Messages and settings are kept; the MCP endpoint is disabled until you re-link.</p><button className="action-btn" onClick={handleLogout}>Log out</button></div>
-            <div className="action-group" style={{ marginTop: '1.5rem' }}><h5>Remove account</h5><p>Permanently remove this account. This logs out of WhatsApp on this device and clears all local data for this account. {accounts.length <= 1 && (<em>You can&apos;t remove the last account.</em>)}</p><button className="action-btn" onClick={() => handleRemoveAccount(slug)} disabled={accounts.length <= 1}>Remove account</button></div>
+            <div className="action-group" style={{ marginTop: '1.5rem' }}><h5>Remove account</h5><p>Permanently remove this account. This logs out of WhatsApp on this device and clears all local data for this account. {accounts.length <= 1 && (<em>You can&apos;t remove the last account.</em>)}</p><button className="action-btn danger" onClick={() => handleRemoveAccount(slug)} disabled={accounts.length <= 1}>Remove account</button></div>
           </div>
         )}
 
@@ -609,7 +616,7 @@ export function AccountsTabBody({
       <div className="settings-section-header"><h3>Accounts</h3></div>
       {onAddAccount && (
         <div className="settings-add-account-row">
-          <button className="action-btn" data-testid="settings-add-account-btn" onClick={onAddAccount}>+ Add account</button>
+          <button className="settings-link-btn" data-testid="settings-add-account-btn" onClick={onAddAccount}>+ Add account</button>
         </div>
       )}
       <p className="tab-description">Each account has its own WhatsApp session, database, and MCP endpoint.</p>
@@ -634,7 +641,7 @@ export function AccountsTabBody({
                   </>
                 ) : (
                   <>
-                    <strong style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <strong style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
                       <span>{a.slug}</span>
                       {isDefault && (
                         <span
@@ -655,9 +662,11 @@ export function AccountsTabBody({
                         {getAccountStateLabel(st)}
                       </span>
                     </strong>
-                    <button className="action-btn" data-testid={`make-default-${a.slug}`} onClick={() => onSetDefault(a.slug)} disabled={isDefault} style={{ padding: '4px 8px', fontSize: '0.75rem' }} title="Make this the default account; MCP clients pointed at /mcp will route here.">Make default</button>
-                    <button className="action-btn" onClick={() => onStartRename(a.slug)} style={{ padding: '4px 8px', fontSize: '0.75rem' }}>Rename</button>
-                    <button className="action-btn danger" onClick={() => onRemoveAccount(a.slug)} disabled={accounts.length <= 1} style={{ padding: '4px 8px', fontSize: '0.75rem', color: 'white' }}>Remove</button>
+                    <div className="account-row-actions" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: 'auto' }}>
+                      <button className="action-btn" data-testid={`make-default-${a.slug}`} onClick={() => onSetDefault(a.slug)} disabled={isDefault} style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto' }} title="Make this the default account; MCP clients pointed at /mcp will route here.">Make default</button>
+                      <button className="action-btn" onClick={() => onStartRename(a.slug)} style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto' }}>Rename</button>
+                      <button className="action-btn danger" onClick={() => onRemoveAccount(a.slug)} disabled={accounts.length <= 1} style={{ padding: '4px 8px', fontSize: '0.75rem', width: 'auto', color: 'white' }}>Remove</button>
+                    </div>
                   </>
                 )}
               </div>
