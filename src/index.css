@@ -222,11 +222,11 @@ button.danger:hover:not(:disabled) { background-color: hsl(var(--destructive) / 
   transition: background-color 120ms ease, color 120ms ease;
 }
 .settings-sidebar-nav-btn:hover {
-  background-color: hsl(var(--muted) / 0.6); color: hsl(var(--foreground));
+  background-color: hsl(var(--primary) / 0.7); color: white;
   transform: none; box-shadow: none;
 }
 .settings-sidebar-nav-btn.active {
-  background-color: hsl(var(--muted)); color: hsl(var(--foreground));
+  background-color: hsl(var(--primary)); color: white;
 }
 .settings-sidebar-nav-btn.danger { color: hsl(var(--destructive)); }
 .settings-sidebar-nav-btn.danger:hover,
