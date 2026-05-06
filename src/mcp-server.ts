@@ -434,12 +434,13 @@ export function createMcpServer(slug: string): McpServer {
       inputSchema: {
         jid: z.string().describe('WhatsApp JID of the chat (get this from search_chats)'),
         limit: z.number().optional().default(100).describe('Maximum number of messages to return'),
-        since: z.string().optional().describe('ISO timestamp cutoff - only return messages after this time')
+        since: z.string().optional().describe('ISO timestamp cutoff - only return messages after this time'),
+        includeMessageIds: z.boolean().optional().default(false).describe('Include WhatsApp message IDs (messageId, replyTo.messageId, deletedMessage.messageId, editedMessage.messageId) in structured output. Off by default since these IDs are not actionable without dedicated tools.')
       },
       outputSchema: chatHistoryOutputShape,
       annotations: { readOnlyHint: true }
     },
-    async ({ jid, limit, since }: { jid: string; limit: number; since?: string }) => {
+    async ({ jid, limit, since, includeMessageIds }: { jid: string; limit: number; since?: string; includeMessageIds: boolean }) => {
       const chat = chatOps.getByWhatsappJid(slug, jid) as any
       const missingChatStructured = { chat: { jid, name: jid, type: 'unknown' }, messages: [] as StructuredMessage[] }
       if (!chat) {
@@ -476,7 +477,7 @@ export function createMcpServer(slug: string): McpServer {
 
       const output = serializeCompact(transformed, undefined, meIdentity)
       const chatRef: ChatRef = { jid: chat.whatsapp_jid, name: chat.name || chat.whatsapp_jid, type: chat.chat_type }
-      const structuredMessages: StructuredMessage[] = transformed.map(toStructuredMessage)
+      const structuredMessages: StructuredMessage[] = transformed.map(m => toStructuredMessage(m, { includeMessageIds }))
       return {
         content: [{ type: 'text', text: output || '(no messages)' }],
         structuredContent: { chat: chatRef, messages: structuredMessages }
@@ -490,12 +491,13 @@ export function createMcpServer(slug: string): McpServer {
       description: 'Get recent WhatsApp messages across all chats since a given time. Useful for catching up on what happened in a time window. Results grouped by chat.',
       inputSchema: {
         since: z.string().describe('ISO timestamp cutoff (e.g. "2024-01-15T00:00:00Z") - returns messages after this time'),
-        limit: z.number().optional().default(200).describe('Maximum total messages to return')
+        limit: z.number().optional().default(200).describe('Maximum total messages to return'),
+        includeMessageIds: z.boolean().optional().default(false).describe('Include WhatsApp message IDs (messageId, replyTo.messageId, deletedMessage.messageId, editedMessage.messageId) in structured output. Off by default since these IDs are not actionable without dedicated tools.')
       },
       outputSchema: messagesByChatOutputShape,
       annotations: { readOnlyHint: true }
     },
-    async ({ since, limit }: { since: string; limit: number }) => {
+    async ({ since, limit, includeMessageIds }: { since: string; limit: number; includeMessageIds: boolean }) => {
       const sinceTs = new Date(since).getTime()
       const db = getDatabase(slug)
       const messages = db.prepare(`
@@ -533,7 +535,7 @@ export function createMcpServer(slug: string): McpServer {
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
         output += serializeCompact(transformed, undefined, meIdentity) + '\n'
-        structuredChats.push({ chat: group.meta, messages: transformed.map(toStructuredMessage) })
+        structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds })) })
       }
 
       return {
@@ -548,12 +550,13 @@ export function createMcpServer(slug: string): McpServer {
     {
       description: 'Get unread WhatsApp messages across all chats since the last check. Tracks read state so subsequent calls only return new messages. Results grouped by chat.',
       inputSchema: {
-        since: z.string().optional().describe('Optional ISO timestamp cutoff. If omitted, uses the last time this tool was called (or 24h ago if first call)')
+        since: z.string().optional().describe('Optional ISO timestamp cutoff. If omitted, uses the last time this tool was called (or 24h ago if first call)'),
+        includeMessageIds: z.boolean().optional().default(false).describe('Include WhatsApp message IDs (messageId, replyTo.messageId, deletedMessage.messageId, editedMessage.messageId) in structured output. Off by default since these IDs are not actionable without dedicated tools.')
       },
       outputSchema: messagesByChatOutputShape,
       annotations: { readOnlyHint: true }
     },
-    async ({ since }: { since?: string }) => {
+    async ({ since, includeMessageIds }: { since?: string; includeMessageIds: boolean }) => {
       const lastCheck = settingOps.get(slug, 'last_unread_check')
       const defaultSince = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
       const sinceStr = since || lastCheck || defaultSince
@@ -597,7 +600,7 @@ export function createMcpServer(slug: string): McpServer {
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
         body += serializeCompact(transformed, undefined, meIdentity) + '\n'
-        structuredChats.push({ chat: group.meta, messages: transformed.map(toStructuredMessage) })
+        structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds })) })
       }
 
       const text = byChat.size === 0 ? '(no unread messages)' : `Messages since ${sinceStr}:\n${body}`

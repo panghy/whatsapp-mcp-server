@@ -1065,7 +1065,7 @@ describe('MCP Server', () => {
   describe('Structured chat-history responses', () => {
     beforeEach(() => { makeAccount(DEFAULT) })
 
-    it('get_chat_history returns chat ref + chronologically-ordered structured messages with replyTo', async () => {
+    it('get_chat_history returns chat ref + chronologically-ordered structured messages with replyTo (default omits messageIds)', async () => {
       contactOps.insert(DEFAULT, 'original-sender@s.whatsapp.net', 'Original Sender', '+4444444444')
       chatOps.insert(DEFAULT, 'reply-chat@s.whatsapp.net', 'dm', undefined, 'Reply Chat')
       const chat = chatOps.getByWhatsappJid(DEFAULT, 'reply-chat@s.whatsapp.net') as any
@@ -1088,15 +1088,40 @@ describe('MCP Server', () => {
       expect(sc.chat.name).toBe('Reply Chat')
       expect(sc.chat.type).toBe('dm')
       expect(sc.messages).toHaveLength(2)
-      expect(sc.messages[0].messageId).toBe('orig-1')
-      expect(sc.messages[1].messageId).toBe('reply-1')
+      expect('messageId' in sc.messages[0]).toBe(false)
+      expect('messageId' in sc.messages[1]).toBe(false)
       expect(sc.messages[1].replyTo).toBeDefined()
-      expect(sc.messages[1].replyTo.messageId).toBe('orig-1')
+      expect('messageId' in sc.messages[1].replyTo).toBe(false)
       expect(sc.messages[1].replyTo.sender.name).toBe('Original Sender')
       expect(sc.messages[1].text).not.toMatch(/\[re /)
     })
 
-    it('get_recent_messages groups messages by chat and round-trips since', async () => {
+    it('get_chat_history with includeMessageIds=true surfaces messageId and replyTo.messageId', async () => {
+      contactOps.insert(DEFAULT, 'original-sender@s.whatsapp.net', 'Original Sender', '+4444444444')
+      chatOps.insert(DEFAULT, 'reply-chat@s.whatsapp.net', 'dm', undefined, 'Reply Chat')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'reply-chat@s.whatsapp.net') as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chat.id, 'orig-1', now - 3000, 'original-sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'orig-1', timestamp: new Date(now - 3000).toISOString(),
+        text: 'This is the original', sender: { name: 'Unknown', phone: null }
+      }), false)
+      messageOps.insert(DEFAULT, chat.id, 'reply-1', now - 1000, 'replier@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'reply-1', timestamp: new Date(now - 1000).toISOString(),
+        text: 'reply text',
+        sender: { name: 'Replier', phone: '+5555555555' },
+        replyToMessageId: 'orig-1'
+      }), false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'reply-chat@s.whatsapp.net', includeMessageIds: true })
+      const sc = result.result.structuredContent
+      expect(sc.messages).toHaveLength(2)
+      expect(sc.messages[0].messageId).toBe('orig-1')
+      expect(sc.messages[1].messageId).toBe('reply-1')
+      expect(sc.messages[1].replyTo.messageId).toBe('orig-1')
+    })
+
+    it('get_recent_messages groups messages by chat and round-trips since (default omits messageIds)', async () => {
       chatOps.insert(DEFAULT, 'chat-a@s.whatsapp.net', 'dm', undefined, 'Chat A')
       chatOps.insert(DEFAULT, 'chat-b@s.whatsapp.net', 'dm', undefined, 'Chat B')
       const chatA = chatOps.getByWhatsappJid(DEFAULT, 'chat-a@s.whatsapp.net') as any
@@ -1117,6 +1142,32 @@ describe('MCP Server', () => {
       const sc = result.result.structuredContent
       expect(sc.since).toBe(sinceIso)
       expect(sc.chats).toHaveLength(2)
+      const byJid = Object.fromEntries(sc.chats.map((c: any) => [c.chat.jid, c]))
+      expect(byJid['chat-a@s.whatsapp.net'].messages).toHaveLength(1)
+      expect(byJid['chat-b@s.whatsapp.net'].messages).toHaveLength(1)
+      expect('messageId' in byJid['chat-a@s.whatsapp.net'].messages[0]).toBe(false)
+      expect('messageId' in byJid['chat-b@s.whatsapp.net'].messages[0]).toBe(false)
+    })
+
+    it('get_recent_messages with includeMessageIds=true surfaces messageId per message', async () => {
+      chatOps.insert(DEFAULT, 'chat-a@s.whatsapp.net', 'dm', undefined, 'Chat A')
+      chatOps.insert(DEFAULT, 'chat-b@s.whatsapp.net', 'dm', undefined, 'Chat B')
+      const chatA = chatOps.getByWhatsappJid(DEFAULT, 'chat-a@s.whatsapp.net') as any
+      const chatB = chatOps.getByWhatsappJid(DEFAULT, 'chat-b@s.whatsapp.net') as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chatA.id, 'msg-a', now - 1000, 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'msg-a', timestamp: new Date(now - 1000).toISOString(),
+        text: 'hello A', sender: { name: 'Sender', phone: '+123' }
+      }), false)
+      messageOps.insert(DEFAULT, chatB.id, 'msg-b', now - 500, 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'msg-b', timestamp: new Date(now - 500).toISOString(),
+        text: 'hello B', sender: { name: 'Sender', phone: '+123' }
+      }), false)
+      await startMcpServer(testPort)
+
+      const sinceIso = new Date(now - 5000).toISOString()
+      const result = await callMcpTool(testPort, '/mcp', 'get_recent_messages', { since: sinceIso, limit: 100, includeMessageIds: true })
+      const sc = result.result.structuredContent
       const byJid = Object.fromEntries(sc.chats.map((c: any) => [c.chat.jid, c]))
       expect(byJid['chat-a@s.whatsapp.net'].messages.map((m: any) => m.messageId)).toEqual(['msg-a'])
       expect(byJid['chat-b@s.whatsapp.net'].messages.map((m: any) => m.messageId)).toEqual(['msg-b'])

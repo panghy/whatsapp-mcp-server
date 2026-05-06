@@ -9,18 +9,18 @@ import { TransformedMessage } from './message-transformer'
  * `deletedMessage`/`editedMessage`.
  */
 export interface StructuredMessage {
-  messageId: string
+  messageId?: string
   type: 'message' | 'system' | 'unsupported_attachment' | 'message_deleted' | 'message_edited'
   timestamp: string
   sender: { name: string; phone: string | null; isMe: boolean } | null
   text: string | null
   forwarded?: boolean
-  replyTo?: { messageId: string; sender: { name: string; phone: string | null }; preview: string }
+  replyTo?: { messageId?: string; sender: { name: string; phone: string | null }; preview: string }
   attachment?: { filename?: string; mimeType?: string; fileSize?: number; reason?: string }
   deletedBy?: { name: string; phone: string | null }
-  deletedMessage?: { messageId: string; text: string | null; timestamp?: string }
+  deletedMessage?: { messageId?: string; text: string | null; timestamp?: string }
   editedBy?: { name: string; phone: string | null }
-  editedMessage?: { messageId: string; originalText: string | null; newText: string; timestamp?: string }
+  editedMessage?: { messageId?: string; originalText: string | null; newText: string; timestamp?: string }
   systemType?: string
   systemDetails?: Record<string, unknown>
 }
@@ -60,27 +60,27 @@ const attachmentSchema = z.object({
 })
 
 export const structuredMessageSchema = z.object({
-  messageId: z.string(),
+  messageId: z.string().optional(),
   type: z.enum(['message', 'system', 'unsupported_attachment', 'message_deleted', 'message_edited']),
   timestamp: z.string(),
   sender: senderSchema.nullable(),
   text: z.string().nullable(),
   forwarded: z.boolean().optional(),
   replyTo: z.object({
-    messageId: z.string(),
+    messageId: z.string().optional(),
     sender: replySenderSchema,
     preview: z.string()
   }).optional(),
   attachment: attachmentSchema.optional(),
   deletedBy: replySenderSchema.optional(),
   deletedMessage: z.object({
-    messageId: z.string(),
+    messageId: z.string().optional(),
     text: z.string().nullable(),
     timestamp: z.string().optional()
   }).optional(),
   editedBy: replySenderSchema.optional(),
   editedMessage: z.object({
-    messageId: z.string(),
+    messageId: z.string().optional(),
     originalText: z.string().nullable(),
     newText: z.string(),
     timestamp: z.string().optional()
@@ -193,8 +193,18 @@ export const sendMessageOutputShape = {
  * (`mentionedJids`, `replyToMessageId`) and folds `details` →
  * `systemDetails` and the flat attachment fields →
  * `attachment` so callers see a single, typed shape.
+ *
+ * `opts.includeMessageIds` (default `false`) controls whether the four
+ * WhatsApp message-ID fields (top-level `messageId`, `replyTo.messageId`,
+ * `deletedMessage.messageId`, `editedMessage.messageId`) are surfaced. They
+ * are omitted by default since they are not actionable without dedicated
+ * delete/edit/reply-by-ID tools.
  */
-export function toStructuredMessage(msg: TransformedMessage): StructuredMessage {
+export function toStructuredMessage(
+  msg: TransformedMessage,
+  opts?: { includeMessageIds?: boolean }
+): StructuredMessage {
+  const includeIds = opts?.includeMessageIds === true
   const isMe = !!msg.isFromMe
   const senderlessTypes: Array<TransformedMessage['type']> = ['system', 'message_deleted', 'message_edited']
   const sender = senderlessTypes.includes(msg.type)
@@ -202,18 +212,18 @@ export function toStructuredMessage(msg: TransformedMessage): StructuredMessage 
     : (msg.sender ? { name: msg.sender.name, phone: msg.sender.phone, isMe } : null)
 
   const result: StructuredMessage = {
-    messageId: msg.messageId,
     type: msg.type,
     timestamp: msg.timestamp,
     sender,
     text: msg.text ?? null
   }
+  if (includeIds) result.messageId = msg.messageId
 
   if (msg.forwarded) result.forwarded = true
 
   if (msg.replyTo) {
     result.replyTo = {
-      messageId: msg.replyTo.messageId,
+      ...(includeIds ? { messageId: msg.replyTo.messageId } : {}),
       sender: { name: msg.replyTo.senderName, phone: msg.replyTo.senderPhone },
       preview: msg.replyTo.preview
     }
@@ -233,7 +243,7 @@ export function toStructuredMessage(msg: TransformedMessage): StructuredMessage 
   if (msg.deletedBy) result.deletedBy = msg.deletedBy
   if (msg.deletedMessage) {
     result.deletedMessage = {
-      messageId: msg.deletedMessage.messageId,
+      ...(includeIds ? { messageId: msg.deletedMessage.messageId } : {}),
       text: msg.deletedMessage.text,
       ...(msg.deletedMessage.timestamp !== undefined ? { timestamp: msg.deletedMessage.timestamp } : {})
     }
@@ -241,7 +251,7 @@ export function toStructuredMessage(msg: TransformedMessage): StructuredMessage 
   if (msg.editedBy) result.editedBy = msg.editedBy
   if (msg.editedMessage) {
     result.editedMessage = {
-      messageId: msg.editedMessage.messageId,
+      ...(includeIds ? { messageId: msg.editedMessage.messageId } : {}),
       originalText: msg.editedMessage.originalText,
       newText: msg.editedMessage.newText,
       ...(msg.editedMessage.timestamp !== undefined ? { timestamp: msg.editedMessage.timestamp } : {})

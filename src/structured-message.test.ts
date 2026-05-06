@@ -21,6 +21,7 @@ describe('toStructuredMessage', () => {
     expect(out.text).toBe('Hi @Bob:+222 and @Charlie:+333')
     expect((out as any).mentionedJids).toBeUndefined()
     expect(out.replyTo).toBeUndefined()
+    expect('messageId' in out).toBe(false)
   })
 
   it('projects a reply to structured replyTo and drops replyToMessageId', () => {
@@ -42,11 +43,85 @@ describe('toStructuredMessage', () => {
     const out = toStructuredMessage(input)
     expect(structuredMessageSchema.parse(out)).toEqual(out)
     expect(out.replyTo).toEqual({
-      messageId: 'orig-1',
       sender: { name: 'Original Sender', phone: '+111' },
       preview: 'a longer original text body that should be summa'
     })
+    expect('messageId' in out).toBe(false)
+    expect('messageId' in (out.replyTo as object)).toBe(false)
     expect((out as any).replyToMessageId).toBeUndefined()
+  })
+
+  it('omits all four messageId variants by default for replies/deletes/edits', () => {
+    const reply: TransformedMessage = {
+      type: 'message',
+      messageId: 'r1',
+      timestamp: baseTimestamp,
+      sender: { name: 'Replier', phone: '+222' },
+      text: 'reply',
+      replyTo: {
+        messageId: 'orig-1',
+        senderName: 'Original Sender',
+        senderPhone: '+111',
+        fullText: 'orig',
+        preview: 'orig'
+      }
+    }
+    const replyOut = toStructuredMessage(reply)
+    expect('messageId' in replyOut).toBe(false)
+    expect('messageId' in (replyOut.replyTo as object)).toBe(false)
+    expect(replyOut.replyTo!.sender).toEqual({ name: 'Original Sender', phone: '+111' })
+    expect(replyOut.replyTo!.preview).toBe('orig')
+  })
+
+  it('includes all four messageId variants when includeMessageIds=true', () => {
+    const reply: TransformedMessage = {
+      type: 'message',
+      messageId: 'r1',
+      timestamp: baseTimestamp,
+      sender: { name: 'Replier', phone: '+222' },
+      text: 'reply',
+      replyTo: {
+        messageId: 'orig-1',
+        senderName: 'Original Sender',
+        senderPhone: '+111',
+        fullText: 'orig',
+        preview: 'orig'
+      }
+    }
+    const replyOut = toStructuredMessage(reply, { includeMessageIds: true })
+    expect(replyOut.messageId).toBe('r1')
+    expect(replyOut.replyTo!.messageId).toBe('orig-1')
+
+    const del: TransformedMessage = {
+      type: 'message_deleted',
+      messageId: 'del-1',
+      timestamp: baseTimestamp,
+      deletedBy: { name: 'Deleter', phone: '+222' },
+      deletedMessage: {
+        messageId: 'orig-d',
+        text: 'oops',
+        sender: { name: 'Original', phone: '+111' }
+      }
+    }
+    const delOut = toStructuredMessage(del, { includeMessageIds: true })
+    expect(delOut.messageId).toBe('del-1')
+    expect(delOut.deletedMessage!.messageId).toBe('orig-d')
+
+    const edit: TransformedMessage = {
+      type: 'message_edited',
+      messageId: 'edit-1',
+      timestamp: baseTimestamp,
+      editedBy: { name: 'Editor', phone: '+222' },
+      editedMessage: {
+        messageId: 'orig-e',
+        originalText: 'old',
+        newText: 'new',
+        sender: { name: 'Original', phone: '+111' }
+      }
+    }
+    const editOut = toStructuredMessage(edit, { includeMessageIds: true })
+    expect(editOut.messageId).toBe('edit-1')
+    expect(editOut.editedMessage!.messageId).toBe('orig-e')
   })
 
   it('preserves the forwarded flag', () => {
@@ -115,8 +190,9 @@ describe('toStructuredMessage', () => {
     expect(out.sender).toBeNull()
     expect(out.deletedBy).toEqual({ name: 'Deleter', phone: '+222' })
     expect(out.deletedMessage).toEqual({
-      messageId: 'orig-1', text: 'oops', timestamp: '2023-12-31T23:59:59.000Z'
+      text: 'oops', timestamp: '2023-12-31T23:59:59.000Z'
     })
+    expect('messageId' in (out.deletedMessage as object)).toBe(false)
   })
 
   it('projects an edit event with null top-level sender and editedBy/editedMessage', () => {
@@ -136,7 +212,8 @@ describe('toStructuredMessage', () => {
     expect(structuredMessageSchema.parse(out)).toEqual(out)
     expect(out.sender).toBeNull()
     expect(out.editedBy).toEqual({ name: 'Editor', phone: '+222' })
-    expect(out.editedMessage).toEqual({ messageId: 'orig-2', originalText: 'old', newText: 'new' })
+    expect(out.editedMessage).toEqual({ originalText: 'old', newText: 'new' })
+    expect('messageId' in (out.editedMessage as object)).toBe(false)
   })
 
   it('marks sender.isMe true when isFromMe is true', () => {
