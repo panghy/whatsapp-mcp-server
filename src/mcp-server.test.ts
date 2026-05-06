@@ -829,9 +829,14 @@ describe('MCP Server', () => {
     })
 
     it('defaults to 24h ago when no last_unread_check', async () => {
+      const before = Date.now()
       await startMcpServer(testPort)
       const result = await callMcpTool(testPort, '/mcp', 'get_unread_messages', {})
-      expect(result.result.content[0].text).toContain('Messages since')
+      expect(result.result.content[0].text).toBe('(no unread messages)')
+      const sinceTs = new Date(result.result.structuredContent.since).getTime()
+      const dayAgo = before - 24 * 60 * 60 * 1000
+      expect(sinceTs).toBeGreaterThanOrEqual(dayAgo - 5000)
+      expect(sinceTs).toBeLessThanOrEqual(dayAgo + 5000)
     })
   })
 
@@ -1134,6 +1139,44 @@ describe('MCP Server', () => {
       expect(result.result.content[0].text).toBe('(no messages)')
       expect(result.result.structuredContent.messages).toEqual([])
       expect(result.result.structuredContent.chat.jid).toBe('empty-structured@s.whatsapp.net')
+    })
+
+    it('get_unread_messages returns (no unread messages) text and empty structured chats when nothing matches', async () => {
+      const lastCheck = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+      settingOps.set(DEFAULT, 'last_unread_check', lastCheck)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_unread_messages', {})
+      expect(result.result.content[0].text).toBe('(no unread messages)')
+      expect(result.result.structuredContent.chats).toEqual([])
+      expect(result.result.structuredContent.since).toBe(lastCheck)
+    })
+
+    it('get_chat_history early error for unknown JID still returns structuredContent with empty messages', async () => {
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'missing@s.whatsapp.net' })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toContain('Chat not found')
+      expect(result.result.structuredContent).toBeDefined()
+      expect(result.result.structuredContent.messages).toEqual([])
+      expect(result.result.structuredContent.chat.jid).toBe('missing@s.whatsapp.net')
+      expect(result.result.structuredContent.chat.name).toBe('missing@s.whatsapp.net')
+      expect(result.result.structuredContent.chat.type).toBe('unknown')
+    })
+
+    it('get_chat_history early error for disabled chat still returns structuredContent with empty messages', async () => {
+      chatOps.insert(DEFAULT, 'disabled-structured@s.whatsapp.net', 'dm', undefined, 'Disabled Structured')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'disabled-structured@s.whatsapp.net') as any
+      chatOps.updateEnabled(DEFAULT, chat.id, false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'disabled-structured@s.whatsapp.net' })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toContain('Chat is disabled')
+      expect(result.result.structuredContent).toBeDefined()
+      expect(result.result.structuredContent.messages).toEqual([])
+      expect(result.result.structuredContent.chat.jid).toBe('disabled-structured@s.whatsapp.net')
+      expect(result.result.structuredContent.chat.type).toBe('unknown')
     })
   })
 

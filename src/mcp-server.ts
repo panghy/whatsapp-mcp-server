@@ -427,11 +427,20 @@ export function createMcpServer(slug: string): McpServer {
     },
     async ({ jid, limit, since }: { jid: string; limit: number; since?: string }) => {
       const chat = chatOps.getByWhatsappJid(slug, jid) as any
+      const missingChatStructured = { chat: { jid, name: jid, type: 'unknown' }, messages: [] as StructuredMessage[] }
       if (!chat) {
-        return { content: [{ type: 'text', text: `Chat not found: ${jid}` }], isError: true }
+        return {
+          content: [{ type: 'text', text: `Chat not found: ${jid}` }],
+          isError: true,
+          structuredContent: missingChatStructured
+        }
       }
       if (!chat.enabled) {
-        return { content: [{ type: 'text', text: `Chat is disabled: ${jid}` }], isError: true }
+        return {
+          content: [{ type: 'text', text: `Chat is disabled: ${jid}` }],
+          isError: true,
+          structuredContent: missingChatStructured
+        }
       }
 
       let messages = messageOps.getByChatId(slug, chat.id, limit || 100) as any[]
@@ -562,10 +571,10 @@ export function createMcpServer(slug: string): McpServer {
         byChat.get(key)!.msgs.push(m)
       }
 
-      let output = `Messages since ${sinceStr}:\n`
+      let body = ''
       const structuredChats: Array<{ chat: ChatRef; messages: StructuredMessage[] }> = []
       for (const [chatName, group] of byChat) {
-        output += `\n=== ${chatName} ===\n`
+        body += `\n=== ${chatName} ===\n`
         const transformed = group.msgs.map((m: any) => {
           try {
             const parsed = JSON.parse(m.content_json) as TransformedMessage
@@ -573,12 +582,13 @@ export function createMcpServer(slug: string): McpServer {
           }
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
-        output += serializeCompact(transformed, undefined, meIdentity) + '\n'
+        body += serializeCompact(transformed, undefined, meIdentity) + '\n'
         structuredChats.push({ chat: group.meta, messages: transformed.map(toStructuredMessage) })
       }
 
+      const text = byChat.size === 0 ? '(no unread messages)' : `Messages since ${sinceStr}:\n${body}`
       return {
-        content: [{ type: 'text', text: output || '(no unread messages)' }],
+        content: [{ type: 'text', text }],
         structuredContent: { since: sinceStr, chats: structuredChats }
       }
     }
