@@ -5,6 +5,17 @@ import http from 'http'
 import { chatOps, messageOps, settingOps, contactOps, getDatabase } from './database'
 import { serializeCompact, MeIdentity } from './compact-serializer'
 import { TransformedMessage, extractPhoneFromJid } from './message-transformer'
+import {
+  toStructuredMessage,
+  chatHistoryOutputShape,
+  messagesByChatOutputShape,
+  searchChatsOutputShape,
+  sendMessageOutputShape,
+  ChatRef,
+  StructuredMessage,
+  SearchChatsResultEntry,
+  SendMessageResult
+} from './structured-message'
 import { getAccount, getDefaultSlug } from './accounts'
 import { getManager } from './whatsapp-manager'
 import { getMcpPort as getGlobalMcpPort, setMcpPort as setGlobalMcpPort } from './global-settings'
@@ -280,14 +291,17 @@ export function createMcpServer(slug: string): McpServer {
     description: 'Access WhatsApp messages and chats. Search conversations, read message history, get recent and unread messages, and send messages through WhatsApp.'
   })
 
-  server.tool(
+  server.registerTool(
     'search_chats',
-    'Search chats by name or associated contact name, with typo tolerance and phone-number matching. Multi-word queries match chats that contain any of the words; chats matching more words rank higher (bm25). Typos are tolerated via trigram fuzzy matching when available. Digit-only queries of 5+ digits also match contacts by normalized phone number (digits only, ignoring +, -, spaces, parentheses), surfacing the matching DM chat. Results are ranked by relevance with recent activity as a tiebreaker and capped by `limit`.',
     {
-      query: z.string().describe('Search query: name fragment, multiple words, or a phone number'),
-      limit: z.number().optional().default(20).describe('Maximum number of results to return (default 20, capped at 100)')
+      description: 'Search chats by name or associated contact name, with typo tolerance and phone-number matching. Multi-word queries match chats that contain any of the words; chats matching more words rank higher (bm25). Typos are tolerated via trigram fuzzy matching when available. Digit-only queries of 5+ digits also match contacts by normalized phone number (digits only, ignoring +, -, spaces, parentheses), surfacing the matching DM chat. Results are ranked by relevance with recent activity as a tiebreaker and capped by `limit`.',
+      inputSchema: {
+        query: z.string().describe('Search query: name fragment, multiple words, or a phone number'),
+        limit: z.number().optional().default(20).describe('Maximum number of results to return (default 20, capped at 100)')
+      },
+      outputSchema: searchChatsOutputShape,
+      annotations: { readOnlyHint: true }
     },
-    { readOnlyHint: true },
     async ({ query, limit }: { query: string; limit?: number }) => {
       const cap = Math.min(Math.max(Number.isFinite(limit) ? Number(limit) : 20, 1), 100)
       const db = getDatabase(slug)
@@ -334,7 +348,10 @@ export function createMcpServer(slug: string): McpServer {
       }
 
       if (hits.size === 0) {
-        return { content: [{ type: 'text', text: JSON.stringify([], null, 2) }] }
+        return {
+          content: [{ type: 'text', text: JSON.stringify([], null, 2) }],
+          structuredContent: { query, results: [] as SearchChatsResultEntry[] }
+        }
       }
 
       // Fetch enabled chat rows once, up front, so the digit-only-name filter
@@ -382,7 +399,7 @@ export function createMcpServer(slug: string): McpServer {
         }
       }
 
-      const results = Array.from(hits.values()).map((h) => {
+      const results: SearchChatsResultEntry[] = Array.from(hits.values()).map((h) => {
         const chat = chatsById.get(h.chatId)!
         return {
           jid: chat.whatsapp_jid,
@@ -402,26 +419,43 @@ export function createMcpServer(slug: string): McpServer {
         return aAct < bAct ? 1 : -1
       })
 
-      return { content: [{ type: 'text', text: JSON.stringify(results.slice(0, cap), null, 2) }] }
+      const capped = results.slice(0, cap)
+      return {
+        content: [{ type: 'text', text: JSON.stringify(capped, null, 2) }],
+        structuredContent: { query, results: capped }
+      }
     }
   )
 
-  server.tool(
+  server.registerTool(
     'get_chat_history',
-    'Get WhatsApp message history for a specific chat by JID. Returns messages in chronological order with optional time-based filtering.',
     {
-      jid: z.string().describe('WhatsApp JID of the chat (get this from search_chats)'),
-      limit: z.number().optional().default(100).describe('Maximum number of messages to return'),
-      since: z.string().optional().describe('ISO timestamp cutoff - only return messages after this time')
+      description: 'Get WhatsApp message history for a specific chat by JID. Returns messages in chronological order with optional time-based filtering.',
+      inputSchema: {
+        jid: z.string().describe('WhatsApp JID of the chat (get this from search_chats)'),
+        limit: z.number().optional().default(100).describe('Maximum number of messages to return'),
+        since: z.string().optional().describe('ISO timestamp cutoff - only return messages after this time'),
+        includeMessageIds: z.boolean().optional().default(false).describe('Include WhatsApp message IDs (messageId, replyTo.messageId, deletedMessage.messageId, editedMessage.messageId) in structured output. Off by default since these IDs are not actionable without dedicated tools.')
+      },
+      outputSchema: chatHistoryOutputShape,
+      annotations: { readOnlyHint: true }
     },
-    { readOnlyHint: true },
-    async ({ jid, limit, since }: { jid: string; limit: number; since?: string }) => {
+    async ({ jid, limit, since, includeMessageIds }: { jid: string; limit: number; since?: string; includeMessageIds: boolean }) => {
       const chat = chatOps.getByWhatsappJid(slug, jid) as any
+      const missingChatStructured = { chat: { jid, name: jid, type: 'unknown' }, messages: [] as StructuredMessage[] }
       if (!chat) {
-        return { content: [{ type: 'text', text: `Chat not found: ${jid}` }], isError: true }
+        return {
+          content: [{ type: 'text', text: `Chat not found: ${jid}` }],
+          isError: true,
+          structuredContent: missingChatStructured
+        }
       }
       if (!chat.enabled) {
-        return { content: [{ type: 'text', text: `Chat is disabled: ${jid}` }], isError: true }
+        return {
+          content: [{ type: 'text', text: `Chat is disabled: ${jid}` }],
+          isError: true,
+          structuredContent: missingChatStructured
+        }
       }
 
       let messages = messageOps.getByChatId(slug, chat.id, limit || 100) as any[]
@@ -442,19 +476,28 @@ export function createMcpServer(slug: string): McpServer {
       }).filter((m): m is TransformedMessage => m !== null).reverse()
 
       const output = serializeCompact(transformed, undefined, meIdentity)
-      return { content: [{ type: 'text', text: output || '(no messages)' }] }
+      const chatRef: ChatRef = { jid: chat.whatsapp_jid, name: chat.name || chat.whatsapp_jid, type: chat.chat_type }
+      const structuredMessages: StructuredMessage[] = transformed.map(m => toStructuredMessage(m, { includeMessageIds }))
+      return {
+        content: [{ type: 'text', text: output || '(no messages)' }],
+        structuredContent: { chat: chatRef, messages: structuredMessages }
+      }
     }
   )
 
-  server.tool(
+  server.registerTool(
     'get_recent_messages',
-    'Get recent WhatsApp messages across all chats since a given time. Useful for catching up on what happened in a time window. Results grouped by chat.',
     {
-      since: z.string().describe('ISO timestamp cutoff (e.g. "2024-01-15T00:00:00Z") - returns messages after this time'),
-      limit: z.number().optional().default(200).describe('Maximum total messages to return')
+      description: 'Get recent WhatsApp messages across all chats since a given time. Useful for catching up on what happened in a time window. Results grouped by chat.',
+      inputSchema: {
+        since: z.string().describe('ISO timestamp cutoff (e.g. "2024-01-15T00:00:00Z") - returns messages after this time'),
+        limit: z.number().optional().default(200).describe('Maximum total messages to return'),
+        includeMessageIds: z.boolean().optional().default(false).describe('Include WhatsApp message IDs (messageId, replyTo.messageId, deletedMessage.messageId, editedMessage.messageId) in structured output. Off by default since these IDs are not actionable without dedicated tools.')
+      },
+      outputSchema: messagesByChatOutputShape,
+      annotations: { readOnlyHint: true }
     },
-    { readOnlyHint: true },
-    async ({ since, limit }: { since: string; limit: number }) => {
+    async ({ since, limit, includeMessageIds }: { since: string; limit: number; includeMessageIds: boolean }) => {
       const sinceTs = new Date(since).getTime()
       const db = getDatabase(slug)
       const messages = db.prepare(`
@@ -468,17 +511,23 @@ export function createMcpServer(slug: string): McpServer {
 
       const meIdentity = getMeIdentity(slug)
 
-      const byChat = new Map<string, any[]>()
+      const byChat = new Map<string, { meta: ChatRef; msgs: any[] }>()
       for (const m of messages) {
         const key = m.chat_name || m.whatsapp_jid
-        if (!byChat.has(key)) byChat.set(key, [])
-        byChat.get(key)!.push(m)
+        if (!byChat.has(key)) {
+          byChat.set(key, {
+            meta: { jid: m.whatsapp_jid, name: m.chat_name || m.whatsapp_jid, type: m.chat_type },
+            msgs: []
+          })
+        }
+        byChat.get(key)!.msgs.push(m)
       }
 
       let output = ''
-      for (const [chatName, msgs] of byChat) {
+      const structuredChats: Array<{ chat: ChatRef; messages: StructuredMessage[] }> = []
+      for (const [chatName, group] of byChat) {
         output += `\n=== ${chatName} ===\n`
-        const transformed = msgs.map((m: any) => {
+        const transformed = group.msgs.map((m: any) => {
           try {
             const parsed = JSON.parse(m.content_json) as TransformedMessage
             return resolveAllIdentities(slug, m, parsed, meIdentity)
@@ -486,20 +535,28 @@ export function createMcpServer(slug: string): McpServer {
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
         output += serializeCompact(transformed, undefined, meIdentity) + '\n'
+        structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds })) })
       }
 
-      return { content: [{ type: 'text', text: output || '(no recent messages)' }] }
+      return {
+        content: [{ type: 'text', text: output || '(no recent messages)' }],
+        structuredContent: { since, chats: structuredChats }
+      }
     }
   )
 
-  server.tool(
+  server.registerTool(
     'get_unread_messages',
-    'Get unread WhatsApp messages across all chats since the last check. Tracks read state so subsequent calls only return new messages. Results grouped by chat.',
     {
-      since: z.string().optional().describe('Optional ISO timestamp cutoff. If omitted, uses the last time this tool was called (or 24h ago if first call)')
+      description: 'Get unread WhatsApp messages across all chats since the last check. Tracks read state so subsequent calls only return new messages. Results grouped by chat.',
+      inputSchema: {
+        since: z.string().optional().describe('Optional ISO timestamp cutoff. If omitted, uses the last time this tool was called (or 24h ago if first call)'),
+        includeMessageIds: z.boolean().optional().default(false).describe('Include WhatsApp message IDs (messageId, replyTo.messageId, deletedMessage.messageId, editedMessage.messageId) in structured output. Off by default since these IDs are not actionable without dedicated tools.')
+      },
+      outputSchema: messagesByChatOutputShape,
+      annotations: { readOnlyHint: true }
     },
-    { readOnlyHint: true },
-    async ({ since }: { since?: string }) => {
+    async ({ since, includeMessageIds }: { since?: string; includeMessageIds: boolean }) => {
       const lastCheck = settingOps.get(slug, 'last_unread_check')
       const defaultSince = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
       const sinceStr = since || lastCheck || defaultSince
@@ -519,54 +576,84 @@ export function createMcpServer(slug: string): McpServer {
 
       const meIdentity = getMeIdentity(slug)
 
-      const byChat = new Map<string, any[]>()
+      const byChat = new Map<string, { meta: ChatRef; msgs: any[] }>()
       for (const m of messages) {
         const key = m.chat_name || m.whatsapp_jid
-        if (!byChat.has(key)) byChat.set(key, [])
-        byChat.get(key)!.push(m)
+        if (!byChat.has(key)) {
+          byChat.set(key, {
+            meta: { jid: m.whatsapp_jid, name: m.chat_name || m.whatsapp_jid, type: m.chat_type },
+            msgs: []
+          })
+        }
+        byChat.get(key)!.msgs.push(m)
       }
 
-      let output = `Messages since ${sinceStr}:\n`
-      for (const [chatName, msgs] of byChat) {
-        output += `\n=== ${chatName} ===\n`
-        const transformed = msgs.map((m: any) => {
+      let body = ''
+      const structuredChats: Array<{ chat: ChatRef; messages: StructuredMessage[] }> = []
+      for (const [chatName, group] of byChat) {
+        body += `\n=== ${chatName} ===\n`
+        const transformed = group.msgs.map((m: any) => {
           try {
             const parsed = JSON.parse(m.content_json) as TransformedMessage
             return resolveAllIdentities(slug, m, parsed, meIdentity)
           }
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
-        output += serializeCompact(transformed, undefined, meIdentity) + '\n'
+        body += serializeCompact(transformed, undefined, meIdentity) + '\n'
+        structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds })) })
       }
 
-      return { content: [{ type: 'text', text: output || '(no unread messages)' }] }
+      const text = byChat.size === 0 ? '(no unread messages)' : `Messages since ${sinceStr}:\n${body}`
+      return {
+        content: [{ type: 'text', text }],
+        structuredContent: { since: sinceStr, chats: structuredChats }
+      }
     }
   )
 
-  server.tool(
+  server.registerTool(
     'send_message',
-    'Send a WhatsApp message to a contact or group. Supports text messages and file attachments (images, documents). Requires the chat JID from search_chats.',
     {
-      jid: z.string().describe('WhatsApp JID of the recipient (get this from search_chats)'),
-      text: z.string().describe('The message text to send'),
-      attachmentPath: z.string().optional().describe('Optional absolute path to a file to attach (images, PDFs, documents)')
+      description: 'Send a WhatsApp message to a contact or group. Supports text messages and file attachments (images, documents). Requires the chat JID from search_chats.',
+      inputSchema: {
+        jid: z.string().describe('WhatsApp JID of the recipient (get this from search_chats)'),
+        text: z.string().describe('The message text to send'),
+        attachmentPath: z.string().optional().describe('Optional absolute path to a file to attach (images, PDFs, documents)')
+      },
+      outputSchema: sendMessageOutputShape,
+      annotations: { readOnlyHint: false, destructiveHint: false }
     },
-    { readOnlyHint: false, destructiveHint: false },
     async ({ jid, text, attachmentPath }: { jid: string; text: string; attachmentPath?: string }) => {
       const socket = getManager(slug)?.socket
       if (!socket) {
-        return { content: [{ type: 'text', text: 'WhatsApp is not connected' }], isError: true }
+        const failure: SendMessageResult = {
+          ok: false, jid, error: 'WhatsApp is not connected', errorKind: 'not_connected'
+        }
+        return {
+          content: [{ type: 'text', text: 'WhatsApp is not connected' }],
+          isError: true,
+          structuredContent: failure
+        }
       }
 
       try {
+        let sendResult: any
+        let attachmentInfo: { filename: string; kind: 'image' | 'document' } | undefined
         if (attachmentPath) {
           const fs = await import('fs')
           const path = await import('path')
 
           if (!fs.existsSync(attachmentPath)) {
+            const failure: SendMessageResult = {
+              ok: false,
+              jid,
+              error: `Attachment file not found: ${attachmentPath}`,
+              errorKind: 'attachment_not_found'
+            }
             return {
               content: [{ type: 'text', text: `Attachment file not found: ${attachmentPath}` }],
-              isError: true
+              isError: true,
+              structuredContent: failure
             }
           }
 
@@ -578,22 +665,56 @@ export function createMcpServer(slug: string): McpServer {
           const docExts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx']
 
           if (imageExts.includes(ext)) {
-            await socket.sendMessage(jid, { image: buffer, caption: text })
+            sendResult = await socket.sendMessage(jid, { image: buffer, caption: text })
+            attachmentInfo = { filename, kind: 'image' }
           } else if (docExts.includes(ext)) {
-            await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
+            sendResult = await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
+            attachmentInfo = { filename, kind: 'document' }
           } else {
-            await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
+            sendResult = await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
+            attachmentInfo = { filename, kind: 'document' }
           }
         } else {
-          await socket.sendMessage(jid, { text })
+          sendResult = await socket.sendMessage(jid, { text })
         }
 
-        return { content: [{ type: 'text', text: `Message sent to ${jid}` }] }
+        // baileys returns WAProto.WebMessageInfo. `key.id` is the message id;
+        // `messageTimestamp` is whole seconds and may be a Long (long.js) or a
+        // plain number. Only emit fields baileys actually returned — never
+        // fabricate a Date.now() timestamp.
+        const messageId: string | undefined = sendResult?.key?.id ?? undefined
+        const rawTs = sendResult?.messageTimestamp
+        let timestamp: string | undefined
+        if (rawTs != null) {
+          const tsSec = typeof rawTs === 'number'
+            ? rawTs
+            : (typeof rawTs?.toNumber === 'function' ? rawTs.toNumber() : Number(rawTs))
+          if (Number.isFinite(tsSec) && tsSec > 0) {
+            timestamp = new Date(tsSec * 1000).toISOString()
+          }
+        }
+
+        const success: Extract<SendMessageResult, { ok: true }> = { ok: true, jid }
+        if (messageId) success.messageId = messageId
+        if (timestamp) success.timestamp = timestamp
+        if (attachmentInfo) success.attachment = attachmentInfo
+
+        return {
+          content: [{ type: 'text', text: `Message sent to ${jid}` }],
+          structuredContent: success
+        }
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error)
+        const failure: SendMessageResult = {
+          ok: false,
+          jid,
+          error: `Failed to send message: ${errMsg}`,
+          errorKind: 'send_failed'
+        }
         return {
           content: [{ type: 'text', text: `Failed to send message: ${errMsg}` }],
-          isError: true
+          isError: true,
+          structuredContent: failure
         }
       }
     }

@@ -829,9 +829,14 @@ describe('MCP Server', () => {
     })
 
     it('defaults to 24h ago when no last_unread_check', async () => {
+      const before = Date.now()
       await startMcpServer(testPort)
       const result = await callMcpTool(testPort, '/mcp', 'get_unread_messages', {})
-      expect(result.result.content[0].text).toContain('Messages since')
+      expect(result.result.content[0].text).toBe('(no unread messages)')
+      const sinceTs = new Date(result.result.structuredContent.since).getTime()
+      const dayAgo = before - 24 * 60 * 60 * 1000
+      expect(sinceTs).toBeGreaterThanOrEqual(dayAgo - 5000)
+      expect(sinceTs).toBeLessThanOrEqual(dayAgo + 5000)
     })
   })
 
@@ -1057,8 +1062,332 @@ describe('MCP Server', () => {
     })
   })
 
+  describe('Structured chat-history responses', () => {
+    beforeEach(() => { makeAccount(DEFAULT) })
 
+    it('get_chat_history returns chat ref + chronologically-ordered structured messages with replyTo (default omits messageIds)', async () => {
+      contactOps.insert(DEFAULT, 'original-sender@s.whatsapp.net', 'Original Sender', '+4444444444')
+      chatOps.insert(DEFAULT, 'reply-chat@s.whatsapp.net', 'dm', undefined, 'Reply Chat')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'reply-chat@s.whatsapp.net') as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chat.id, 'orig-1', now - 3000, 'original-sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'orig-1', timestamp: new Date(now - 3000).toISOString(),
+        text: 'This is the original', sender: { name: 'Unknown', phone: null }
+      }), false)
+      messageOps.insert(DEFAULT, chat.id, 'reply-1', now - 1000, 'replier@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'reply-1', timestamp: new Date(now - 1000).toISOString(),
+        text: 'reply text',
+        sender: { name: 'Replier', phone: '+5555555555' },
+        replyToMessageId: 'orig-1'
+      }), false)
+      await startMcpServer(testPort)
 
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'reply-chat@s.whatsapp.net' })
+      const sc = result.result.structuredContent
+      expect(sc.chat.jid).toBe('reply-chat@s.whatsapp.net')
+      expect(sc.chat.name).toBe('Reply Chat')
+      expect(sc.chat.type).toBe('dm')
+      expect(sc.messages).toHaveLength(2)
+      expect('messageId' in sc.messages[0]).toBe(false)
+      expect('messageId' in sc.messages[1]).toBe(false)
+      expect(sc.messages[1].replyTo).toBeDefined()
+      expect('messageId' in sc.messages[1].replyTo).toBe(false)
+      expect(sc.messages[1].replyTo.sender.name).toBe('Original Sender')
+      expect(sc.messages[1].text).not.toMatch(/\[re /)
+    })
+
+    it('get_chat_history with includeMessageIds=true surfaces messageId and replyTo.messageId', async () => {
+      contactOps.insert(DEFAULT, 'original-sender@s.whatsapp.net', 'Original Sender', '+4444444444')
+      chatOps.insert(DEFAULT, 'reply-chat@s.whatsapp.net', 'dm', undefined, 'Reply Chat')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'reply-chat@s.whatsapp.net') as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chat.id, 'orig-1', now - 3000, 'original-sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'orig-1', timestamp: new Date(now - 3000).toISOString(),
+        text: 'This is the original', sender: { name: 'Unknown', phone: null }
+      }), false)
+      messageOps.insert(DEFAULT, chat.id, 'reply-1', now - 1000, 'replier@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'reply-1', timestamp: new Date(now - 1000).toISOString(),
+        text: 'reply text',
+        sender: { name: 'Replier', phone: '+5555555555' },
+        replyToMessageId: 'orig-1'
+      }), false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'reply-chat@s.whatsapp.net', includeMessageIds: true })
+      const sc = result.result.structuredContent
+      expect(sc.messages).toHaveLength(2)
+      expect(sc.messages[0].messageId).toBe('orig-1')
+      expect(sc.messages[1].messageId).toBe('reply-1')
+      expect(sc.messages[1].replyTo.messageId).toBe('orig-1')
+    })
+
+    it('get_recent_messages groups messages by chat and round-trips since (default omits messageIds)', async () => {
+      chatOps.insert(DEFAULT, 'chat-a@s.whatsapp.net', 'dm', undefined, 'Chat A')
+      chatOps.insert(DEFAULT, 'chat-b@s.whatsapp.net', 'dm', undefined, 'Chat B')
+      const chatA = chatOps.getByWhatsappJid(DEFAULT, 'chat-a@s.whatsapp.net') as any
+      const chatB = chatOps.getByWhatsappJid(DEFAULT, 'chat-b@s.whatsapp.net') as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chatA.id, 'msg-a', now - 1000, 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'msg-a', timestamp: new Date(now - 1000).toISOString(),
+        text: 'hello A', sender: { name: 'Sender', phone: '+123' }
+      }), false)
+      messageOps.insert(DEFAULT, chatB.id, 'msg-b', now - 500, 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'msg-b', timestamp: new Date(now - 500).toISOString(),
+        text: 'hello B', sender: { name: 'Sender', phone: '+123' }
+      }), false)
+      await startMcpServer(testPort)
+
+      const sinceIso = new Date(now - 5000).toISOString()
+      const result = await callMcpTool(testPort, '/mcp', 'get_recent_messages', { since: sinceIso, limit: 100 })
+      const sc = result.result.structuredContent
+      expect(sc.since).toBe(sinceIso)
+      expect(sc.chats).toHaveLength(2)
+      const byJid = Object.fromEntries(sc.chats.map((c: any) => [c.chat.jid, c]))
+      expect(byJid['chat-a@s.whatsapp.net'].messages).toHaveLength(1)
+      expect(byJid['chat-b@s.whatsapp.net'].messages).toHaveLength(1)
+      expect('messageId' in byJid['chat-a@s.whatsapp.net'].messages[0]).toBe(false)
+      expect('messageId' in byJid['chat-b@s.whatsapp.net'].messages[0]).toBe(false)
+    })
+
+    it('get_recent_messages with includeMessageIds=true surfaces messageId per message', async () => {
+      chatOps.insert(DEFAULT, 'chat-a@s.whatsapp.net', 'dm', undefined, 'Chat A')
+      chatOps.insert(DEFAULT, 'chat-b@s.whatsapp.net', 'dm', undefined, 'Chat B')
+      const chatA = chatOps.getByWhatsappJid(DEFAULT, 'chat-a@s.whatsapp.net') as any
+      const chatB = chatOps.getByWhatsappJid(DEFAULT, 'chat-b@s.whatsapp.net') as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chatA.id, 'msg-a', now - 1000, 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'msg-a', timestamp: new Date(now - 1000).toISOString(),
+        text: 'hello A', sender: { name: 'Sender', phone: '+123' }
+      }), false)
+      messageOps.insert(DEFAULT, chatB.id, 'msg-b', now - 500, 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'msg-b', timestamp: new Date(now - 500).toISOString(),
+        text: 'hello B', sender: { name: 'Sender', phone: '+123' }
+      }), false)
+      await startMcpServer(testPort)
+
+      const sinceIso = new Date(now - 5000).toISOString()
+      const result = await callMcpTool(testPort, '/mcp', 'get_recent_messages', { since: sinceIso, limit: 100, includeMessageIds: true })
+      const sc = result.result.structuredContent
+      const byJid = Object.fromEntries(sc.chats.map((c: any) => [c.chat.jid, c]))
+      expect(byJid['chat-a@s.whatsapp.net'].messages.map((m: any) => m.messageId)).toEqual(['msg-a'])
+      expect(byJid['chat-b@s.whatsapp.net'].messages.map((m: any) => m.messageId)).toEqual(['msg-b'])
+    })
+
+    it('get_unread_messages echoes the server-resolved since', async () => {
+      const lastCheck = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+      settingOps.set(DEFAULT, 'last_unread_check', lastCheck)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_unread_messages', {})
+      expect(result.result.structuredContent.since).toBe(lastCheck)
+      expect(Array.isArray(result.result.structuredContent.chats)).toBe(true)
+    })
+
+    it('get_chat_history returns empty messages and (no messages) text for empty chats', async () => {
+      chatOps.insert(DEFAULT, 'empty-structured@s.whatsapp.net', 'dm', undefined, 'Empty Structured')
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'empty-structured@s.whatsapp.net' })
+      expect(result.result.content[0].text).toBe('(no messages)')
+      expect(result.result.structuredContent.messages).toEqual([])
+      expect(result.result.structuredContent.chat.jid).toBe('empty-structured@s.whatsapp.net')
+    })
+
+    it('get_unread_messages returns (no unread messages) text and empty structured chats when nothing matches', async () => {
+      const lastCheck = new Date(Date.now() - 5 * 60 * 1000).toISOString()
+      settingOps.set(DEFAULT, 'last_unread_check', lastCheck)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_unread_messages', {})
+      expect(result.result.content[0].text).toBe('(no unread messages)')
+      expect(result.result.structuredContent.chats).toEqual([])
+      expect(result.result.structuredContent.since).toBe(lastCheck)
+    })
+
+    it('get_chat_history early error for unknown JID still returns structuredContent with empty messages', async () => {
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'missing@s.whatsapp.net' })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toContain('Chat not found')
+      expect(result.result.structuredContent).toBeDefined()
+      expect(result.result.structuredContent.messages).toEqual([])
+      expect(result.result.structuredContent.chat.jid).toBe('missing@s.whatsapp.net')
+      expect(result.result.structuredContent.chat.name).toBe('missing@s.whatsapp.net')
+      expect(result.result.structuredContent.chat.type).toBe('unknown')
+    })
+
+    it('get_chat_history early error for disabled chat still returns structuredContent with empty messages', async () => {
+      chatOps.insert(DEFAULT, 'disabled-structured@s.whatsapp.net', 'dm', undefined, 'Disabled Structured')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'disabled-structured@s.whatsapp.net') as any
+      chatOps.updateEnabled(DEFAULT, chat.id, false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'disabled-structured@s.whatsapp.net' })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toContain('Chat is disabled')
+      expect(result.result.structuredContent).toBeDefined()
+      expect(result.result.structuredContent.messages).toEqual([])
+      expect(result.result.structuredContent.chat.jid).toBe('disabled-structured@s.whatsapp.net')
+      expect(result.result.structuredContent.chat.type).toBe('unknown')
+    })
+  })
+
+  describe('Structured search_chats responses', () => {
+    beforeEach(() => { makeAccount(DEFAULT) })
+
+    it('returns structuredContent with the input query and a results array that round-trips with the text JSON', async () => {
+      chatOps.insert(DEFAULT, 'alice@s.whatsapp.net', 'dm', undefined, 'Alice Smith')
+      chatOps.insert(DEFAULT, 'carol@s.whatsapp.net', 'dm', undefined, 'Carol Alice')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Alice' })
+      const sc = result.result.structuredContent
+      expect(sc.query).toBe('Alice')
+      expect(Array.isArray(sc.results)).toBe(true)
+      expect(sc.results.length).toBeGreaterThan(0)
+      const fromText = JSON.parse(result.result.content[0].text)
+      expect(sc.results).toEqual(fromText)
+      for (const entry of sc.results) {
+        expect(typeof entry.jid).toBe('string')
+        expect(typeof entry.name).toBe('string')
+        expect(typeof entry.type).toBe('string')
+        expect(typeof entry.rank).toBe('number')
+        expect(['name', 'contact', 'phone']).toContain(entry.matchedVia)
+      }
+    })
+
+    it('empty result keeps text === "[]" and structured results: []', async () => {
+      chatOps.insert(DEFAULT, 'test@s.whatsapp.net', 'dm', undefined, 'Test Chat')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'nonexistent' })
+      expect(result.result.content[0].text).toBe('[]')
+      expect(result.result.structuredContent.query).toBe('nonexistent')
+      expect(result.result.structuredContent.results).toEqual([])
+    })
+  })
+
+  describe('Structured send_message responses', () => {
+    beforeEach(() => { makeAccount(DEFAULT) })
+
+    it('success path returns ok:true with messageId surfaced from baileys result', async () => {
+      const socket = {
+        sendMessage: vi.fn().mockResolvedValue({
+          key: { id: 'BAE5F00DBAR42', remoteJid: 'recipient@s.whatsapp.net', fromMe: true },
+          messageTimestamp: 1735689600
+        })
+      }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello'
+      })
+      expect(result.result.isError).toBeFalsy()
+      expect(result.result.content[0].text).toBe('Message sent to recipient@s.whatsapp.net')
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.jid).toBe('recipient@s.whatsapp.net')
+      expect(sc.messageId).toBe('BAE5F00DBAR42')
+      expect(sc.timestamp).toBe(new Date(1735689600 * 1000).toISOString())
+      expect(sc.attachment).toBeUndefined()
+    })
+
+    it('success path omits timestamp when baileys returns nothing', async () => {
+      const socket = { sendMessage: vi.fn().mockResolvedValue({ key: { id: 'X1' } }) }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'r@s.whatsapp.net', text: 'hi'
+      })
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.messageId).toBe('X1')
+      expect(sc.timestamp).toBeUndefined()
+    })
+
+    it('success path converts a Long messageTimestamp via toNumber()', async () => {
+      const socket = {
+        sendMessage: vi.fn().mockResolvedValue({
+          key: { id: 'L1' },
+          messageTimestamp: { toNumber: () => 1700000000 }
+        })
+      }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'r@s.whatsapp.net', text: 'hi'
+      })
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.timestamp).toBe(new Date(1700000000 * 1000).toISOString())
+    })
+
+    it('not-connected returns ok:false with errorKind=not_connected and unchanged text', async () => {
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello'
+      })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toBe('WhatsApp is not connected')
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(false)
+      expect(sc.jid).toBe('recipient@s.whatsapp.net')
+      expect(sc.errorKind).toBe('not_connected')
+      expect(sc.error).toBe('WhatsApp is not connected')
+    })
+
+    it('attachment-not-found returns ok:false with errorKind=attachment_not_found', async () => {
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello', attachmentPath: '/nonexistent/file.jpg'
+      })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toBe('Attachment file not found: /nonexistent/file.jpg')
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(false)
+      expect(sc.errorKind).toBe('attachment_not_found')
+      expect(sc.jid).toBe('recipient@s.whatsapp.net')
+    })
+
+    it('send failure returns ok:false with errorKind=send_failed', async () => {
+      const socket = { sendMessage: vi.fn().mockRejectedValue(new Error('Network error')) }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello'
+      })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toBe('Failed to send message: Network error')
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(false)
+      expect(sc.errorKind).toBe('send_failed')
+      expect(sc.error).toBe('Failed to send message: Network error')
+    })
+
+    it('image attachment surfaces filename and kind=image in structuredContent', async () => {
+      const tmpFile = require('path').join(testDir, 'pic.png')
+      fs.writeFileSync(tmpFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      const socket = {
+        sendMessage: vi.fn().mockResolvedValue({ key: { id: 'IMG1' }, messageTimestamp: 1700000001 })
+      }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'caption', attachmentPath: tmpFile
+      })
+      expect(result.result.isError).toBeFalsy()
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.attachment).toBeDefined()
+      expect(sc.attachment.kind).toBe('image')
+      expect(sc.attachment.filename).toBe('pic.png')
+    })
+  })
 
 
 })
