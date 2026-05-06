@@ -9,8 +9,12 @@ import {
   toStructuredMessage,
   chatHistoryOutputShape,
   messagesByChatOutputShape,
+  searchChatsOutputShape,
+  sendMessageOutputShape,
   ChatRef,
-  StructuredMessage
+  StructuredMessage,
+  SearchChatsResultEntry,
+  SendMessageResult
 } from './structured-message'
 import { getAccount, getDefaultSlug } from './accounts'
 import { getManager } from './whatsapp-manager'
@@ -287,14 +291,17 @@ export function createMcpServer(slug: string): McpServer {
     description: 'Access WhatsApp messages and chats. Search conversations, read message history, get recent and unread messages, and send messages through WhatsApp.'
   })
 
-  server.tool(
+  server.registerTool(
     'search_chats',
-    'Search chats by name or associated contact name, with typo tolerance and phone-number matching. Multi-word queries match chats that contain any of the words; chats matching more words rank higher (bm25). Typos are tolerated via trigram fuzzy matching when available. Digit-only queries of 5+ digits also match contacts by normalized phone number (digits only, ignoring +, -, spaces, parentheses), surfacing the matching DM chat. Results are ranked by relevance with recent activity as a tiebreaker and capped by `limit`.',
     {
-      query: z.string().describe('Search query: name fragment, multiple words, or a phone number'),
-      limit: z.number().optional().default(20).describe('Maximum number of results to return (default 20, capped at 100)')
+      description: 'Search chats by name or associated contact name, with typo tolerance and phone-number matching. Multi-word queries match chats that contain any of the words; chats matching more words rank higher (bm25). Typos are tolerated via trigram fuzzy matching when available. Digit-only queries of 5+ digits also match contacts by normalized phone number (digits only, ignoring +, -, spaces, parentheses), surfacing the matching DM chat. Results are ranked by relevance with recent activity as a tiebreaker and capped by `limit`.',
+      inputSchema: {
+        query: z.string().describe('Search query: name fragment, multiple words, or a phone number'),
+        limit: z.number().optional().default(20).describe('Maximum number of results to return (default 20, capped at 100)')
+      },
+      outputSchema: searchChatsOutputShape,
+      annotations: { readOnlyHint: true }
     },
-    { readOnlyHint: true },
     async ({ query, limit }: { query: string; limit?: number }) => {
       const cap = Math.min(Math.max(Number.isFinite(limit) ? Number(limit) : 20, 1), 100)
       const db = getDatabase(slug)
@@ -341,7 +348,10 @@ export function createMcpServer(slug: string): McpServer {
       }
 
       if (hits.size === 0) {
-        return { content: [{ type: 'text', text: JSON.stringify([], null, 2) }] }
+        return {
+          content: [{ type: 'text', text: JSON.stringify([], null, 2) }],
+          structuredContent: { query, results: [] as SearchChatsResultEntry[] }
+        }
       }
 
       // Fetch enabled chat rows once, up front, so the digit-only-name filter
@@ -389,7 +399,7 @@ export function createMcpServer(slug: string): McpServer {
         }
       }
 
-      const results = Array.from(hits.values()).map((h) => {
+      const results: SearchChatsResultEntry[] = Array.from(hits.values()).map((h) => {
         const chat = chatsById.get(h.chatId)!
         return {
           jid: chat.whatsapp_jid,
@@ -409,7 +419,11 @@ export function createMcpServer(slug: string): McpServer {
         return aAct < bAct ? 1 : -1
       })
 
-      return { content: [{ type: 'text', text: JSON.stringify(results.slice(0, cap), null, 2) }] }
+      const capped = results.slice(0, cap)
+      return {
+        content: [{ type: 'text', text: JSON.stringify(capped, null, 2) }],
+        structuredContent: { query, results: capped }
+      }
     }
   )
 
@@ -594,30 +608,49 @@ export function createMcpServer(slug: string): McpServer {
     }
   )
 
-  server.tool(
+  server.registerTool(
     'send_message',
-    'Send a WhatsApp message to a contact or group. Supports text messages and file attachments (images, documents). Requires the chat JID from search_chats.',
     {
-      jid: z.string().describe('WhatsApp JID of the recipient (get this from search_chats)'),
-      text: z.string().describe('The message text to send'),
-      attachmentPath: z.string().optional().describe('Optional absolute path to a file to attach (images, PDFs, documents)')
+      description: 'Send a WhatsApp message to a contact or group. Supports text messages and file attachments (images, documents). Requires the chat JID from search_chats.',
+      inputSchema: {
+        jid: z.string().describe('WhatsApp JID of the recipient (get this from search_chats)'),
+        text: z.string().describe('The message text to send'),
+        attachmentPath: z.string().optional().describe('Optional absolute path to a file to attach (images, PDFs, documents)')
+      },
+      outputSchema: sendMessageOutputShape,
+      annotations: { readOnlyHint: false, destructiveHint: false }
     },
-    { readOnlyHint: false, destructiveHint: false },
     async ({ jid, text, attachmentPath }: { jid: string; text: string; attachmentPath?: string }) => {
       const socket = getManager(slug)?.socket
       if (!socket) {
-        return { content: [{ type: 'text', text: 'WhatsApp is not connected' }], isError: true }
+        const failure: SendMessageResult = {
+          ok: false, jid, error: 'WhatsApp is not connected', errorKind: 'not_connected'
+        }
+        return {
+          content: [{ type: 'text', text: 'WhatsApp is not connected' }],
+          isError: true,
+          structuredContent: failure
+        }
       }
 
       try {
+        let sendResult: any
+        let attachmentInfo: { filename: string; kind: 'image' | 'document' } | undefined
         if (attachmentPath) {
           const fs = await import('fs')
           const path = await import('path')
 
           if (!fs.existsSync(attachmentPath)) {
+            const failure: SendMessageResult = {
+              ok: false,
+              jid,
+              error: `Attachment file not found: ${attachmentPath}`,
+              errorKind: 'attachment_not_found'
+            }
             return {
               content: [{ type: 'text', text: `Attachment file not found: ${attachmentPath}` }],
-              isError: true
+              isError: true,
+              structuredContent: failure
             }
           }
 
@@ -629,22 +662,56 @@ export function createMcpServer(slug: string): McpServer {
           const docExts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx']
 
           if (imageExts.includes(ext)) {
-            await socket.sendMessage(jid, { image: buffer, caption: text })
+            sendResult = await socket.sendMessage(jid, { image: buffer, caption: text })
+            attachmentInfo = { filename, kind: 'image' }
           } else if (docExts.includes(ext)) {
-            await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
+            sendResult = await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
+            attachmentInfo = { filename, kind: 'document' }
           } else {
-            await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
+            sendResult = await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
+            attachmentInfo = { filename, kind: 'document' }
           }
         } else {
-          await socket.sendMessage(jid, { text })
+          sendResult = await socket.sendMessage(jid, { text })
         }
 
-        return { content: [{ type: 'text', text: `Message sent to ${jid}` }] }
+        // baileys returns WAProto.WebMessageInfo. `key.id` is the message id;
+        // `messageTimestamp` is whole seconds and may be a Long (long.js) or a
+        // plain number. Only emit fields baileys actually returned — never
+        // fabricate a Date.now() timestamp.
+        const messageId: string | undefined = sendResult?.key?.id ?? undefined
+        const rawTs = sendResult?.messageTimestamp
+        let timestamp: string | undefined
+        if (rawTs != null) {
+          const tsSec = typeof rawTs === 'number'
+            ? rawTs
+            : (typeof rawTs?.toNumber === 'function' ? rawTs.toNumber() : Number(rawTs))
+          if (Number.isFinite(tsSec) && tsSec > 0) {
+            timestamp = new Date(tsSec * 1000).toISOString()
+          }
+        }
+
+        const success: Extract<SendMessageResult, { ok: true }> = { ok: true, jid }
+        if (messageId) success.messageId = messageId
+        if (timestamp) success.timestamp = timestamp
+        if (attachmentInfo) success.attachment = attachmentInfo
+
+        return {
+          content: [{ type: 'text', text: `Message sent to ${jid}` }],
+          structuredContent: success
+        }
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error)
+        const failure: SendMessageResult = {
+          ok: false,
+          jid,
+          error: `Failed to send message: ${errMsg}`,
+          errorKind: 'send_failed'
+        }
         return {
           content: [{ type: 'text', text: `Failed to send message: ${errMsg}` }],
-          isError: true
+          isError: true,
+          structuredContent: failure
         }
       }
     }

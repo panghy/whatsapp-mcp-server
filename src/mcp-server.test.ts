@@ -1180,6 +1180,164 @@ describe('MCP Server', () => {
     })
   })
 
+  describe('Structured search_chats responses', () => {
+    beforeEach(() => { makeAccount(DEFAULT) })
+
+    it('returns structuredContent with the input query and a results array that round-trips with the text JSON', async () => {
+      chatOps.insert(DEFAULT, 'alice@s.whatsapp.net', 'dm', undefined, 'Alice Smith')
+      chatOps.insert(DEFAULT, 'carol@s.whatsapp.net', 'dm', undefined, 'Carol Alice')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Alice' })
+      const sc = result.result.structuredContent
+      expect(sc.query).toBe('Alice')
+      expect(Array.isArray(sc.results)).toBe(true)
+      expect(sc.results.length).toBeGreaterThan(0)
+      const fromText = JSON.parse(result.result.content[0].text)
+      expect(sc.results).toEqual(fromText)
+      for (const entry of sc.results) {
+        expect(typeof entry.jid).toBe('string')
+        expect(typeof entry.name).toBe('string')
+        expect(typeof entry.type).toBe('string')
+        expect(typeof entry.rank).toBe('number')
+        expect(['name', 'contact', 'phone']).toContain(entry.matchedVia)
+      }
+    })
+
+    it('empty result keeps text === "[]" and structured results: []', async () => {
+      chatOps.insert(DEFAULT, 'test@s.whatsapp.net', 'dm', undefined, 'Test Chat')
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'nonexistent' })
+      expect(result.result.content[0].text).toBe('[]')
+      expect(result.result.structuredContent.query).toBe('nonexistent')
+      expect(result.result.structuredContent.results).toEqual([])
+    })
+  })
+
+  describe('Structured send_message responses', () => {
+    beforeEach(() => { makeAccount(DEFAULT) })
+
+    it('success path returns ok:true with messageId surfaced from baileys result', async () => {
+      const socket = {
+        sendMessage: vi.fn().mockResolvedValue({
+          key: { id: 'BAE5F00DBAR42', remoteJid: 'recipient@s.whatsapp.net', fromMe: true },
+          messageTimestamp: 1735689600
+        })
+      }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello'
+      })
+      expect(result.result.isError).toBeFalsy()
+      expect(result.result.content[0].text).toBe('Message sent to recipient@s.whatsapp.net')
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.jid).toBe('recipient@s.whatsapp.net')
+      expect(sc.messageId).toBe('BAE5F00DBAR42')
+      expect(sc.timestamp).toBe(new Date(1735689600 * 1000).toISOString())
+      expect(sc.attachment).toBeUndefined()
+    })
+
+    it('success path omits timestamp when baileys returns nothing', async () => {
+      const socket = { sendMessage: vi.fn().mockResolvedValue({ key: { id: 'X1' } }) }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'r@s.whatsapp.net', text: 'hi'
+      })
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.messageId).toBe('X1')
+      expect(sc.timestamp).toBeUndefined()
+    })
+
+    it('success path converts a Long messageTimestamp via toNumber()', async () => {
+      const socket = {
+        sendMessage: vi.fn().mockResolvedValue({
+          key: { id: 'L1' },
+          messageTimestamp: { toNumber: () => 1700000000 }
+        })
+      }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'r@s.whatsapp.net', text: 'hi'
+      })
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.timestamp).toBe(new Date(1700000000 * 1000).toISOString())
+    })
+
+    it('not-connected returns ok:false with errorKind=not_connected and unchanged text', async () => {
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello'
+      })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toBe('WhatsApp is not connected')
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(false)
+      expect(sc.jid).toBe('recipient@s.whatsapp.net')
+      expect(sc.errorKind).toBe('not_connected')
+      expect(sc.error).toBe('WhatsApp is not connected')
+    })
+
+    it('attachment-not-found returns ok:false with errorKind=attachment_not_found', async () => {
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello', attachmentPath: '/nonexistent/file.jpg'
+      })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toBe('Attachment file not found: /nonexistent/file.jpg')
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(false)
+      expect(sc.errorKind).toBe('attachment_not_found')
+      expect(sc.jid).toBe('recipient@s.whatsapp.net')
+    })
+
+    it('send failure returns ok:false with errorKind=send_failed', async () => {
+      const socket = { sendMessage: vi.fn().mockRejectedValue(new Error('Network error')) }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello'
+      })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toBe('Failed to send message: Network error')
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(false)
+      expect(sc.errorKind).toBe('send_failed')
+      expect(sc.error).toBe('Failed to send message: Network error')
+    })
+
+    it('image attachment surfaces filename and kind=image in structuredContent', async () => {
+      const tmpFile = require('path').join(testDir, 'pic.png')
+      fs.writeFileSync(tmpFile, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      const socket = {
+        sendMessage: vi.fn().mockResolvedValue({ key: { id: 'IMG1' }, messageTimestamp: 1700000001 })
+      }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'caption', attachmentPath: tmpFile
+      })
+      expect(result.result.isError).toBeFalsy()
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.attachment).toBeDefined()
+      expect(sc.attachment.kind).toBe('image')
+      expect(sc.attachment.filename).toBe('pic.png')
+    })
+  })
+
 
 })
 

@@ -111,6 +111,83 @@ export const messagesByChatOutputShape = {
 }
 
 /**
+ * Wire shape for a single result entry returned by `search_chats`. `rank` is
+ * the BM25 score (lower = stronger) for FTS hits and a sentinel `-1e6` for
+ * digit-path phone hits. `lastActivity` is the chat's `last_activity` ISO
+ * string (or `null` when no messages have arrived yet).
+ */
+export interface SearchChatsResultEntry {
+  jid: string
+  name: string
+  type: string
+  lastActivity: string | null
+  rank: number
+  matchedVia: 'name' | 'contact' | 'phone'
+}
+
+export interface SearchChatsResult {
+  query: string
+  results: SearchChatsResultEntry[]
+}
+
+const searchChatsResultEntrySchema = z.object({
+  jid: z.string(),
+  name: z.string(),
+  type: z.string(),
+  lastActivity: z.string().nullable(),
+  rank: z.number(),
+  matchedVia: z.enum(['name', 'contact', 'phone'])
+})
+
+/** Raw shape suitable for `registerTool`'s `outputSchema` parameter. */
+export const searchChatsOutputShape = {
+  query: z.string(),
+  results: z.array(searchChatsResultEntrySchema)
+}
+
+/**
+ * Wire shape for `send_message`. `ok: true` on success with the baileys
+ * `messageId` (always when present) and `timestamp` (only when baileys returns
+ * one — never fabricated). `attachment` is present only when the caller
+ * supplied `attachmentPath`. On failure `ok: false` with a stable
+ * `errorKind` discriminator alongside the human-readable `error` string.
+ */
+export type SendMessageResult =
+  | {
+      ok: true
+      jid: string
+      messageId?: string
+      timestamp?: string
+      attachment?: { filename: string; kind: 'image' | 'document' }
+    }
+  | {
+      ok: false
+      jid: string
+      error: string
+      errorKind: 'not_connected' | 'attachment_not_found' | 'send_failed'
+    }
+
+/**
+ * Raw shape suitable for `registerTool`'s `outputSchema` parameter. The MCP
+ * SDK requires the outputSchema to normalize to a top-level object schema, so
+ * the success/failure variants are expressed as over-broad optional fields
+ * here and narrowed by the `ok` discriminant on the consumer side via the
+ * `SendMessageResult` discriminated union.
+ */
+export const sendMessageOutputShape = {
+  ok: z.boolean(),
+  jid: z.string(),
+  messageId: z.string().optional(),
+  timestamp: z.string().optional(),
+  attachment: z.object({
+    filename: z.string(),
+    kind: z.enum(['image', 'document'])
+  }).optional(),
+  error: z.string().optional(),
+  errorKind: z.enum(['not_connected', 'attachment_not_found', 'send_failed']).optional()
+}
+
+/**
  * Project an already-identity-resolved `TransformedMessage` into the
  * `structuredContent` wire shape. Drops internal-only fields
  * (`mentionedJids`, `replyToMessageId`) and folds `details` →
