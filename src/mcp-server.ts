@@ -898,15 +898,26 @@ export async function startMcpServer(port: number): Promise<void> {
   })
 
   return new Promise((resolve, reject) => {
-    httpServer!.on('error', (err: NodeJS.ErrnoException) => {
+    const server = httpServer!
+    const onError = (err: NodeJS.ErrnoException) => {
+      // Reset module-level state so the caller can retry startMcpServer()
+      // after the underlying conflict (e.g. EADDRINUSE) is resolved.
+      server.removeAllListeners('error')
+      server.removeAllListeners('listening')
+      if (httpServer === server) {
+        httpServer = null
+      }
+      try { server.close(() => { /* ignore */ }) } catch { /* ignore */ }
       if (err.code === 'EADDRINUSE') {
         reject(new Error(`Port ${port} is already in use`))
       } else {
         reject(err)
       }
-    })
+    }
 
-    httpServer!.listen(port, '127.0.0.1', () => {
+    server.on('error', onError)
+
+    server.listen(port, '127.0.0.1', () => {
       console.log(`MCP server listening on http://127.0.0.1:${port}/mcp`)
       resolve()
     })

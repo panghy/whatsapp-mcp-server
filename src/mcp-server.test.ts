@@ -321,6 +321,29 @@ describe('MCP Server', () => {
         blocking.close()
       }
     })
+
+    it('allows retry on the same port after the blocker is released', async () => {
+      const blocking = http.createServer()
+      await new Promise<void>((resolve) => blocking.listen(testPort, '127.0.0.1', resolve))
+      await expect(startMcpServer(testPort)).rejects.toThrow(`Port ${testPort} is already in use`)
+      expect(isMcpServerRunning()).toBe(false)
+      await new Promise<void>((resolve) => blocking.close(() => resolve()))
+
+      await startMcpServer(testPort)
+      expect(isMcpServerRunning()).toBe(true)
+    })
+
+    it('re-rejects with the port-in-use message when retried while still blocked', async () => {
+      const blocking = http.createServer()
+      await new Promise<void>((resolve) => blocking.listen(testPort, '127.0.0.1', resolve))
+      try {
+        await expect(startMcpServer(testPort)).rejects.toThrow(`Port ${testPort} is already in use`)
+        await expect(startMcpServer(testPort)).rejects.toThrow(`Port ${testPort} is already in use`)
+        expect(isMcpServerRunning()).toBe(false)
+      } finally {
+        blocking.close()
+      }
+    })
   })
 
   describe('search_chats Tool', () => {
