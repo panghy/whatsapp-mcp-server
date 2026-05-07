@@ -172,6 +172,36 @@ async function startMcpServerSafe(): Promise<void> {
   }
 }
 
+/**
+ * Start the MCP server, prompting the user with a Retry/Exit modal if the
+ * port cannot be bound. Resolves to `true` when the server is running and
+ * the app should continue startup, or `false` when the user chose Exit.
+ */
+export async function ensureMcpServerOrPrompt(): Promise<boolean> {
+  while (true) {
+    await startMcpServerSafe()
+    if (mcpStatus === 'running') return true
+
+    const port = getGlobalMcpPort()
+    const detail = `${mcpError ?? 'Unknown error'}\n\nClick Retry to try again, or Exit to quit the app.`
+    const { response } = await dialog.showMessageBox(undefined as any, {
+      type: 'error',
+      title: 'MCP Server Failed to Start',
+      message: `The MCP server could not bind to port ${port}.`,
+      detail,
+      buttons: ['Retry', 'Exit'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    })
+    if (response === 1) {
+      app.exit(1)
+      return false
+    }
+    // response === 0 → retry the start in the next loop iteration.
+  }
+}
+
 async function stopMcpServerSafe(): Promise<void> {
   if (!isMcpServerRunning()) {
     mcpStatus = 'stopped'
@@ -721,6 +751,14 @@ app.whenReady().then(async () => {
     app.dock?.hide()
   }
 
+  // Gate the rest of startup on a successful MCP bind when auto-start is
+  // enabled. If the user picks Exit from the failure modal, skip window
+  // creation and WhatsApp auto-reconnect entirely.
+  if (getGlobalMcpAutoStart()) {
+    const ok = await ensureMcpServerOrPrompt()
+    if (!ok) return
+  }
+
   createWindow()
 
   autoUpdater.checkForUpdatesAndNotify()
@@ -732,11 +770,6 @@ app.whenReady().then(async () => {
     if (!hasAuth(account.slug)) continue
     try { await setupWhatsAppConnection(account.slug) }
     catch (error) { console.error(`[auto-connect:${account.slug}] failed:`, error) }
-  }
-
-  // Start the MCP server (routes per-slug internally).
-  if (getGlobalMcpAutoStart()) {
-    await startMcpServerSafe()
   }
 
   app.on('activate', () => {
