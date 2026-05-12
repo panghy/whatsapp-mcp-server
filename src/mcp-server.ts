@@ -286,7 +286,7 @@ function resolveAllIdentities(
  */
 export function createMcpServer(slug: string): McpServer {
   const server = new McpServer({
-    name: `whatsapp-mcp-server:${slug}`,
+    name: 'whatsapp-mcp-server',
     version: '1.0.0',
     description: 'Access WhatsApp messages and chats. Search conversations, read message history, get recent and unread messages, and send messages through WhatsApp.'
   })
