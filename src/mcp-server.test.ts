@@ -271,6 +271,52 @@ describe('MCP Server', () => {
     })
   })
 
+  describe('serverInfo.name stability across accounts', () => {
+    async function mcpInitialize(port: number, mcpPath: string): Promise<any> {
+      const jsonRpcRequest = {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '0.0.0' }
+        }
+      }
+      const response = await makeRequest({
+        hostname: '127.0.0.1',
+        port,
+        path: mcpPath,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream'
+        }
+      }, JSON.stringify(jsonRpcRequest))
+
+      const dataMatch = response.body.match(/data: (.+)\n/)
+      if (dataMatch) return JSON.parse(dataMatch[1])
+      return JSON.parse(response.body)
+    }
+
+    it('returns identical serverInfo.name = "whatsapp-mcp-server" for /mcp and /mcp/<slug>', async () => {
+      makeAccount(DEFAULT)
+      makeAccount('work')
+      await startMcpServer(testPort)
+
+      const defaultInit = await mcpInitialize(testPort, '/mcp')
+      const workInit = await mcpInitialize(testPort, '/mcp/work')
+
+      expect(defaultInit.result.serverInfo.name).toBe('whatsapp-mcp-server')
+      expect(workInit.result.serverInfo.name).toBe('whatsapp-mcp-server')
+      expect(defaultInit.result.serverInfo.name).toBe(workInit.result.serverInfo.name)
+
+      expect(typeof defaultInit.result.serverInfo.version).toBe('string')
+      expect(defaultInit.result.serverInfo.version.length).toBeGreaterThan(0)
+      expect(defaultInit.result.serverInfo.version).toBe(workInit.result.serverInfo.version)
+    })
+  })
+
   describe('Account Isolation', () => {
     it('keeps chat data separate between accounts', async () => {
       makeAccount(DEFAULT)
