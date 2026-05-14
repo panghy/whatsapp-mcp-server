@@ -1023,6 +1023,69 @@ describe('MCP Server', () => {
     })
   })
 
+  describe('Sender Name Priority', () => {
+    beforeEach(() => { makeAccount(DEFAULT) })
+
+    async function insertSenderAndCallHistory(opts: {
+      jid: string
+      contact: Parameters<typeof contactOps.insert>[2]
+      senderPhone: string | null
+    }): Promise<string> {
+      const senderJid = opts.jid
+      contactOps.insert(DEFAULT, senderJid, opts.contact)
+      const chatJid = `priority-${senderJid}`
+      chatOps.insert(DEFAULT, chatJid, 'dm', undefined, 'Priority Chat')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, chatJid) as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chat.id, `priority-msg-${senderJid}`, now, senderJid, JSON.stringify({
+        type: 'message', messageId: `priority-msg-${senderJid}`, timestamp: new Date(now).toISOString(),
+        text: 'priority test', sender: { name: 'Unknown', phone: opts.senderPhone }
+      }), false)
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: chatJid })
+      return result.result.content[0].text as string
+    }
+
+    it('prefers name over verified_name, push_name and phone', async () => {
+      const text = await insertSenderAndCallHistory({
+        jid: 'prio-name@s.whatsapp.net',
+        contact: { name: 'Address Book Name', verifiedName: 'Verified Co', pushName: 'Push Handle', phoneNumber: '+1110000001' },
+        senderPhone: null
+      })
+      expect(text).toContain('Address Book Name')
+      expect(text).not.toContain('Verified Co')
+      expect(text).not.toContain('Push Handle')
+    })
+
+    it('falls back to verified_name when name is missing', async () => {
+      const text = await insertSenderAndCallHistory({
+        jid: 'prio-verified@s.whatsapp.net',
+        contact: { verifiedName: 'Verified Business', pushName: 'Push Handle', phoneNumber: '+1110000002' },
+        senderPhone: null
+      })
+      expect(text).toContain('Verified Business')
+      expect(text).not.toContain('Push Handle')
+    })
+
+    it('falls back to push_name when name and verified_name are missing', async () => {
+      const text = await insertSenderAndCallHistory({
+        jid: 'prio-push@s.whatsapp.net',
+        contact: { pushName: 'Push Display', phoneNumber: '+1110000003' },
+        senderPhone: null
+      })
+      expect(text).toContain('Push Display')
+    })
+
+    it('falls back to phone when no contact display name is set', async () => {
+      const text = await insertSenderAndCallHistory({
+        jid: '1110000004@s.whatsapp.net',
+        contact: { phoneNumber: '+1110000004' },
+        senderPhone: null
+      })
+      expect(text).toContain('+1110000004')
+    })
+  })
+
   describe('Mention Resolution', () => {
     beforeEach(() => { makeAccount(DEFAULT) })
 
@@ -1058,6 +1121,43 @@ describe('MCP Server', () => {
 
       const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'number-mention@s.whatsapp.net' })
       expect(result.result.content[0].text).toContain('Number Contact')
+    })
+
+    it('renders push_name when a mentioned contact has only push_name set', async () => {
+      contactOps.insert(DEFAULT, 'push-only@s.whatsapp.net', { pushName: 'Push Only', phoneNumber: '+9990000001' })
+      chatOps.insert(DEFAULT, 'push-mention@s.whatsapp.net', 'dm', undefined, 'Push Mention')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'push-mention@s.whatsapp.net') as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chat.id, 'push-mention-msg', now, 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'push-mention-msg', timestamp: new Date(now).toISOString(),
+        text: 'hi @Unknown_push-only@s.whatsapp.net',
+        sender: { name: 'Sender', phone: '+123' },
+        mentionedJids: ['push-only@s.whatsapp.net']
+      }), false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'push-mention@s.whatsapp.net' })
+      expect(result.result.content[0].text).toContain('Push Only')
+    })
+
+    it('prefers address-book name over push_name once name gets populated', async () => {
+      contactOps.insert(DEFAULT, 'upgraded@s.whatsapp.net', { pushName: 'Push Stub', phoneNumber: '+9990000002' })
+      contactOps.insert(DEFAULT, 'upgraded@s.whatsapp.net', { name: 'Real Name' })
+      chatOps.insert(DEFAULT, 'upgraded-mention@s.whatsapp.net', 'dm', undefined, 'Upgraded Mention')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'upgraded-mention@s.whatsapp.net') as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chat.id, 'upgraded-mention-msg', now, 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'upgraded-mention-msg', timestamp: new Date(now).toISOString(),
+        text: 'hello @Unknown_upgraded@s.whatsapp.net',
+        sender: { name: 'Sender', phone: '+123' },
+        mentionedJids: ['upgraded@s.whatsapp.net']
+      }), false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'upgraded-mention@s.whatsapp.net' })
+      const text = result.result.content[0].text as string
+      expect(text).toContain('Real Name')
+      expect(text).not.toContain('Push Stub')
     })
   })
 
