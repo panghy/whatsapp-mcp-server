@@ -94,6 +94,11 @@ function runMigrations(database: Database.Database): void {
     applyMigration7(database)
     database.prepare('INSERT INTO schema_version (version) VALUES (?)').run(7)
   }
+
+  if (version < 8) {
+    applyMigration8(database)
+    database.prepare('INSERT INTO schema_version (version) VALUES (?)').run(8)
+  }
 }
 
 function applyMigration1(database: Database.Database): void {
@@ -269,6 +274,13 @@ function applyMigration7(database: Database.Database): void {
   console.log(`[Migration7] Backfilled enabled=0 on ${result.changes} buggy group row(s)`)
 }
 
+// Splits the conflated `name` column into separate slots so push-name and
+// verified-name updates from Baileys never overwrite the address-book name.
+function applyMigration8(database: Database.Database): void {
+  try { database.exec('ALTER TABLE contacts ADD COLUMN push_name TEXT') } catch { }
+  try { database.exec('ALTER TABLE contacts ADD COLUMN verified_name TEXT') } catch { }
+}
+
 
 // CRUD Operations for messages
 export const messageOps = {
@@ -426,18 +438,35 @@ export const chatOps = {
 }
 
 // CRUD Operations for contacts
+export interface ContactInsertOptions {
+  name?: string | null
+  phoneNumber?: string | null
+  lid?: string | null
+  pushName?: string | null
+  verifiedName?: string | null
+}
+
 export const contactOps = {
-  insert: (slug: string, jid: string, name?: string, phoneNumber?: string, lid?: string) => {
+  insert: (slug: string, jid: string, opts: ContactInsertOptions = {}) => {
     const stmt = getDatabase(slug).prepare(`
-      INSERT INTO contacts (jid, name, phone_number, lid, updated_at)
-      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      INSERT INTO contacts (jid, name, phone_number, lid, push_name, verified_name, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON CONFLICT(jid) DO UPDATE SET
         name = COALESCE(excluded.name, name),
         phone_number = COALESCE(excluded.phone_number, phone_number),
         lid = COALESCE(excluded.lid, lid),
+        push_name = COALESCE(excluded.push_name, push_name),
+        verified_name = COALESCE(excluded.verified_name, verified_name),
         updated_at = CURRENT_TIMESTAMP
     `)
-    return stmt.run(jid, name || null, phoneNumber || null, lid || null)
+    return stmt.run(
+      jid,
+      opts.name || null,
+      opts.phoneNumber || null,
+      opts.lid || null,
+      opts.pushName || null,
+      opts.verifiedName || null,
+    )
   },
 
   getByJid: (slug: string, jid: string) => {
@@ -464,7 +493,8 @@ export const contactOps = {
   },
 
   crossResolveLidNames: (slug: string) => {
-    return getDatabase(slug).prepare(`
+    const db = getDatabase(slug)
+    const nameRes = db.prepare(`
       UPDATE contacts
       SET name = (
         SELECT dm.name FROM contacts dm
@@ -475,10 +505,23 @@ export const contactOps = {
         AND EXISTS (SELECT 1 FROM contacts dm WHERE dm.phone_number = contacts.phone_number
           AND dm.jid LIKE '%@s.whatsapp.net' AND dm.name IS NOT NULL)
     `).run()
+    const pushRes = db.prepare(`
+      UPDATE contacts
+      SET push_name = (
+        SELECT dm.push_name FROM contacts dm
+        WHERE dm.phone_number = contacts.phone_number
+          AND dm.jid LIKE '%@s.whatsapp.net' AND dm.push_name IS NOT NULL
+      )
+      WHERE jid LIKE '%@lid' AND push_name IS NULL AND phone_number IS NOT NULL
+        AND EXISTS (SELECT 1 FROM contacts dm WHERE dm.phone_number = contacts.phone_number
+          AND dm.jid LIKE '%@s.whatsapp.net' AND dm.push_name IS NOT NULL)
+    `).run()
+    return { changes: (nameRes.changes || 0) + (pushRes.changes || 0) }
   },
 
   crossResolveDmNames: (slug: string) => {
-    return getDatabase(slug).prepare(`
+    const db = getDatabase(slug)
+    const nameRes = db.prepare(`
       UPDATE contacts
       SET name = (
         SELECT lid_c.name FROM contacts lid_c
@@ -490,6 +533,19 @@ export const contactOps = {
         AND EXISTS (SELECT 1 FROM contacts lid_c WHERE lid_c.phone_number = contacts.phone_number
           AND (lid_c.jid LIKE '%@lid' OR lid_c.jid LIKE '%@hosted.lid') AND lid_c.name IS NOT NULL)
     `).run()
+    const pushRes = db.prepare(`
+      UPDATE contacts
+      SET push_name = (
+        SELECT lid_c.push_name FROM contacts lid_c
+        WHERE lid_c.phone_number = contacts.phone_number
+          AND (lid_c.jid LIKE '%@lid' OR lid_c.jid LIKE '%@hosted.lid')
+          AND lid_c.push_name IS NOT NULL
+      )
+      WHERE jid LIKE '%@s.whatsapp.net' AND push_name IS NULL AND phone_number IS NOT NULL
+        AND EXISTS (SELECT 1 FROM contacts lid_c WHERE lid_c.phone_number = contacts.phone_number
+          AND (lid_c.jid LIKE '%@lid' OR lid_c.jid LIKE '%@hosted.lid') AND lid_c.push_name IS NOT NULL)
+    `).run()
+    return { changes: (nameRes.changes || 0) + (pushRes.changes || 0) }
   }
 }
 

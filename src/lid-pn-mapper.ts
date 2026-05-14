@@ -65,23 +65,43 @@ export function extractLidPnFromContact(
   )
 }
 
+export interface ContactNameFields {
+  name?: string | null
+  pushName?: string | null
+  verifiedName?: string | null
+}
+
 /**
  * Persist an LID↔PN pair into the contacts table. Creates/updates two rows so
  * later `getByJid`, `getByLid` and `getByPhone` lookups all hit:
  *   - PN-rooted: `jid=pnJid, lid=lidJid, phone_number=normalizedPhone`
  *   - LID-rooted: `jid=lidJid, phone_number=normalizedPhone`
- * `name` is applied to both rows when given.
+ * Any of `name`, `pushName`, `verifiedName` is applied to both rows when given.
  */
-export function persistLidPnMapping(slug: string, pair: LidPnPair, name?: string | null): void {
+export function persistLidPnMapping(
+  slug: string,
+  pair: LidPnPair,
+  names?: ContactNameFields | null
+): void {
   const phone = extractPhoneFromJid(pair.pnJid) ?? undefined
-  contactOps.insert(slug, pair.pnJid, name || undefined, phone, pair.lidJid)
-  contactOps.insert(slug, pair.lidJid, name || undefined, phone, undefined)
+  const name = names?.name ?? undefined
+  const pushName = names?.pushName ?? undefined
+  const verifiedName = names?.verifiedName ?? undefined
+  contactOps.insert(slug, pair.pnJid, {
+    name, phoneNumber: phone, lid: pair.lidJid, pushName, verifiedName
+  })
+  contactOps.insert(slug, pair.lidJid, {
+    name, phoneNumber: phone, pushName, verifiedName
+  })
 }
 
 /**
  * Persist a Baileys Contact (from `contacts.upsert` / `contacts.update`).
  * Stores the row keyed on `contact.id` and additionally cross-stores the
- * paired LID/PN row when both forms are known.
+ * paired LID/PN row when both forms are known. `contact.name` (address-book)
+ * is kept distinct from `contact.notify` (push name) and
+ * `contact.verifiedName` (business verified name) so a later push-name event
+ * cannot overwrite the address-book name.
  */
 export function recordContactFromBaileys(
   slug: string,
@@ -91,12 +111,15 @@ export function recordContactFromBaileys(
     phoneNumber?: string | null
     name?: string | null
     notify?: string | null
+    verifiedName?: string | null
   } | null | undefined
 ): boolean {
   if (!contact) return false
   const id = contact.id || ''
   if (!id) return false
-  const name = contact.name || contact.notify || undefined
+  const name = contact.name || undefined
+  const pushName = contact.notify || undefined
+  const verifiedName = contact.verifiedName || undefined
   const lid = contact.lid || undefined
   const pnField = contact.phoneNumber || undefined
   const phone = pnField
@@ -104,14 +127,16 @@ export function recordContactFromBaileys(
     : (extractPhoneFromJid(id) ?? undefined)
 
   let persisted = false
-  if (name || phone || lid) {
-    contactOps.insert(slug, id, name, phone, lid)
+  if (name || pushName || verifiedName || phone || lid) {
+    contactOps.insert(slug, id, {
+      name, phoneNumber: phone, lid, pushName, verifiedName
+    })
     persisted = true
   }
 
   const pair = extractLidPnFromContact(contact)
   if (pair) {
-    persistLidPnMapping(slug, pair, name)
+    persistLidPnMapping(slug, pair, { name, pushName, verifiedName })
     persisted = true
   }
   return persisted

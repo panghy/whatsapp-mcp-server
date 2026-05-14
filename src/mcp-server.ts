@@ -76,6 +76,14 @@ function getMeIdentity(slug: string): MeIdentity | undefined {
 }
 
 /**
+ * Pick a display name from a contact row using the priority
+ * `name → verified_name → push_name`. Returns `null` when none are set.
+ */
+function pickContactDisplayName(contact: any): string | null {
+  return contact?.name || contact?.verified_name || contact?.push_name || null
+}
+
+/**
  * Resolve sender identity from contacts database.
  */
 function resolveFromContacts(
@@ -85,18 +93,18 @@ function resolveFromContacts(
 ): { name: string; phone: string | null } {
   let contact = contactOps.getByJid(slug, senderJid) as any
 
-  if ((!contact?.name) && (senderJid.includes('@lid') || senderJid.includes('@hosted.lid'))) {
+  if (!pickContactDisplayName(contact) && (senderJid.includes('@lid') || senderJid.includes('@hosted.lid'))) {
     const lidContact = contactOps.getByLid(slug, senderJid) as any
     if (lidContact) contact = lidContact
   }
 
   const phone = fallback.phone || extractPhoneFromJid(senderJid) || contact?.phone_number
-  if ((!contact?.name) && phone) {
+  if (!pickContactDisplayName(contact) && phone) {
     const phoneContact = contactOps.getByPhone(slug, phone) as any
     if (phoneContact) contact = phoneContact
   }
 
-  const resolvedName = contact?.name || fallback.name
+  const resolvedName = pickContactDisplayName(contact) || fallback.name
   const resolvedPhone = contact?.phone_number || phone || fallback.phone
 
   if ((resolvedName === 'Unknown' || resolvedName.startsWith('Unknown_')) && resolvedPhone) {
@@ -118,7 +126,7 @@ function reResolveAllMentions(slug: string, text: string, mentionedJids: string[
   for (const jid of mentionedJids) {
     let contact = contactOps.getByJid(slug, jid) as any
 
-    if ((!contact || !contact.name) && (jid.includes('@lid') || jid.includes('@hosted.lid'))) {
+    if (!pickContactDisplayName(contact) && (jid.includes('@lid') || jid.includes('@hosted.lid'))) {
       const lidContact = contactOps.getByLid(slug, jid) as any
       if (lidContact) contact = lidContact
     }
@@ -126,12 +134,12 @@ function reResolveAllMentions(slug: string, text: string, mentionedJids: string[
     const atIndex = jid.indexOf('@')
     const numberPart = atIndex > 0 ? jid.substring(0, atIndex) : jid
 
-    if ((!contact || !contact.name) && numberPart) {
+    if (!pickContactDisplayName(contact) && numberPart) {
       const phoneContact = contactOps.getByPhone(slug, numberPart) as any
       if (phoneContact) contact = phoneContact
     }
 
-    const name = contact?.name || null
+    const name = pickContactDisplayName(contact)
     const phone = contact?.phone_number || numberPart || null
 
     let formattedMention: string
@@ -184,7 +192,7 @@ function reResolveMentionsInText(slug: string, text: string): string {
     }
 
     if (contact) {
-      const name = contact.name || null
+      const name = pickContactDisplayName(contact)
       const phone = contact.phone_number || null
 
       if (name && phone && name !== phone) return `@${name}:${phone}`
