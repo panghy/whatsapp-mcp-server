@@ -309,7 +309,7 @@ describe('main IPC surface', () => {
 
     it('get-chats / get-contacts / get-logs route to the right account DB', async () => {
       chatOps.insert('acct1', 'jid@dm', 'dm', undefined, 'Alice')
-      contactOps.insert('acct1', 'jid@dm', 'Alice')
+      contactOps.insert('acct1', 'jid@dm', { name: 'Alice' })
       logOps.insert('acct1', 'info', 'test', 'hello world')
 
       const chats = await invoke('get-chats', { slug: 'acct1' })

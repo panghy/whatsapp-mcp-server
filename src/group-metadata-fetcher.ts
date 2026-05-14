@@ -91,11 +91,14 @@ export class GroupMetadataFetcher {
           const phoneNumber = participant.phoneNumber
             ? normalizePhoneNumber(participant.phoneNumber) ?? undefined
             : extractPhoneFromJid(jid) ?? undefined
-          const name = participant.notify || participant.name || undefined
-          if (name) namesFound++
-          if (jid && (name || phoneNumber || lid)) {
-            contactOps.insert(this.slug, jid, name, phoneNumber, lid)
-            if (lid && phoneNumber) { contactOps.insert(this.slug, lid, name, phoneNumber) }
+          const name = participant.name || undefined
+          const pushName = participant.notify || undefined
+          if (name || pushName) namesFound++
+          if (jid && (name || pushName || phoneNumber || lid)) {
+            contactOps.insert(this.slug, jid, { name, phoneNumber, lid, pushName })
+            if (lid && phoneNumber) {
+              contactOps.insert(this.slug, lid, { name, phoneNumber, pushName })
+            }
           }
         }
         console.log(`[GroupMetadata:${this.slug}] Stored ${metadata.participants.length} participants (${namesFound} with names) for ${group.jid}`)
@@ -164,10 +167,13 @@ export class GroupMetadataFetcher {
             const phoneNumber = participant.phoneNumber
               ? normalizePhoneNumber(participant.phoneNumber) ?? undefined
               : extractPhoneFromJid(jid) ?? undefined
-            const name = participant.notify || participant.name || undefined
-            if (jid && (name || phoneNumber || lid)) {
-              contactOps.insert(this.slug, jid, name, phoneNumber, lid)
-              if (lid && phoneNumber) { contactOps.insert(this.slug, lid, name, phoneNumber) }
+            const name = participant.name || undefined
+            const pushName = participant.notify || undefined
+            if (jid && (name || pushName || phoneNumber || lid)) {
+              contactOps.insert(this.slug, jid, { name, phoneNumber, lid, pushName })
+              if (lid && phoneNumber) {
+                contactOps.insert(this.slug, lid, { name, phoneNumber, pushName })
+              }
             }
           }
           contactOps.crossResolveLidNames(this.slug)
@@ -193,10 +199,13 @@ export class GroupMetadataFetcher {
           const phoneNumber = participant.phoneNumber
             ? normalizePhoneNumber(participant.phoneNumber) ?? undefined
             : extractPhoneFromJid(jid) ?? undefined
-          const name = participant.notify || participant.name || undefined
-          if (jid && (name || phoneNumber || lid)) {
-            contactOps.insert(this.slug, jid, name, phoneNumber, lid)
-            if (lid && phoneNumber) { contactOps.insert(this.slug, lid, name, phoneNumber) }
+          const name = participant.name || undefined
+          const pushName = participant.notify || undefined
+          if (jid && (name || pushName || phoneNumber || lid)) {
+            contactOps.insert(this.slug, jid, { name, phoneNumber, lid, pushName })
+            if (lid && phoneNumber) {
+              contactOps.insert(this.slug, lid, { name, phoneNumber, pushName })
+            }
           }
         }
         contactOps.crossResolveLidNames(this.slug)

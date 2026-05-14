@@ -497,10 +497,14 @@ export function registerHandlersForSlug(slug: string, socket: any): void {
       if (contacts && contacts.length > 0) {
         for (const contact of contacts) {
           const jid = contact.id
-          const name = contact.name || contact.notify || undefined
+          const name = contact.name || undefined
+          const pushName = contact.notify || undefined
+          const verifiedName = contact.verifiedName || undefined
           const phone = contact.phoneNumber ? normalizePhoneNumber(contact.phoneNumber) ?? undefined : (jid ? extractPhoneFromJid(jid) ?? undefined : undefined)
           const lid = contact.lid || undefined
-          if (jid && (name || phone || lid)) { contactOps.insert(slug, jid, name, phone, lid) }
+          if (jid && (name || pushName || verifiedName || phone || lid)) {
+            contactOps.insert(slug, jid, { name, phoneNumber: phone, lid, pushName, verifiedName })
+          }
         }
       }
 

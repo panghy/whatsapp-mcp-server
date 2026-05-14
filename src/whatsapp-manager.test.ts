@@ -1614,7 +1614,7 @@ describe('WhatsAppManager Tests', () => {
         TEST_SLUG, chatId, 'msg-sentinel-1', Date.now(),
         '1234@s.whatsapp.net', '{"text":"hi"}'
       )
-      actualDb.contactOps.insert(TEST_SLUG, '1234@s.whatsapp.net', 'Sentinel Contact')
+      actualDb.contactOps.insert(TEST_SLUG, '1234@s.whatsapp.net', { name: 'Sentinel Contact' })
       actualDb.logOps.insert(TEST_SLUG, 'info', 'test', 'pre-event sentinel log')
 
       // Sanity: all sentinel rows present and mcpEnabled=true.

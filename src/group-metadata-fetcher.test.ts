@@ -200,7 +200,11 @@ describe('GroupMetadataFetcher', () => {
 
       const alice = contactOps.getByJid(SLUG, '1111@s.whatsapp.net') as any
       expect(alice).toBeDefined()
-      expect(alice.name).toBe('Alice')
+      expect(alice.push_name).toBe('Alice')
+      expect(alice.name).toBeNull()
+      const bob = contactOps.getByJid(SLUG, '2222@s.whatsapp.net') as any
+      expect(bob).toBeDefined()
+      expect(bob.name).toBe('Bob')
       fetcher.stop()
     })
   })
@@ -335,7 +339,8 @@ describe('GroupMetadataFetcher', () => {
 
       const eve = contactOps.getByJid(SLUG, '5555@s.whatsapp.net') as any
       expect(eve).toBeDefined()
-      expect(eve.name).toBe('Eve')
+      expect(eve.push_name).toBe('Eve')
+      expect(eve.name).toBeNull()
     })
   })
 })

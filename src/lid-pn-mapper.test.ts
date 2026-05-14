@@ -94,7 +94,7 @@ describe('lid-pn-mapper persistence', () => {
   afterEach(() => { closeAllDatabases() })
 
   it('persistLidPnMapping writes both PN-rooted and LID-rooted rows', () => {
-    persistLidPnMapping(SLUG, { lidJid: LID, pnJid: PN }, 'Alice')
+    persistLidPnMapping(SLUG, { lidJid: LID, pnJid: PN }, { name: 'Alice' })
     const pnRow = contactOps.getByJid(SLUG, PN) as any
     const lidRow = contactOps.getByJid(SLUG, LID) as any
     expect(pnRow.lid).toBe(LID)
@@ -116,6 +116,30 @@ describe('lid-pn-mapper persistence', () => {
     expect(pnRow.name).toBe('Bob')
     const lidRow = contactOps.getByJid(SLUG, LID) as any
     expect(lidRow.phone_number).toBe('+15551234567')
+  })
+
+  it('recordContactFromBaileys splits name vs notify into name vs push_name on both rows', () => {
+    const persisted = recordContactFromBaileys(SLUG, {
+      id: PN, lid: LID, name: 'Address Book Bob', notify: 'Bobby', verifiedName: 'Bob LLC'
+    })
+    expect(persisted).toBe(true)
+    const pnRow = contactOps.getByJid(SLUG, PN) as any
+    expect(pnRow.name).toBe('Address Book Bob')
+    expect(pnRow.push_name).toBe('Bobby')
+    expect(pnRow.verified_name).toBe('Bob LLC')
+    const lidRow = contactOps.getByJid(SLUG, LID) as any
+    expect(lidRow.name).toBe('Address Book Bob')
+    expect(lidRow.push_name).toBe('Bobby')
+    expect(lidRow.verified_name).toBe('Bob LLC')
+  })
+
+  it('a follow-up { id, notify } event does not overwrite name', () => {
+    recordContactFromBaileys(SLUG, { id: PN, name: 'Address Book Bob' })
+    recordContactFromBaileys(SLUG, { id: PN, notify: 'Bobby Push' })
+
+    const pnRow = contactOps.getByJid(SLUG, PN) as any
+    expect(pnRow.name).toBe('Address Book Bob')
+    expect(pnRow.push_name).toBe('Bobby Push')
   })
 
   it('recordContactFromBaileys is a no-op when there is no usable identifier', () => {

@@ -456,7 +456,7 @@ describe('MCP Server', () => {
     it('should show JID instead of Unknown for unnamed chats', async () => {
       // Insert a DM chat with no name; match it via phone-digit search on the
       // linked contact so the name-fallback in the result mapping is exercised.
-      contactOps.insert(DEFAULT, 'unnamed@s.whatsapp.net', undefined, '+15551234567')
+      contactOps.insert(DEFAULT, 'unnamed@s.whatsapp.net', { phoneNumber: '+15551234567' })
       chatOps.insert(DEFAULT, 'unnamed@s.whatsapp.net', 'dm', undefined, undefined as any)
       await startMcpServer(testPort)
 
@@ -526,9 +526,9 @@ describe('MCP Server', () => {
     })
 
     it('matches normalized phone numbers (digit-only ≥5 chars)', async () => {
-      contactOps.insert(DEFAULT, 'dialed@s.whatsapp.net', 'Dialed Contact', '+1 (650) 223-4510')
+      contactOps.insert(DEFAULT, 'dialed@s.whatsapp.net', { name: 'Dialed Contact', phoneNumber: '+1 (650) 223-4510' })
       chatOps.insert(DEFAULT, 'dialed@s.whatsapp.net', 'dm', undefined, 'Old Name')
-      contactOps.insert(DEFAULT, 'other@s.whatsapp.net', 'Other', '+1 (415) 555-1212')
+      contactOps.insert(DEFAULT, 'other@s.whatsapp.net', { name: 'Other', phoneNumber: '+1 (415) 555-1212' })
       chatOps.insert(DEFAULT, 'other@s.whatsapp.net', 'dm', undefined, 'Other Chat')
       await startMcpServer(testPort)
 
@@ -545,7 +545,7 @@ describe('MCP Server', () => {
       // (real-world layout for LID-only conversations), so the digit-path
       // join must follow contacts.lid → chats.whatsapp_jid to surface it.
       const lidJid = '1234567890@lid'
-      contactOps.insert(DEFAULT, '85298081467@s.whatsapp.net', 'LID Owner', '+85298081467', lidJid)
+      contactOps.insert(DEFAULT, '85298081467@s.whatsapp.net', { name: 'LID Owner', phoneNumber: '+85298081467', lid: lidJid })
       chatOps.insert(DEFAULT, lidJid, 'dm', undefined, 'LID Chat')
       await startMcpServer(testPort)
 
@@ -557,9 +557,9 @@ describe('MCP Server', () => {
     })
 
     it('drops digit-only-name FTS hits when a phone hit exists', async () => {
-      contactOps.insert(DEFAULT, 'A@s.whatsapp.net', 'Ingrid P', '+852 9243 9919')
+      contactOps.insert(DEFAULT, 'A@s.whatsapp.net', { name: 'Ingrid P', phoneNumber: '+852 9243 9919' })
       chatOps.insert(DEFAULT, 'A@s.whatsapp.net', 'dm', undefined, 'Ingrid P')
-      contactOps.insert(DEFAULT, 'B@s.whatsapp.net', undefined, '+852 9349 7494')
+      contactOps.insert(DEFAULT, 'B@s.whatsapp.net', { phoneNumber: '+852 9349 7494' })
       chatOps.insert(DEFAULT, 'B@s.whatsapp.net', 'dm', undefined, '85293497494')
       await startMcpServer(testPort)
 
@@ -573,9 +573,9 @@ describe('MCP Server', () => {
     })
 
     it('keeps digit-only-name FTS hits when no phone hit fires', async () => {
-      contactOps.insert(DEFAULT, 'A@s.whatsapp.net', 'Ingrid P', '+852 9243 9919')
+      contactOps.insert(DEFAULT, 'A@s.whatsapp.net', { name: 'Ingrid P', phoneNumber: '+852 9243 9919' })
       chatOps.insert(DEFAULT, 'A@s.whatsapp.net', 'dm', undefined, 'Ingrid P')
-      contactOps.insert(DEFAULT, 'B@s.whatsapp.net', undefined, '+852 9349 7494')
+      contactOps.insert(DEFAULT, 'B@s.whatsapp.net', { phoneNumber: '+852 9349 7494' })
       chatOps.insert(DEFAULT, 'B@s.whatsapp.net', 'dm', undefined, '85293497494')
       await startMcpServer(testPort)
 
@@ -588,7 +588,7 @@ describe('MCP Server', () => {
     })
 
     it('matches DM chats via contact name even when chat name is stale', async () => {
-      contactOps.insert(DEFAULT, 'stale-dm@s.whatsapp.net', 'Zebra Longhorn', '+1234567000')
+      contactOps.insert(DEFAULT, 'stale-dm@s.whatsapp.net', { name: 'Zebra Longhorn', phoneNumber: '+1234567000' })
       // Chat name is a stale/null value; contact has the searchable name.
       chatOps.insert(DEFAULT, 'stale-dm@s.whatsapp.net', 'dm', undefined, null as any)
       chatOps.insert(DEFAULT, 'other-dm@s.whatsapp.net', 'dm', undefined, 'Somebody Else')
@@ -623,7 +623,7 @@ describe('MCP Server', () => {
       const disabled = chatOps.getByWhatsappJid(DEFAULT, 'disabled@g.us') as any
       chatOps.updateEnabled(DEFAULT, disabled.id, false)
 
-      contactOps.insert(DEFAULT, 'disabled-dm@s.whatsapp.net', 'Disabled DM', '+9998887777')
+      contactOps.insert(DEFAULT, 'disabled-dm@s.whatsapp.net', { name: 'Disabled DM', phoneNumber: '+9998887777' })
       chatOps.insert(DEFAULT, 'disabled-dm@s.whatsapp.net', 'dm', undefined, 'Disabled DM Chat')
       const disabledDm = chatOps.getByWhatsappJid(DEFAULT, 'disabled-dm@s.whatsapp.net') as any
       chatOps.updateEnabled(DEFAULT, disabledDm.id, false)
@@ -979,7 +979,7 @@ describe('MCP Server', () => {
 
     it('resolves LID contacts', async () => {
       const lidJid = 'lid-value-abc@lid'
-      contactOps.insert(DEFAULT, 'some-jid@s.whatsapp.net', 'LID User Name', '+9999999999', lidJid)
+      contactOps.insert(DEFAULT, 'some-jid@s.whatsapp.net', { name: 'LID User Name', phoneNumber: '+9999999999', lid: lidJid })
       chatOps.insert(DEFAULT, 'lid-chat@s.whatsapp.net', 'dm', undefined, 'LID Chat')
       const chat = chatOps.getByWhatsappJid(DEFAULT, 'lid-chat@s.whatsapp.net') as any
       const now = Date.now()
@@ -994,7 +994,7 @@ describe('MCP Server', () => {
     })
 
     it('falls back to contact lookup by phone number', async () => {
-      contactOps.insert(DEFAULT, 'other-jid@s.whatsapp.net', 'Phone Contact', '+5551234567')
+      contactOps.insert(DEFAULT, 'other-jid@s.whatsapp.net', { name: 'Phone Contact', phoneNumber: '+5551234567' })
       chatOps.insert(DEFAULT, 'phone-chat@s.whatsapp.net', 'dm', undefined, 'Phone Chat')
       const chat = chatOps.getByWhatsappJid(DEFAULT, 'phone-chat@s.whatsapp.net') as any
       const now = Date.now()
@@ -1027,7 +1027,7 @@ describe('MCP Server', () => {
     beforeEach(() => { makeAccount(DEFAULT) })
 
     it('resolves @Unknown mentions from contacts', async () => {
-      contactOps.insert(DEFAULT, 'mentioned@s.whatsapp.net', 'Mentioned User', '+7777777777')
+      contactOps.insert(DEFAULT, 'mentioned@s.whatsapp.net', { name: 'Mentioned User', phoneNumber: '+7777777777' })
       chatOps.insert(DEFAULT, 'mention-chat@s.whatsapp.net', 'dm', undefined, 'Mention Chat')
       const chat = chatOps.getByWhatsappJid(DEFAULT, 'mention-chat@s.whatsapp.net') as any
       const now = Date.now()
@@ -1044,7 +1044,7 @@ describe('MCP Server', () => {
     })
 
     it('resolves mentions by number pattern', async () => {
-      contactOps.insert(DEFAULT, '8888888888@s.whatsapp.net', 'Number Contact', '+8888888888')
+      contactOps.insert(DEFAULT, '8888888888@s.whatsapp.net', { name: 'Number Contact', phoneNumber: '+8888888888' })
       chatOps.insert(DEFAULT, 'number-mention@s.whatsapp.net', 'dm', undefined, 'Number Mention')
       const chat = chatOps.getByWhatsappJid(DEFAULT, 'number-mention@s.whatsapp.net') as any
       const now = Date.now()
@@ -1065,7 +1065,7 @@ describe('MCP Server', () => {
     beforeEach(() => { makeAccount(DEFAULT) })
 
     it('resolves reply sender from the original message', async () => {
-      contactOps.insert(DEFAULT, 'original-sender@s.whatsapp.net', 'Original Sender', '+4444444444')
+      contactOps.insert(DEFAULT, 'original-sender@s.whatsapp.net', { name: 'Original Sender', phoneNumber: '+4444444444' })
       chatOps.insert(DEFAULT, 'reply-chat@s.whatsapp.net', 'dm', undefined, 'Reply Chat')
       const chat = chatOps.getByWhatsappJid(DEFAULT, 'reply-chat@s.whatsapp.net') as any
       const now = Date.now()
@@ -1135,7 +1135,7 @@ describe('MCP Server', () => {
     beforeEach(() => { makeAccount(DEFAULT) })
 
     it('get_chat_history returns chat ref + chronologically-ordered structured messages with replyTo (default omits messageIds)', async () => {
-      contactOps.insert(DEFAULT, 'original-sender@s.whatsapp.net', 'Original Sender', '+4444444444')
+      contactOps.insert(DEFAULT, 'original-sender@s.whatsapp.net', { name: 'Original Sender', phoneNumber: '+4444444444' })
       chatOps.insert(DEFAULT, 'reply-chat@s.whatsapp.net', 'dm', undefined, 'Reply Chat')
       const chat = chatOps.getByWhatsappJid(DEFAULT, 'reply-chat@s.whatsapp.net') as any
       const now = Date.now()
@@ -1166,7 +1166,7 @@ describe('MCP Server', () => {
     })
 
     it('get_chat_history with includeMessageIds=true surfaces messageId and replyTo.messageId', async () => {
-      contactOps.insert(DEFAULT, 'original-sender@s.whatsapp.net', 'Original Sender', '+4444444444')
+      contactOps.insert(DEFAULT, 'original-sender@s.whatsapp.net', { name: 'Original Sender', phoneNumber: '+4444444444' })
       chatOps.insert(DEFAULT, 'reply-chat@s.whatsapp.net', 'dm', undefined, 'Reply Chat')
       const chat = chatOps.getByWhatsappJid(DEFAULT, 'reply-chat@s.whatsapp.net') as any
       const now = Date.now()

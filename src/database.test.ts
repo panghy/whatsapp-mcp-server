@@ -78,7 +78,7 @@ describe('Database Integration Tests', () => {
     it('should apply all migrations', () => {
       const db = getDatabase(SLUG)
       const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
-      expect(version.version).toBe(7)
+      expect(version.version).toBe(8)
     })
 
     it('should return the same handle when initialized twice for the same slug', () => {
@@ -305,7 +305,7 @@ describe('Database Integration Tests', () => {
 
   describe('contactOps', () => {
     it('should insert and retrieve contact by JID', () => {
-      contactOps.insert(SLUG, 'contact@s.whatsapp.net', 'John Doe', '+1234567890', 'lid-123')
+      contactOps.insert(SLUG, 'contact@s.whatsapp.net', { name: 'John Doe', phoneNumber: '+1234567890', lid: 'lid-123' })
 
       const contact = contactOps.getByJid(SLUG, 'contact@s.whatsapp.net') as any
       expect(contact).toBeDefined()
@@ -315,7 +315,7 @@ describe('Database Integration Tests', () => {
     })
 
     it('should get contact by phone number', () => {
-      contactOps.insert(SLUG, 'phone-contact@s.whatsapp.net', 'Jane', '+9876543210')
+      contactOps.insert(SLUG, 'phone-contact@s.whatsapp.net', { name: 'Jane', phoneNumber: '+9876543210' })
 
       const withPlus = contactOps.getByPhone(SLUG, '+9876543210') as any
       expect(withPlus).toBeDefined()
@@ -327,7 +327,7 @@ describe('Database Integration Tests', () => {
     })
 
     it('should get contact by LID', () => {
-      contactOps.insert(SLUG, 'lid-contact@lid', 'Lid User', '+1111111111', 'my-lid-value')
+      contactOps.insert(SLUG, 'lid-contact@lid', { name: 'Lid User', phoneNumber: '+1111111111', lid: 'my-lid-value' })
 
       const contact = contactOps.getByLid(SLUG, 'my-lid-value') as any
       expect(contact).toBeDefined()
@@ -335,12 +335,53 @@ describe('Database Integration Tests', () => {
     })
 
     it('should upsert contact - update existing', () => {
-      contactOps.insert(SLUG, 'upsert@s.whatsapp.net', 'Original Name', '+1234567890')
-      contactOps.insert(SLUG, 'upsert@s.whatsapp.net', 'Updated Name')
+      contactOps.insert(SLUG, 'upsert@s.whatsapp.net', { name: 'Original Name', phoneNumber: '+1234567890' })
+      contactOps.insert(SLUG, 'upsert@s.whatsapp.net', { name: 'Updated Name' })
 
       const contact = contactOps.getByJid(SLUG, 'upsert@s.whatsapp.net') as any
       expect(contact.name).toBe('Updated Name')
       expect(contact.phone_number).toBe('+1234567890')
+    })
+  })
+
+  describe('migration 8 (split push_name + verified_name columns)', () => {
+    it('adds push_name and verified_name columns to contacts', () => {
+      const db = getDatabase(SLUG)
+      const cols = db.prepare('PRAGMA table_info(contacts)').all() as { name: string }[]
+      const names = cols.map((c) => c.name)
+      expect(names).toContain('push_name')
+      expect(names).toContain('verified_name')
+    })
+
+    it('insert with only pushName leaves a prior name untouched', () => {
+      const jid = 'split-1@s.whatsapp.net'
+      contactOps.insert(SLUG, jid, { name: 'Address Book Name' })
+      contactOps.insert(SLUG, jid, { pushName: 'Push Display Name' })
+
+      const row = contactOps.getByJid(SLUG, jid) as any
+      expect(row.name).toBe('Address Book Name')
+      expect(row.push_name).toBe('Push Display Name')
+    })
+
+    it('insert with a new name does not erase a prior pushName', () => {
+      const jid = 'split-2@s.whatsapp.net'
+      contactOps.insert(SLUG, jid, { pushName: 'Push First' })
+      contactOps.insert(SLUG, jid, { name: 'Address Book Later' })
+
+      const row = contactOps.getByJid(SLUG, jid) as any
+      expect(row.name).toBe('Address Book Later')
+      expect(row.push_name).toBe('Push First')
+    })
+
+    it('verified_name is stored independently and survives unrelated upserts', () => {
+      const jid = 'split-3@s.whatsapp.net'
+      contactOps.insert(SLUG, jid, { verifiedName: 'Acme Inc.' })
+      contactOps.insert(SLUG, jid, { name: 'Local Name', pushName: 'Pushy' })
+
+      const row = contactOps.getByJid(SLUG, jid) as any
+      expect(row.verified_name).toBe('Acme Inc.')
+      expect(row.name).toBe('Local Name')
+      expect(row.push_name).toBe('Pushy')
     })
   })
 
@@ -433,8 +474,8 @@ describe('Database Integration Tests', () => {
       chatOps.insert('b', 'beta@s.whatsapp.net', 'dm', undefined, 'Beta')
 
       // Distinct contacts per slug (same JID to prove they live in different DBs)
-      contactOps.insert('a', 'shared@s.whatsapp.net', 'A-side', '+1000000001')
-      contactOps.insert('b', 'shared@s.whatsapp.net', 'B-side', '+1000000002')
+      contactOps.insert('a', 'shared@s.whatsapp.net', { name: 'A-side', phoneNumber: '+1000000001' })
+      contactOps.insert('b', 'shared@s.whatsapp.net', { name: 'B-side', phoneNumber: '+1000000002' })
 
       // Distinct settings per slug (same key, different value)
       settingOps.set('a', 'user_phone', '+1-a')
