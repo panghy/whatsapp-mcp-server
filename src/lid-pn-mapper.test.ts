@@ -168,5 +168,46 @@ describe('lid-pn-mapper persistence', () => {
     expect(recordLidMappingUpdate(SLUG, { lid: LID, pn: '' })).toBe(false)
     expect(recordLidMappingUpdate(SLUG, null)).toBe(false)
   })
+
+  it('a single upsert with both name and notify populates name AND push_name on the row', () => {
+    // The address-book name (Baileys `name`) and the push-name (`notify`)
+    // arrive on the same Contact in the initial upsert; migration 8 keeps
+    // them in separate columns so neither clobbers the other.
+    const persisted = recordContactFromBaileys(SLUG, {
+      id: PN, name: 'Address Book Bob', notify: 'Bobby'
+    })
+    expect(persisted).toBe(true)
+    const row = contactOps.getByJid(SLUG, PN) as any
+    expect(row.name).toBe('Address Book Bob')
+    expect(row.push_name).toBe('Bobby')
+    expect(row.verified_name).toBeNull()
+  })
+
+  it('a Contact carrying only verifiedName populates verified_name only', () => {
+    const persisted = recordContactFromBaileys(SLUG, {
+      id: PN, verifiedName: 'Acme Inc.'
+    })
+    expect(persisted).toBe(true)
+    const row = contactOps.getByJid(SLUG, PN) as any
+    expect(row.verified_name).toBe('Acme Inc.')
+    expect(row.name).toBeNull()
+    expect(row.push_name).toBeNull()
+  })
+
+  it('LID↔PN mirroring: name on { id: pnJid, lid: lidJid } lands on BOTH the PN-rooted and LID-rooted rows', () => {
+    const persisted = recordContactFromBaileys(SLUG, {
+      id: PN, lid: LID, name: 'AB'
+    })
+    expect(persisted).toBe(true)
+    const pnRow = contactOps.getByJid(SLUG, PN) as any
+    const lidRow = contactOps.getByJid(SLUG, LID) as any
+    expect(pnRow).toBeDefined()
+    expect(lidRow).toBeDefined()
+    expect(pnRow.name).toBe('AB')
+    expect(lidRow.name).toBe('AB')
+    expect(pnRow.lid).toBe(LID)
+    expect(pnRow.phone_number).toBe('+15551234567')
+    expect(lidRow.phone_number).toBe('+15551234567')
+  })
 })
 

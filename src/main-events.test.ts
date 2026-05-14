@@ -158,5 +158,22 @@ describe('main.ts realtime LID/PN harvesting', () => {
     expect((contactOps.getByJid(SLUG, PN) as any)?.lid).toBe(LID)
     expect(contactOps.getByJid(SLUG, LID)).toBeTruthy()
   })
+
+  it('contacts.update with notify does not overwrite the address-book name from a prior contacts.upsert', async () => {
+    const sock = buildFakeSocket()
+    registerHandlersForSlug(SLUG, sock)
+    // First the address-book name arrives via contacts.upsert.
+    await sock.fire({
+      'contacts.upsert': [{ id: PN, name: 'Address Book' }],
+    })
+    // Later, the push-name arrives separately via contacts.update.
+    await sock.fire({
+      'contacts.update': [{ id: PN, notify: 'Cryptic Push' }],
+    })
+    const row = contactOps.getByJid(SLUG, PN) as any
+    expect(row).toBeTruthy()
+    expect(row.name).toBe('Address Book')
+    expect(row.push_name).toBe('Cryptic Push')
+  })
 })
 

@@ -1,5 +1,7 @@
 import { vi, describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import fs from 'fs'
+import Database from 'better-sqlite3'
+import path from 'path'
 
 // Create a unique temp directory - hoisted so mock can access it.
 // Must use require inside vi.hoisted since imports are hoisted after vi.hoisted.
@@ -30,6 +32,7 @@ import {
   settingOps,
   logOps,
 } from './database'
+import { accountDbPath } from './accounts'
 
 const SLUG = 'test-a'
 
@@ -382,6 +385,142 @@ describe('Database Integration Tests', () => {
       expect(row.verified_name).toBe('Acme Inc.')
       expect(row.name).toBe('Local Name')
       expect(row.push_name).toBe('Pushy')
+    })
+  })
+
+  describe('schema evolution from v7 → v8 (migration 8 ALTER TABLE path)', () => {
+    const EVO_SLUG = 'schema-evo'
+
+    // Mirrors the historical shape of the contacts table at schema_version=7:
+    // jid + name + phone_number + lid + the migration-6 virtual phone_digits
+    // column, with NO push_name or verified_name yet. The FTS5 virtual tables
+    // and triggers from migration 6 are intentionally omitted because they
+    // are not on the path that migration 8 evolves and they would force the
+    // test to deal with tokenizer probing on every platform.
+    function buildV7Database(dbPath: string): void {
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+      const db = new Database(dbPath)
+      db.pragma('journal_mode = WAL')
+      db.exec(`
+        CREATE TABLE schema_version (
+          version INTEGER PRIMARY KEY,
+          applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE contacts (
+          jid TEXT PRIMARY KEY,
+          name TEXT,
+          phone_number TEXT,
+          lid TEXT,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          phone_digits TEXT GENERATED ALWAYS AS (
+            CASE WHEN phone_number IS NULL THEN NULL
+            ELSE replace(replace(replace(replace(replace(replace(replace(replace(replace(
+              phone_number,
+              '+', ''), '-', ''), ' ', ''), '(', ''), ')', ''), '.', ''), '/', ''), '_', ''), CHAR(9), '')
+            END
+          ) VIRTUAL
+        );
+        CREATE INDEX idx_contacts_lid ON contacts(lid);
+        CREATE INDEX idx_contacts_phone_digits ON contacts(phone_digits);
+        INSERT INTO schema_version (version) VALUES (1), (2), (3), (4), (5), (6), (7);
+      `)
+      db.close()
+    }
+
+    function contactColumnNames(slug: string): string[] {
+      const cols = getDatabase(slug).prepare('PRAGMA table_info(contacts)').all() as { name: string }[]
+      return cols.map((c) => c.name)
+    }
+
+    beforeEach(() => {
+      closeAllDatabases()
+      const accountsRoot = path.join(testDir, 'accounts')
+      if (fs.existsSync(accountsRoot)) fs.rmSync(accountsRoot, { recursive: true, force: true })
+    })
+
+    it('upgrades a real v7 DB to v8 while preserving legacy rows', () => {
+      // Pre-stage a v7-shaped DB on disk under EVO_SLUG's expected path so
+      // the next initializeDatabase() call sees a real upgrade path, not a
+      // fresh init.
+      const dbPath = accountDbPath(EVO_SLUG)
+      buildV7Database(dbPath)
+
+      // Seed legacy contact rows using the OLD shape (no push_name/verified_name).
+      const raw = new Database(dbPath)
+      raw.prepare('INSERT INTO contacts (jid, name, phone_number) VALUES (?, ?, ?)')
+        .run('legacy-1@s.whatsapp.net', 'Legacy One', '+15550000001')
+      raw.prepare('INSERT INTO contacts (jid, name, lid) VALUES (?, ?, ?)')
+        .run('legacy-2@s.whatsapp.net', 'Legacy Two', 'legacy-2-lid@lid')
+      // Sanity: at this point push_name / verified_name don't exist yet.
+      const preCols = (raw.prepare('PRAGMA table_info(contacts)').all() as { name: string }[]).map((c) => c.name)
+      expect(preCols).not.toContain('push_name')
+      expect(preCols).not.toContain('verified_name')
+      raw.close()
+
+      // Apply migration 8 by opening through the production code path.
+      initializeDatabase(EVO_SLUG)
+
+      // schema_version is now 8 (and only one row per version exists).
+      const db = getDatabase(EVO_SLUG)
+      const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
+      expect(version.version).toBe(8)
+
+      // The new columns are present.
+      const postCols = contactColumnNames(EVO_SLUG)
+      expect(postCols).toContain('push_name')
+      expect(postCols).toContain('verified_name')
+
+      // Legacy rows survived intact and have NULL for the new columns.
+      const one = contactOps.getByJid(EVO_SLUG, 'legacy-1@s.whatsapp.net') as any
+      expect(one).toBeDefined()
+      expect(one.name).toBe('Legacy One')
+      expect(one.phone_number).toBe('+15550000001')
+      expect(one.push_name).toBeNull()
+      expect(one.verified_name).toBeNull()
+
+      const two = contactOps.getByJid(EVO_SLUG, 'legacy-2@s.whatsapp.net') as any
+      expect(two.name).toBe('Legacy Two')
+      expect(two.lid).toBe('legacy-2-lid@lid')
+      expect(two.push_name).toBeNull()
+
+      // A subsequent insert with only pushName populates push_name without
+      // disturbing the address-book name set by the v7-era code.
+      contactOps.insert(EVO_SLUG, 'legacy-1@s.whatsapp.net', { pushName: 'Push For Legacy' })
+      const updated = contactOps.getByJid(EVO_SLUG, 'legacy-1@s.whatsapp.net') as any
+      expect(updated.name).toBe('Legacy One')
+      expect(updated.push_name).toBe('Push For Legacy')
+      expect(updated.verified_name).toBeNull()
+    })
+
+    it('is idempotent: re-running initializeDatabase keeps version=8 with no duplicate columns', () => {
+      buildV7Database(accountDbPath(EVO_SLUG))
+      initializeDatabase(EVO_SLUG)
+
+      const colsBefore = contactColumnNames(EVO_SLUG).filter((n) => n === 'push_name' || n === 'verified_name')
+      expect(colsBefore).toEqual(['push_name', 'verified_name'])
+
+      // Drop the cached handle so initializeDatabase() takes the open-from-disk
+      // branch and re-evaluates runMigrations() against the existing file.
+      closeDatabase(EVO_SLUG)
+      expect(() => initializeDatabase(EVO_SLUG)).not.toThrow()
+
+      const db = getDatabase(EVO_SLUG)
+      const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
+      expect(version.version).toBe(8)
+
+      const colsAfter = contactColumnNames(EVO_SLUG).filter((n) => n === 'push_name' || n === 'verified_name')
+      expect(colsAfter).toEqual(['push_name', 'verified_name'])
+    })
+
+    it('fresh DB jumps straight to version=8 with both new columns present', () => {
+      // No pre-stage: this is the "first launch" path.
+      initializeDatabase('fresh-evo')
+      const db = getDatabase('fresh-evo')
+      const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
+      expect(version.version).toBe(8)
+      const cols = (db.prepare('PRAGMA table_info(contacts)').all() as { name: string }[]).map((c) => c.name)
+      expect(cols).toContain('push_name')
+      expect(cols).toContain('verified_name')
     })
   })
 

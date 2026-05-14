@@ -18,7 +18,7 @@ vi.mock('electron', () => ({
 
 // Imports happen after the mock is registered above.
 import Settings from 'electron-settings'
-import { initializeDatabase, closeAllDatabases, chatOps, messageOps, contactOps, settingOps } from './database'
+import { initializeDatabase, closeAllDatabases, chatOps, messageOps, contactOps, settingOps, getDatabase } from './database'
 import { addAccount, setMcpEnabled } from './accounts'
 import { setManager, listManagers } from './whatsapp-manager'
 import {
@@ -1083,6 +1083,56 @@ describe('MCP Server', () => {
         senderPhone: null
       })
       expect(text).toContain('+1110000004')
+    })
+
+    it('walks the full name → verified_name → push_name → phone → Unknown_<jid> ladder by mutating one row', async () => {
+      // Non-numeric local-part so extractPhoneFromJid returns null after
+      // phone_number is wiped on the last step; otherwise the resolver would
+      // synthesize a phone from the JID and the final stage would not trip.
+      const senderJid = 'prio-ladder@s.whatsapp.net'
+      contactOps.insert(DEFAULT, senderJid, {
+        name: 'Address Book Name',
+        verifiedName: 'Verified Co',
+        pushName: 'Push Handle',
+        phoneNumber: '+1110000005'
+      })
+      chatOps.insert(DEFAULT, 'ladder-chat@s.whatsapp.net', 'dm', undefined, 'Ladder Chat')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'ladder-chat@s.whatsapp.net') as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chat.id, 'ladder-msg', now, senderJid, JSON.stringify({
+        type: 'message', messageId: 'ladder-msg', timestamp: new Date(now).toISOString(),
+        text: 'ladder test', sender: { name: 'Unknown', phone: null }
+      }), false)
+      await startMcpServer(testPort)
+
+      async function renderedNameField(): Promise<string> {
+        const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'ladder-chat@s.whatsapp.net' })
+        const sc = result.result.structuredContent
+        return sc.messages[0].sender.name as string
+      }
+
+      const db = getDatabase(DEFAULT)
+      const clear = (col: 'name' | 'verified_name' | 'push_name' | 'phone_number') =>
+        db.prepare(`UPDATE contacts SET ${col} = NULL WHERE jid = ?`).run(senderJid)
+
+      // 1) All four fields present → name wins.
+      expect(await renderedNameField()).toBe('Address Book Name')
+
+      // 2) Drop name → verified_name wins.
+      clear('name')
+      expect(await renderedNameField()).toBe('Verified Co')
+
+      // 3) Drop verified_name → push_name wins.
+      clear('verified_name')
+      expect(await renderedNameField()).toBe('Push Handle')
+
+      // 4) Drop push_name → phone wins.
+      clear('push_name')
+      expect(await renderedNameField()).toBe('+1110000005')
+
+      // 5) Drop phone → Unknown_<jid> falls out.
+      clear('phone_number')
+      expect(await renderedNameField()).toBe(`Unknown_${senderJid}`)
     })
   })
 
