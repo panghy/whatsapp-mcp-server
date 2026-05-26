@@ -1,7 +1,8 @@
-import { messageOps, logOps, chatOps } from './database'
+import { messageOps, logOps, chatOps, settingOps } from './database'
 import path from 'path'
 import fs from 'fs'
 import { accountDir } from './accounts'
+import type { MeIdentity } from './compact-serializer'
 
 // Dynamic imports for ESM modules
 let proto: any
@@ -135,9 +136,20 @@ export class MessageTransformer {
     }
   }
 
+  /**
+   * Read meIdentity from this account's settings, or undefined if not set yet.
+   */
+  private getMeIdentity(): MeIdentity | undefined {
+    const name = settingOps.get(this.slug, 'user_display_name')
+    const phone = settingOps.get(this.slug, 'user_phone')
+    if (name && phone) return { name, phone }
+    return undefined
+  }
+
   async processMessage(msg: any, chatId: number): Promise<void> {
     try {
-      const transformed = await this.transformMessage(msg)
+      const meIdentity = this.getMeIdentity()
+      const transformed = await this.transformMessage(msg, meIdentity)
 
       if (transformed) {
         const contentJson = JSON.stringify(transformed)
@@ -242,7 +254,7 @@ export class MessageTransformer {
     }
   }
 
-  private async transformMessage(msg: any): Promise<TransformedMessage | null> {
+  private async transformMessage(msg: any, meIdentity?: MeIdentity): Promise<TransformedMessage | null> {
     if (!msg.key) return null
 
     const messageId = msg.key.id || `msg-${Date.now()}`
@@ -251,8 +263,15 @@ export class MessageTransformer {
     const senderJid = msg.key.participant || msg.key.remoteJid || 'unknown'
     const isFromMe = msg.key.fromMe || false
 
-    const phone = extractPhoneFromJid(senderJid)
-    const sender = { name: phone || `Unknown_${senderJid}`, phone }
+    let sender: { name: string; phone: string | null }
+    if (isFromMe) {
+      sender = meIdentity
+        ? { name: meIdentity.name, phone: meIdentity.phone }
+        : { name: '(me)', phone: null }
+    } else {
+      const phone = extractPhoneFromJid(senderJid)
+      sender = { name: phone || `Unknown_${senderJid}`, phone }
+    }
 
     let messageContent = msg.message
     if (!messageContent) {

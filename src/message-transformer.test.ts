@@ -22,7 +22,7 @@ vi.mock('@whiskeysockets/baileys', () => ({
 }))
 
 // NOW import modules - mocks are in place
-import { initializeDatabase, closeDatabase, chatOps, messageOps, logOps } from './database'
+import { initializeDatabase, closeDatabase, chatOps, messageOps, logOps, settingOps } from './database'
 import { MessageTransformer, extractPhoneFromJid, normalizePhoneNumber, initializeMessageTransformer } from './message-transformer'
 
 const SLUG = 'default'
@@ -239,6 +239,93 @@ describe('Message Transformer Tests', () => {
       const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-fromme-1') as { content_json: string }
       const content = JSON.parse(stored.content_json)
       expect(content.isFromMe).toBe(true)
+    })
+  })
+
+  describe('processMessage - sender identity (isFromMe / meIdentity)', () => {
+    it('should set sender to (me) with null phone for fromMe DM when meIdentity not set', async () => {
+      const chatId = createTestChat()
+      const transformer = new MessageTransformer(SLUG, mockSocket)
+
+      const msg = {
+        key: { id: 'msg-me-noid-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: true },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: { conversation: 'I sent this' }
+      }
+
+      await transformer.processMessage(msg, chatId)
+
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-me-noid-1') as { content_json: string }
+      const content = JSON.parse(stored.content_json)
+      expect(content.isFromMe).toBe(true)
+      expect(content.sender).toEqual({ name: '(me)', phone: null })
+    })
+
+    it('should set sender to meIdentity for fromMe DM when meIdentity is set', async () => {
+      const chatId = createTestChat()
+      settingOps.set(SLUG, 'user_display_name', 'Alice')
+      settingOps.set(SLUG, 'user_phone', '+9998887777')
+      const transformer = new MessageTransformer(SLUG, mockSocket)
+
+      const msg = {
+        key: { id: 'msg-me-id-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: true },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: { conversation: 'I sent this' }
+      }
+
+      await transformer.processMessage(msg, chatId)
+
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-me-id-1') as { content_json: string }
+      const content = JSON.parse(stored.content_json)
+      expect(content.isFromMe).toBe(true)
+      expect(content.sender).toEqual({ name: 'Alice', phone: '+9998887777' })
+    })
+
+    it('should derive sender from senderJid when not fromMe (DM)', async () => {
+      const chatId = createTestChat()
+      settingOps.set(SLUG, 'user_display_name', 'Alice')
+      settingOps.set(SLUG, 'user_phone', '+9998887777')
+      const transformer = new MessageTransformer(SLUG, mockSocket)
+
+      const msg = {
+        key: { id: 'msg-other-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: { conversation: 'Hi from contact' }
+      }
+
+      await transformer.processMessage(msg, chatId)
+
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-other-1') as { content_json: string }
+      const content = JSON.parse(stored.content_json)
+      expect(content.isFromMe).toBe(false)
+      expect(content.sender).toEqual({ name: '+1234567890', phone: '+1234567890' })
+    })
+
+    it('should use meIdentity for fromMe attachments too', async () => {
+      const chatId = createTestChat()
+      settingOps.set(SLUG, 'user_display_name', 'Alice')
+      settingOps.set(SLUG, 'user_phone', '+9998887777')
+      const transformer = new MessageTransformer(SLUG, mockSocket)
+
+      const msg = {
+        key: { id: 'msg-me-img-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: true },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          imageMessage: {
+            mimetype: 'image/jpeg',
+            filename: 'me.jpg',
+            fileLength: 1024,
+            url: 'https://example.com/me.jpg'
+          }
+        }
+      }
+
+      await transformer.processMessage(msg, chatId)
+
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-me-img-1') as { content_json: string }
+      const content = JSON.parse(stored.content_json)
+      expect(content.isFromMe).toBe(true)
+      expect(content.sender).toEqual({ name: 'Alice', phone: '+9998887777' })
     })
   })
 

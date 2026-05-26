@@ -215,15 +215,17 @@ function resolveAllIdentities(
 ): TransformedMessage {
   const senderJid = msg.sender_jid
 
-  if (parsed.sender) {
-    parsed.sender = resolveFromContacts(slug, senderJid, parsed.sender)
-  }
-
   if (meIdentity && !parsed.isFromMe) {
     const senderPhone = extractPhoneFromJid(senderJid)
     if (senderPhone && senderPhone === meIdentity.phone) {
       parsed.isFromMe = true
     }
+  }
+
+  if (parsed.isFromMe && meIdentity) {
+    parsed.sender = { name: meIdentity.name, phone: meIdentity.phone }
+  } else if (parsed.sender) {
+    parsed.sender = resolveFromContacts(slug, senderJid, parsed.sender)
   }
 
   if (parsed.text) {

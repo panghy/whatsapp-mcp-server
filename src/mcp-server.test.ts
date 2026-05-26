@@ -1023,6 +1023,106 @@ describe('MCP Server', () => {
     })
   })
 
+  describe('DM Sender Attribution', () => {
+    beforeEach(() => { makeAccount(DEFAULT) })
+
+    it('incoming DM: sender shows contact identity with isMe=false', async () => {
+      const contactJid = '1234567890@s.whatsapp.net'
+      contactOps.insert(DEFAULT, contactJid, { name: 'Alice Contact', phoneNumber: '+1234567890' })
+      chatOps.insert(DEFAULT, contactJid, 'dm', undefined, 'Alice Contact')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, contactJid) as any
+      const now = Date.now()
+      messageOps.insert(DEFAULT, chat.id, 'in-1', now, contactJid, JSON.stringify({
+        type: 'message', messageId: 'in-1', timestamp: new Date(now).toISOString(),
+        text: 'Hi from Alice', sender: { name: '+1234567890', phone: '+1234567890' }, isFromMe: false
+      }), false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: contactJid })
+      const sc = result.result.structuredContent
+      expect(sc.messages).toHaveLength(1)
+      expect(sc.messages[0].sender.name).toBe('Alice Contact')
+      expect(sc.messages[0].sender.phone).toBe('+1234567890')
+      expect(sc.messages[0].sender.isMe).toBe(false)
+      expect(result.result.content[0].text).toContain('Alice Contact:+1234567890 > Hi from Alice')
+    })
+
+    it('outgoing DM with meIdentity: sender shows user identity with isMe=true', async () => {
+      settingOps.set(DEFAULT, 'user_display_name', 'My Name')
+      settingOps.set(DEFAULT, 'user_phone', '+9998887777')
+      const contactJid = '1234567890@s.whatsapp.net'
+      contactOps.insert(DEFAULT, contactJid, { name: 'Alice Contact', phoneNumber: '+1234567890' })
+      chatOps.insert(DEFAULT, contactJid, 'dm', undefined, 'Alice Contact')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, contactJid) as any
+      const now = Date.now()
+      // Transformer stores fromMe DM sender as meIdentity (after the fix).
+      messageOps.insert(DEFAULT, chat.id, 'out-1', now, contactJid, JSON.stringify({
+        type: 'message', messageId: 'out-1', timestamp: new Date(now).toISOString(),
+        text: 'Hi from me', sender: { name: 'My Name', phone: '+9998887777' }, isFromMe: true
+      }), false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: contactJid })
+      const sc = result.result.structuredContent
+      expect(sc.messages).toHaveLength(1)
+      expect(sc.messages[0].sender.name).toBe('My Name')
+      expect(sc.messages[0].sender.phone).toBe('+9998887777')
+      expect(sc.messages[0].sender.isMe).toBe(true)
+      // Critical: must NOT show contact identity for fromMe messages.
+      expect(sc.messages[0].sender.name).not.toBe('Alice Contact')
+      expect(sc.messages[0].sender.phone).not.toBe('+1234567890')
+      expect(result.result.content[0].text).toContain('My Name:+9998887777 > Hi from me')
+      expect(result.result.content[0].text).not.toContain('Alice Contact:+1234567890 > Hi from me')
+    })
+
+    it('outgoing DM without meIdentity: sender falls back to (me) with isMe=true', async () => {
+      // Intentionally do NOT set user_display_name / user_phone.
+      const contactJid = 'opaque-dm-recipient@s.whatsapp.net'
+      chatOps.insert(DEFAULT, contactJid, 'dm', undefined, 'Opaque DM')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, contactJid) as any
+      const now = Date.now()
+      // Transformer fallback when no meIdentity is known.
+      messageOps.insert(DEFAULT, chat.id, 'out-noid-1', now, contactJid, JSON.stringify({
+        type: 'message', messageId: 'out-noid-1', timestamp: new Date(now).toISOString(),
+        text: 'Hi from me anonymous', sender: { name: '(me)', phone: null }, isFromMe: true
+      }), false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: contactJid })
+      const sc = result.result.structuredContent
+      expect(sc.messages).toHaveLength(1)
+      expect(sc.messages[0].sender.name).toBe('(me)')
+      expect(sc.messages[0].sender.isMe).toBe(true)
+      // Compact text uses isFromMe directly, so prefix is "(me) >".
+      expect(result.result.content[0].text).toContain('(me) > Hi from me anonymous')
+    })
+
+    it('outgoing group message with meIdentity: sender shows user identity (regression)', async () => {
+      settingOps.set(DEFAULT, 'user_display_name', 'My Name')
+      settingOps.set(DEFAULT, 'user_phone', '+9998887777')
+      const groupJid = 'family@g.us'
+      chatOps.insert(DEFAULT, groupJid, 'group', undefined, 'Family Group')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, groupJid) as any
+      const now = Date.now()
+      // In a group, sender_jid is the participant; for fromMe the participant
+      // would normally be the user's own JID, but stored sender already reflects
+      // meIdentity from the transformer step.
+      messageOps.insert(DEFAULT, chat.id, 'group-out-1', now, '9998887777@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'group-out-1', timestamp: new Date(now).toISOString(),
+        text: 'Hello group', sender: { name: 'My Name', phone: '+9998887777' }, isFromMe: true
+      }), false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: groupJid })
+      const sc = result.result.structuredContent
+      expect(sc.messages).toHaveLength(1)
+      expect(sc.messages[0].sender.name).toBe('My Name')
+      expect(sc.messages[0].sender.phone).toBe('+9998887777')
+      expect(sc.messages[0].sender.isMe).toBe(true)
+      expect(result.result.content[0].text).toContain('My Name:+9998887777 > Hello group')
+    })
+  })
+
   describe('Sender Name Priority', () => {
     beforeEach(() => { makeAccount(DEFAULT) })
 
