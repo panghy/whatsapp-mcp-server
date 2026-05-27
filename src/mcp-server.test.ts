@@ -2040,5 +2040,105 @@ describe('MCP Server', () => {
     })
   })
 
+  // --- Verifier-added end-to-end tests (Wave 1 cross-task contract checks) ---
+  // Bridges ingestion (MessageTransformer.processMessage) with resolution
+  // (/media HTTP route and get_message_media tool) to confirm that protobuf
+  // `bytes` fields (mediaKey, fileSha256) survive SQLite TEXT round-trip and
+  // that resolveMedia finds the payload under `content_json.rawMessage` -
+  // the persistence layout ingestion actually produces.
+  describe('Wave 1 ingestion <-> resolveMedia contract (verifier)', () => {
+    function rawGetV(port: number, p: string): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+      return new Promise((resolve, reject) => {
+        const req = http.request({ hostname: '127.0.0.1', port, path: p, method: 'GET' }, (res) => {
+          const chunks: Buffer[] = []
+          res.on('data', (c) => chunks.push(c))
+          res.on('end', () => resolve({ status: res.statusCode || 0, headers: res.headers, body: Buffer.concat(chunks) }))
+        })
+        req.on('error', reject)
+        req.end()
+      })
+    }
+
+    it('round-trips an ingested image through /media with mediaKey decoded back to Buffer', async () => {
+      const { MessageTransformer } = await import('./message-transformer')
+      makeAccount(DEFAULT)
+      chatOps.insert(DEFAULT, 'e2e@s.whatsapp.net', 'dm', undefined, 'E2E Chat')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'e2e@s.whatsapp.net') as any
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+
+      const mediaKeyBytes = Buffer.from([10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
+      const fileSha = Buffer.from('the-quick-brown-fox-jumps!!')
+      const baileysMsg = {
+        key: { id: 'E2E-IMG-1', remoteJid: 'e2e@s.whatsapp.net', fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          imageMessage: {
+            mimetype: 'image/png', filename: 'e2e.png', fileLength: 10 * 1024 * 1024,
+            mediaKey: mediaKeyBytes, fileSha256: fileSha,
+            url: 'https://mmg.whatsapp.net/m/v/t62/e2e.enc', directPath: '/v/t62/e2e.enc'
+          }
+        }
+      }
+      await new (MessageTransformer as any)(DEFAULT, {} as any).processMessage(baileysMsg, chat.id)
+
+      const stored = messageOps.getByWhatsappMessageId(DEFAULT, 'E2E-IMG-1') as any
+      const parsed = JSON.parse(stored.content_json)
+      expect(parsed.rawMessage?.imageMessage).toBeDefined()
+      expect(parsed.message).toBeUndefined()
+      expect(stored.has_attachment).toBe(1)
+
+      let capturedMsg: any = null
+      ;(mockDownloadMediaMessage as any).mockImplementationOnce(async (m: any) => {
+        capturedMsg = m
+        return Buffer.from('e2e-png-bytes')
+      })
+
+      await startMcpServer(testPort)
+      const r = await rawGetV(testPort, '/media/default/E2E-IMG-1')
+      expect(r.status).toBe(200)
+      expect(r.headers['content-type']).toBe('image/png')
+      expect(r.body.toString()).toBe('e2e-png-bytes')
+
+      expect(capturedMsg).not.toBeNull()
+      const reconstructed = capturedMsg.message.imageMessage
+      expect(Buffer.isBuffer(reconstructed.mediaKey)).toBe(true)
+      expect(reconstructed.mediaKey.equals(mediaKeyBytes)).toBe(true)
+      expect(Buffer.isBuffer(reconstructed.fileSha256)).toBe(true)
+      expect(reconstructed.fileSha256.equals(fileSha)).toBe(true)
+    })
+
+    it('round-trips an ingested image through get_message_media tool', async () => {
+      const { MessageTransformer } = await import('./message-transformer')
+      makeAccount(DEFAULT)
+      chatOps.insert(DEFAULT, 'tool@s.whatsapp.net', 'dm', undefined, 'Tool E2E')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'tool@s.whatsapp.net') as any
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+
+      const baileysMsg = {
+        key: { id: 'E2E-TOOL-1', remoteJid: 'tool@s.whatsapp.net', fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          imageMessage: {
+            mimetype: 'image/png', filename: 'tool.png', fileLength: 10 * 1024 * 1024,
+            mediaKey: Buffer.from([1, 2, 3]),
+            url: 'https://mmg.whatsapp.net/m/v/t62/tool.enc', directPath: '/v/t62/tool.enc'
+          }
+        }
+      }
+      await new (MessageTransformer as any)(DEFAULT, {} as any).processMessage(baileysMsg, chat.id)
+
+      mockDownloadMediaMessage.mockResolvedValueOnce(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'E2E-TOOL-1' })
+      expect(result.result.isError).toBeFalsy()
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.kind).toBe('image')
+      expect(sc.returnedAs).toBe('inline')
+      expect(result.result.content[1].type).toBe('image')
+    })
+  })
+
 })
 
