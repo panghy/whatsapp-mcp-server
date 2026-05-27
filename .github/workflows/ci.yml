@@ -19,6 +19,8 @@ jobs:
         run: npm run lint
       - name: Type check
         run: npm run type-check
+      - name: Build main (tsconfig.main.json)
+        run: npx tsc --project tsconfig.main.json --noEmit
       - name: Build renderer
         run: npm run build:renderer
       - name: Run tests
