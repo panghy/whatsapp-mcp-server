@@ -6,7 +6,7 @@ import fs from 'fs'
 import path from 'path'
 import { chatOps, messageOps, settingOps, contactOps, getDatabase } from './database'
 import { serializeCompact, MeIdentity } from './compact-serializer'
-import { TransformedMessage, extractPhoneFromJid } from './message-transformer'
+import { TransformedMessage, extractPhoneFromJid, restoreBuffersInPlace } from './message-transformer'
 import {
   toStructuredMessage,
   chatHistoryOutputShape,
@@ -448,7 +448,10 @@ export async function resolveMedia(slug: string, messageId: string): Promise<Med
 
   // Reconstruct a minimal Baileys WAMessage. `downloadMediaMessage` reads
   // `msg.message.<kind>Message` and uses its `mediaKey` + URL to fetch.
+  // `restoreBuffersInPlace` rebuilds the protobuf `bytes` fields (`mediaKey`,
+  // `fileEncSha256`, …) from their persisted JSON-safe form.
   const messageKey = `${kind === 'voice' ? 'audio' : kind}Message`
+  restoreBuffersInPlace(payload)
   const reconstructed = {
     key: { id: messageId, remoteJid: row.sender_jid, fromMe: false },
     message: { [messageKey]: payload }

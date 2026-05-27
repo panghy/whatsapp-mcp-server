@@ -423,7 +423,7 @@ describe('Message Transformer Tests', () => {
       expect(stored.has_attachment).toBe(1)
     })
 
-    it('should return unsupported_attachment for unsupported MIME type', async () => {
+    it('should record video as a first-class lazy-fetch message with kind=video', async () => {
       const chatId = createTestChat()
       const transformer = new MessageTransformer(SLUG, mockSocket)
 
@@ -434,20 +434,27 @@ describe('Message Transformer Tests', () => {
           videoMessage: {
             mimetype: 'video/mp4',
             filename: 'video.mp4',
-            fileLength: 1024
+            fileLength: 1024,
+            seconds: 17
           }
         }
       }
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-video-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-video-1') as { content_json: string; has_attachment: number }
       const content = JSON.parse(stored.content_json)
-      expect(content.type).toBe('unsupported_attachment')
-      expect(content.reason).toBe('unsupported_type')
+      expect(content.type).toBe('message')
+      expect(content.kind).toBe('video')
+      expect(content.mimeType).toBe('video/mp4')
+      expect(content.durationSeconds).toBe(17)
+      expect(stored.has_attachment).toBe(1)
+      // Eager-download is reserved for image/document, so downloadMediaMessage
+      // must NOT be invoked for video on receipt.
+      expect(mockDownloadMediaMessage).not.toHaveBeenCalled()
     })
 
-    it('should return unsupported_attachment for file exceeding size limit', async () => {
+    it('should record oversize images as lazy-fetch messages (no eager download)', async () => {
       const chatId = createTestChat()
       const transformer = new MessageTransformer(SLUG, mockSocket)
 
@@ -458,18 +465,142 @@ describe('Message Transformer Tests', () => {
           imageMessage: {
             mimetype: 'image/jpeg',
             filename: 'bigphoto.jpg',
-            fileLength: 10 * 1024 * 1024 // 10MB - over 5MB limit
+            fileLength: 10 * 1024 * 1024 // 10MB — over the 5MB eager-download cap
           }
         }
       }
 
       await transformer.processMessage(msg, chatId)
 
-      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-big-1') as { content_json: string }
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-big-1') as { content_json: string; has_attachment: number }
       const content = JSON.parse(stored.content_json)
-      expect(content.type).toBe('unsupported_attachment')
-      expect(content.reason).toBe('exceeds_size_limit')
+      expect(content.type).toBe('message')
+      expect(content.kind).toBe('image')
+      expect(content.fileSize).toBe(10 * 1024 * 1024)
+      expect(stored.has_attachment).toBe(1)
+      expect(mockDownloadMediaMessage).not.toHaveBeenCalled()
     })
+
+    it('should record voice notes (audioMessage.ptt=true) with kind=voice and duration', async () => {
+      const chatId = createTestChat()
+      const transformer = new MessageTransformer(SLUG, mockSocket)
+
+      const msg = {
+        key: { id: 'msg-voice-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          audioMessage: {
+            mimetype: 'audio/ogg; codecs=opus',
+            fileLength: 4096,
+            seconds: 12,
+            ptt: true
+          }
+        }
+      }
+
+      await transformer.processMessage(msg, chatId)
+
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-voice-1') as { content_json: string; has_attachment: number }
+      const content = JSON.parse(stored.content_json)
+      expect(content.type).toBe('message')
+      expect(content.kind).toBe('voice')
+      expect(content.durationSeconds).toBe(12)
+      expect(stored.has_attachment).toBe(1)
+      expect(mockDownloadMediaMessage).not.toHaveBeenCalled()
+    })
+
+    it('should record non-PTT audio with kind=audio', async () => {
+      const chatId = createTestChat()
+      const transformer = new MessageTransformer(SLUG, mockSocket)
+
+      const msg = {
+        key: { id: 'msg-audio-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          audioMessage: {
+            mimetype: 'audio/mp4',
+            fileLength: 8192,
+            seconds: 45
+          }
+        }
+      }
+
+      await transformer.processMessage(msg, chatId)
+
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-audio-1') as { content_json: string; has_attachment: number }
+      const content = JSON.parse(stored.content_json)
+      expect(content.type).toBe('message')
+      expect(content.kind).toBe('audio')
+      expect(content.durationSeconds).toBe(45)
+      expect(stored.has_attachment).toBe(1)
+    })
+
+    it('should record stickers with kind=sticker (no duration)', async () => {
+      const chatId = createTestChat()
+      const transformer = new MessageTransformer(SLUG, mockSocket)
+
+      const msg = {
+        key: { id: 'msg-sticker-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          stickerMessage: {
+            mimetype: 'image/webp',
+            fileLength: 2048
+          }
+        }
+      }
+
+      await transformer.processMessage(msg, chatId)
+
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-sticker-1') as { content_json: string; has_attachment: number }
+      const content = JSON.parse(stored.content_json)
+      expect(content.type).toBe('message')
+      expect(content.kind).toBe('sticker')
+      expect(content.durationSeconds).toBeUndefined()
+      expect(stored.has_attachment).toBe(1)
+      expect(mockDownloadMediaMessage).not.toHaveBeenCalled()
+    })
+
+    it('round-trips raw imageMessage through messageOps.insert/getByWhatsappMessageId with mediaKey intact', async () => {
+      const chatId = createTestChat()
+      const transformer = new MessageTransformer(SLUG, mockSocket)
+
+      const mediaKeyBytes = Buffer.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+      const fileSha = Buffer.from('abcdefghijklmnop')
+      const msg = {
+        key: { id: 'msg-roundtrip-1', remoteJid: '1234567890@s.whatsapp.net', fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          imageMessage: {
+            mimetype: 'image/jpeg',
+            filename: 'rt.jpg',
+            fileLength: 4242,
+            mediaKey: mediaKeyBytes,
+            fileSha256: fileSha,
+            url: 'https://mmg.whatsapp.net/m/v/t62/foo.enc',
+            directPath: '/v/t62/foo.enc'
+          }
+        }
+      }
+
+      await transformer.processMessage(msg, chatId)
+
+      const stored = messageOps.getByWhatsappMessageId(SLUG, 'msg-roundtrip-1') as { content_json: string }
+      const parsed = JSON.parse(stored.content_json)
+      expect(parsed.rawMessage).toBeDefined()
+      expect(parsed.rawMessage.imageMessage).toBeDefined()
+      expect(parsed.rawMessage.imageMessage.url).toBe('https://mmg.whatsapp.net/m/v/t62/foo.enc')
+      expect(parsed.rawMessage.imageMessage.directPath).toBe('/v/t62/foo.enc')
+
+      const { restoreBuffersInPlace } = await import('./message-transformer')
+      restoreBuffersInPlace(parsed.rawMessage)
+      expect(Buffer.isBuffer(parsed.rawMessage.imageMessage.mediaKey)).toBe(true)
+      expect(parsed.rawMessage.imageMessage.mediaKey.equals(mediaKeyBytes)).toBe(true)
+      expect(Buffer.isBuffer(parsed.rawMessage.imageMessage.fileSha256)).toBe(true)
+      expect(parsed.rawMessage.imageMessage.fileSha256.equals(fileSha)).toBe(true)
+    })
+
+
 
     it('should return unsupported_attachment on download failure', async () => {
       const chatId = createTestChat()
