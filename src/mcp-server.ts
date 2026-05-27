@@ -945,7 +945,7 @@ export function createMcpServer(slug: string): McpServer {
       }
 
       const result = await resolveMedia(slug, messageId)
-      if (!result.ok) {
+      if ('failure' in result) {
         const failure: GetMessageMediaResult = {
           ok: false, messageId,
           error: chatJid ? `${result.failure.error} (chat ${chatJid})` : result.failure.error,
@@ -1125,7 +1125,7 @@ async function handleMediaRequest(
   }
 
   const result = await resolveMedia(slug, messageId)
-  if (!result.ok) {
+  if ('failure' in result) {
     sendJson(res, result.failure.httpStatus, { error: result.failure.error })
     return
   }
