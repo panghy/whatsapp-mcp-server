@@ -16,10 +16,17 @@ vi.mock('electron', () => ({
   app: { getPath: () => testDir }
 }))
 
+// Mock Baileys' `downloadMediaMessage` for the /media + get_message_media tests.
+const mockDownloadMediaMessage = vi.fn(async () => Buffer.from('mock-media-bytes'))
+vi.mock('@whiskeysockets/baileys', () => ({
+  proto: {},
+  downloadMediaMessage: mockDownloadMediaMessage
+}))
+
 // Imports happen after the mock is registered above.
 import Settings from 'electron-settings'
 import { initializeDatabase, closeAllDatabases, chatOps, messageOps, contactOps, settingOps, getDatabase } from './database'
-import { addAccount, setMcpEnabled } from './accounts'
+import { addAccount, setMcpEnabled, accountDir } from './accounts'
 import { setManager, listManagers } from './whatsapp-manager'
 import {
   startMcpServer,
@@ -27,7 +34,8 @@ import {
   isMcpServerRunning,
   getMcpPort,
   setMcpPort,
-  refreshAccount
+  refreshAccount,
+  setMaxInlineToolBytesForTesting
 } from './mcp-server'
 
 const DEFAULT = 'default'
@@ -1708,6 +1716,429 @@ describe('MCP Server', () => {
     })
   })
 
+  describe('/media HTTP endpoint', () => {
+    const PATH = require('path')
+
+    function insertMediaMessage(
+      slug: string, chatJid: string, msgId: string, kind: string, payload: Record<string, unknown>
+    ): void {
+      chatOps.insert(slug, chatJid, 'dm', undefined, 'Test Chat')
+      const chat = chatOps.getByWhatsappJid(slug, chatJid) as any
+      messageOps.insert(slug, chat.id, msgId, Date.now(), 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: msgId, timestamp: new Date().toISOString(),
+        sender: { name: 'Sender', phone: '+123' },
+        message: { [`${kind}Message`]: payload }
+      }), true)
+    }
+
+    function writeCachedFile(slug: string, msgId: string, filename: string, contents: Buffer | string): string {
+      const dir = PATH.join(accountDir(slug), 'attachments', msgId)
+      fs.mkdirSync(dir, { recursive: true })
+      const filepath = PATH.join(dir, filename)
+      fs.writeFileSync(filepath, contents)
+      return filepath
+    }
+
+    function rawGet(port: number, path: string, method: string = 'GET'): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+      return new Promise((resolve, reject) => {
+        const req = http.request({ hostname: '127.0.0.1', port, path, method }, (res) => {
+          const chunks: Buffer[] = []
+          res.on('data', (c) => chunks.push(c))
+          res.on('end', () => resolve({ status: res.statusCode || 0, headers: res.headers, body: Buffer.concat(chunks) }))
+        })
+        req.on('error', reject)
+        req.end()
+      })
+    }
+
+    beforeEach(() => {
+      makeAccount(DEFAULT)
+      mockDownloadMediaMessage.mockClear()
+      setMaxInlineToolBytesForTesting(null)
+    })
+
+    afterEach(() => {
+      setMaxInlineToolBytesForTesting(null)
+    })
+
+    it('streams a cached image with correct headers and bytes', async () => {
+      const imgBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+      insertMediaMessage(DEFAULT, 'imgchat@s.whatsapp.net', 'IMG1', 'image',
+        { mimetype: 'image/png', fileLength: imgBytes.length })
+      writeCachedFile(DEFAULT, 'IMG1', 'image_IMG1.png', imgBytes)
+      await startMcpServer(testPort)
+
+      const r = await rawGet(testPort, '/media/default/IMG1')
+      expect(r.status).toBe(200)
+      expect(r.headers['content-type']).toBe('image/png')
+      expect(r.headers['content-length']).toBe(String(imgBytes.length))
+      expect(r.headers['cache-control']).toBe('private, max-age=3600')
+      expect(r.headers['content-disposition']).toContain('image_IMG1.png')
+      expect(r.body.equals(imgBytes)).toBe(true)
+      expect(mockDownloadMediaMessage).not.toHaveBeenCalled()
+    })
+
+    it('lazily downloads a voice note on first request and serves from cache on the second', async () => {
+      insertMediaMessage(DEFAULT, 'voicechat@s.whatsapp.net', 'VOICE1', 'audio',
+        { mimetype: 'audio/ogg; codecs=opus', seconds: 12, ptt: true, fileLength: 16 })
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+      mockDownloadMediaMessage.mockResolvedValueOnce(Buffer.from('voice-note-bytes'))
+      await startMcpServer(testPort)
+
+      const r1 = await rawGet(testPort, '/media/default/VOICE1')
+      expect(r1.status).toBe(200)
+      expect(r1.headers['content-type']).toBe('audio/ogg; codecs=opus')
+      expect(r1.body.toString()).toBe('voice-note-bytes')
+      expect(mockDownloadMediaMessage).toHaveBeenCalledTimes(1)
+
+      const r2 = await rawGet(testPort, '/media/default/VOICE1')
+      expect(r2.status).toBe(200)
+      expect(r2.body.toString()).toBe('voice-note-bytes')
+      expect(mockDownloadMediaMessage).toHaveBeenCalledTimes(1)
+    })
+
+    it('streams a sticker (verifies stickerMessage path)', async () => {
+      const stickerBytes = Buffer.from('webp-sticker')
+      insertMediaMessage(DEFAULT, 'stickerchat@s.whatsapp.net', 'STK1', 'sticker',
+        { mimetype: 'image/webp', fileLength: stickerBytes.length })
+      writeCachedFile(DEFAULT, 'STK1', 'sticker_STK1.webp', stickerBytes)
+      await startMcpServer(testPort)
+
+      const r = await rawGet(testPort, '/media/default/STK1')
+      expect(r.status).toBe(200)
+      expect(r.headers['content-type']).toBe('image/webp')
+      expect(r.body.equals(stickerBytes)).toBe(true)
+    })
+
+    it('returns 400 for a messageId containing path-traversal characters', async () => {
+      await startMcpServer(testPort)
+      const r1 = await rawGet(testPort, '/media/default/..')
+      expect(r1.status).toBe(400)
+      const r2 = await rawGet(testPort, '/media/default/foo%2Fbar')
+      expect(r2.status).toBe(400)
+    })
+
+    it('returns 404 for unknown slug', async () => {
+      await startMcpServer(testPort)
+      const r = await rawGet(testPort, '/media/ghost/MSG1')
+      expect(r.status).toBe(404)
+      expect(JSON.parse(r.body.toString()).error).toMatch(/Unknown account: ghost/)
+    })
+
+    it('returns 404 for unknown messageId', async () => {
+      await startMcpServer(testPort)
+      const r = await rawGet(testPort, '/media/default/NOPE')
+      expect(r.status).toBe(404)
+      expect(JSON.parse(r.body.toString()).error).toMatch(/not found/i)
+    })
+
+    it('returns 415 for a text-only message', async () => {
+      chatOps.insert(DEFAULT, 'text@s.whatsapp.net', 'dm', undefined, 'Text Chat')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'text@s.whatsapp.net') as any
+      messageOps.insert(DEFAULT, chat.id, 'TXT1', Date.now(), 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'TXT1', text: 'just text'
+      }), false)
+      await startMcpServer(testPort)
+
+      const r = await rawGet(testPort, '/media/default/TXT1')
+      expect(r.status).toBe(415)
+    })
+
+    it('returns 503 when the socket is missing and the file is not cached', async () => {
+      insertMediaMessage(DEFAULT, 'nocache@s.whatsapp.net', 'NC1', 'image', { mimetype: 'image/png' })
+      await startMcpServer(testPort)
+      const r = await rawGet(testPort, '/media/default/NC1')
+      expect(r.status).toBe(503)
+      expect(JSON.parse(r.body.toString()).error).toMatch(/not connected/i)
+    })
+
+    it('returns 405 for POST /media/...', async () => {
+      await startMcpServer(testPort)
+      const r = await rawGet(testPort, '/media/default/X1', 'POST')
+      expect(r.status).toBe(405)
+      expect(r.headers['allow']).toContain('GET')
+    })
+
+    it('HEAD returns the same headers as GET with no body', async () => {
+      const bytes = Buffer.from('cached-png-bytes')
+      insertMediaMessage(DEFAULT, 'head@s.whatsapp.net', 'HEAD1', 'image',
+        { mimetype: 'image/png', fileLength: bytes.length })
+      writeCachedFile(DEFAULT, 'HEAD1', 'image_HEAD1.png', bytes)
+      await startMcpServer(testPort)
+
+      const r = await rawGet(testPort, '/media/default/HEAD1', 'HEAD')
+      expect(r.status).toBe(200)
+      expect(r.headers['content-type']).toBe('image/png')
+      expect(r.headers['content-length']).toBe(String(bytes.length))
+      expect(r.body.length).toBe(0)
+    })
+
+    it('returns 502 when Baileys download throws', async () => {
+      insertMediaMessage(DEFAULT, 'bad@s.whatsapp.net', 'BAD1', 'image', { mimetype: 'image/png' })
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+      mockDownloadMediaMessage.mockRejectedValueOnce(new Error('boom'))
+      await startMcpServer(testPort)
+
+      const r = await rawGet(testPort, '/media/default/BAD1')
+      expect(r.status).toBe(502)
+      expect(JSON.parse(r.body.toString()).error).toMatch(/boom/)
+    })
+  })
+
+  describe('get_message_media MCP tool', () => {
+    const PATH = require('path')
+
+    function insertMediaMessage(
+      slug: string, chatJid: string, msgId: string, kind: string, payload: Record<string, unknown>
+    ): void {
+      chatOps.insert(slug, chatJid, 'dm', undefined, 'Test Chat')
+      const chat = chatOps.getByWhatsappJid(slug, chatJid) as any
+      messageOps.insert(slug, chat.id, msgId, Date.now(), 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: msgId, timestamp: new Date().toISOString(),
+        sender: { name: 'Sender', phone: '+123' },
+        message: { [`${kind}Message`]: payload }
+      }), true)
+    }
+
+    function writeCachedFile(slug: string, msgId: string, filename: string, contents: Buffer | string): void {
+      const dir = PATH.join(accountDir(slug), 'attachments', msgId)
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(PATH.join(dir, filename), contents)
+    }
+
+    beforeEach(() => {
+      makeAccount(DEFAULT)
+      mockDownloadMediaMessage.mockClear()
+      setMaxInlineToolBytesForTesting(null)
+    })
+
+    afterEach(() => {
+      setMaxInlineToolBytesForTesting(null)
+    })
+
+    it('returns an image content block for an image', async () => {
+      const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+      insertMediaMessage(DEFAULT, 'imgchat@s.whatsapp.net', 'IMG1', 'image',
+        { mimetype: 'image/png', fileLength: bytes.length })
+      writeCachedFile(DEFAULT, 'IMG1', 'image_IMG1.png', bytes)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'IMG1' })
+      expect(result.result.isError).toBeFalsy()
+      const content = result.result.content
+      expect(content[0].type).toBe('text')
+      expect(content[1].type).toBe('image')
+      expect(content[1].mimeType).toBe('image/png')
+      expect(Buffer.from(content[1].data, 'base64').equals(bytes)).toBe(true)
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.kind).toBe('image')
+      expect(sc.returnedAs).toBe('inline')
+      expect(sc.url).toMatch(/\/media\/default\/IMG1$/)
+    })
+
+    it('returns an audio content block for a voice note', async () => {
+      const bytes = Buffer.from('ogg-voice')
+      insertMediaMessage(DEFAULT, 'voicechat@s.whatsapp.net', 'VC1', 'audio',
+        { mimetype: 'audio/ogg; codecs=opus', seconds: 8, ptt: true, fileLength: bytes.length })
+      writeCachedFile(DEFAULT, 'VC1', 'voice_VC1.ogg', bytes)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'VC1' })
+      expect(result.result.isError).toBeFalsy()
+      expect(result.result.content[1].type).toBe('audio')
+      expect(result.result.content[1].mimeType).toBe('audio/ogg; codecs=opus')
+      const sc = result.result.structuredContent
+      expect(sc.kind).toBe('voice')
+      expect(sc.durationSeconds).toBe(8)
+    })
+
+    it('returns a resource content block (with blob) for a sticker', async () => {
+      const bytes = Buffer.from('sticker-webp')
+      insertMediaMessage(DEFAULT, 'stickerchat@s.whatsapp.net', 'ST1', 'sticker',
+        { mimetype: 'image/webp', fileLength: bytes.length })
+      writeCachedFile(DEFAULT, 'ST1', 'sticker_ST1.webp', bytes)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'ST1' })
+      const block = result.result.content[1]
+      expect(block.type).toBe('resource')
+      expect(block.resource.mimeType).toBe('image/webp')
+      expect(block.resource.blob).toBeDefined()
+      expect(Buffer.from(block.resource.blob, 'base64').equals(bytes)).toBe(true)
+      const sc = result.result.structuredContent
+      expect(sc.kind).toBe('sticker')
+      expect(sc.returnedAs).toBe('inline')
+    })
+
+    it('returns a resource_link only when the file exceeds MAX_INLINE_TOOL_BYTES', async () => {
+      const bytes = Buffer.alloc(2048, 0xaa)
+      insertMediaMessage(DEFAULT, 'bigchat@s.whatsapp.net', 'BIG1', 'image',
+        { mimetype: 'image/png', fileLength: bytes.length })
+      writeCachedFile(DEFAULT, 'BIG1', 'image_BIG1.png', bytes)
+      setMaxInlineToolBytesForTesting(1024)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'BIG1' })
+      expect(result.result.isError).toBeFalsy()
+      const content = result.result.content
+      expect(content).toHaveLength(2)
+      expect(content[0].type).toBe('text')
+      expect(content[0].text).toMatch(/too large/i)
+      expect(content[1].type).toBe('resource_link')
+      expect(content[1].uri).toMatch(/\/media\/default\/BIG1$/)
+      expect(content[1].mimeType).toBe('image/png')
+      // No inline base64 blob anywhere in the response.
+      for (const block of content) {
+        expect(block.data).toBeUndefined()
+        if (block.resource) expect(block.resource.blob).toBeUndefined()
+      }
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.returnedAs).toBe('link')
+    })
+
+    it('errorKind=message_not_found for an unknown messageId', async () => {
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'NOPE' })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.structuredContent.errorKind).toBe('message_not_found')
+    })
+
+    it('errorKind=no_media for a text-only message', async () => {
+      chatOps.insert(DEFAULT, 'txt@s.whatsapp.net', 'dm', undefined, 'Text Chat')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'txt@s.whatsapp.net') as any
+      messageOps.insert(DEFAULT, chat.id, 'T1', Date.now(), 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'T1', text: 'hi'
+      }), false)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'T1' })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.structuredContent.errorKind).toBe('no_media')
+    })
+
+    it('errorKind=not_connected when socket is missing and file is not cached', async () => {
+      insertMediaMessage(DEFAULT, 'nc@s.whatsapp.net', 'NC1', 'image', { mimetype: 'image/png' })
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'NC1' })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.structuredContent.errorKind).toBe('not_connected')
+    })
+
+    it('errorKind=download_failed when Baileys download throws', async () => {
+      insertMediaMessage(DEFAULT, 'fail@s.whatsapp.net', 'F1', 'image', { mimetype: 'image/png' })
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+      mockDownloadMediaMessage.mockRejectedValueOnce(new Error('network down'))
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'F1' })
+      expect(result.result.isError).toBe(true)
+      const sc = result.result.structuredContent
+      expect(sc.errorKind).toBe('download_failed')
+      expect(sc.error).toMatch(/network down/)
+    })
+  })
+
+  // --- Verifier-added end-to-end tests (Wave 1 cross-task contract checks) ---
+  // Bridges ingestion (MessageTransformer.processMessage) with resolution
+  // (/media HTTP route and get_message_media tool) to confirm that protobuf
+  // `bytes` fields (mediaKey, fileSha256) survive SQLite TEXT round-trip and
+  // that resolveMedia finds the payload under `content_json.rawMessage` -
+  // the persistence layout ingestion actually produces.
+  describe('Wave 1 ingestion <-> resolveMedia contract (verifier)', () => {
+    function rawGetV(port: number, p: string): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+      return new Promise((resolve, reject) => {
+        const req = http.request({ hostname: '127.0.0.1', port, path: p, method: 'GET' }, (res) => {
+          const chunks: Buffer[] = []
+          res.on('data', (c) => chunks.push(c))
+          res.on('end', () => resolve({ status: res.statusCode || 0, headers: res.headers, body: Buffer.concat(chunks) }))
+        })
+        req.on('error', reject)
+        req.end()
+      })
+    }
+
+    it('round-trips an ingested image through /media with mediaKey decoded back to Buffer', async () => {
+      const { MessageTransformer } = await import('./message-transformer')
+      makeAccount(DEFAULT)
+      chatOps.insert(DEFAULT, 'e2e@s.whatsapp.net', 'dm', undefined, 'E2E Chat')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'e2e@s.whatsapp.net') as any
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+
+      const mediaKeyBytes = Buffer.from([10, 20, 30, 40, 50, 60, 70, 80, 90, 100])
+      const fileSha = Buffer.from('the-quick-brown-fox-jumps!!')
+      const baileysMsg = {
+        key: { id: 'E2E-IMG-1', remoteJid: 'e2e@s.whatsapp.net', fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          imageMessage: {
+            mimetype: 'image/png', filename: 'e2e.png', fileLength: 10 * 1024 * 1024,
+            mediaKey: mediaKeyBytes, fileSha256: fileSha,
+            url: 'https://mmg.whatsapp.net/m/v/t62/e2e.enc', directPath: '/v/t62/e2e.enc'
+          }
+        }
+      }
+      await new (MessageTransformer as any)(DEFAULT, {} as any).processMessage(baileysMsg, chat.id)
+
+      const stored = messageOps.getByWhatsappMessageId(DEFAULT, 'E2E-IMG-1') as any
+      const parsed = JSON.parse(stored.content_json)
+      expect(parsed.rawMessage?.imageMessage).toBeDefined()
+      expect(parsed.message).toBeUndefined()
+      expect(stored.has_attachment).toBe(1)
+
+      let capturedMsg: any = null
+      ;(mockDownloadMediaMessage as any).mockImplementationOnce(async (m: any) => {
+        capturedMsg = m
+        return Buffer.from('e2e-png-bytes')
+      })
+
+      await startMcpServer(testPort)
+      const r = await rawGetV(testPort, '/media/default/E2E-IMG-1')
+      expect(r.status).toBe(200)
+      expect(r.headers['content-type']).toBe('image/png')
+      expect(r.body.toString()).toBe('e2e-png-bytes')
+
+      expect(capturedMsg).not.toBeNull()
+      const reconstructed = capturedMsg.message.imageMessage
+      expect(Buffer.isBuffer(reconstructed.mediaKey)).toBe(true)
+      expect(reconstructed.mediaKey.equals(mediaKeyBytes)).toBe(true)
+      expect(Buffer.isBuffer(reconstructed.fileSha256)).toBe(true)
+      expect(reconstructed.fileSha256.equals(fileSha)).toBe(true)
+    })
+
+    it('round-trips an ingested image through get_message_media tool', async () => {
+      const { MessageTransformer } = await import('./message-transformer')
+      makeAccount(DEFAULT)
+      chatOps.insert(DEFAULT, 'tool@s.whatsapp.net', 'dm', undefined, 'Tool E2E')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'tool@s.whatsapp.net') as any
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+
+      const baileysMsg = {
+        key: { id: 'E2E-TOOL-1', remoteJid: 'tool@s.whatsapp.net', fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: {
+          imageMessage: {
+            mimetype: 'image/png', filename: 'tool.png', fileLength: 10 * 1024 * 1024,
+            mediaKey: Buffer.from([1, 2, 3]),
+            url: 'https://mmg.whatsapp.net/m/v/t62/tool.enc', directPath: '/v/t62/tool.enc'
+          }
+        }
+      }
+      await new (MessageTransformer as any)(DEFAULT, {} as any).processMessage(baileysMsg, chat.id)
+
+      mockDownloadMediaMessage.mockResolvedValueOnce(Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'E2E-TOOL-1' })
+      expect(result.result.isError).toBeFalsy()
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.kind).toBe('image')
+      expect(sc.returnedAs).toBe('inline')
+      expect(result.result.content[1].type).toBe('image')
+    })
+  })
 
 })
 

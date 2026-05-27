@@ -137,12 +137,40 @@ function buildAnnotations(msg: TransformedMessage): string[] {
 }
 
 /**
+ * Render the per-kind tag for a media attachment. Voice notes follow the
+ * `[Voice note · 12s]` form mandated by the spec; the other kinds use the
+ * same dot-separator pattern with sensible labels. Returns `null` when no
+ * `kind` is set so callers can fall back to the message's existing `text`.
+ */
+function formatAttachmentTag(msg: TransformedMessage): string | null {
+  if (!msg.kind) return null
+  const dur = msg.durationSeconds
+  switch (msg.kind) {
+    case 'voice':
+      return dur ? `[Voice note · ${dur}s]` : '[Voice note]'
+    case 'audio':
+      return dur ? `[Audio · ${dur}s]` : '[Audio]'
+    case 'video':
+      return dur ? `[Video · ${dur}s]` : '[Video]'
+    case 'image':
+      return '[Image]'
+    case 'sticker':
+      return '[Sticker]'
+    case 'document':
+      return msg.filename ? `[Document: ${msg.filename}]` : '[Document]'
+    default:
+      return null
+  }
+}
+
+/**
  * Serialize a regular message line.
  */
 function serializeMessage(msg: TransformedMessage, meIdentity?: MeIdentity): string {
   const prefix = getSenderPrefix(msg, meIdentity)
   const annotations = buildAnnotations(msg)
-  const text = msg.text ? escapeNewlines(msg.text) : ''
+  const tag = formatAttachmentTag(msg)
+  const text = tag !== null ? tag : (msg.text ? escapeNewlines(msg.text) : '')
 
   // Annotations go before text, separated by space
   const annotationStr = annotations.length > 0 ? annotations.join(' ') + ' ' : ''

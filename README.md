@@ -81,6 +81,7 @@ If an account is disconnected because the device was removed from the phone, its
 | get_recent_messages | Get messages across all chats since a timestamp |
 | get_unread_messages | Get unread/new messages across all chats |
 | send_message | Send a text message (with optional attachment) to a chat |
+| get_message_media | Return the media of a message as an inline content block (fallback for hosts that can't fetch the `attachment.url`) |
 
 Each tool operates only on the account whose slug is in the URL path — accounts are fully isolated.
 
@@ -118,6 +119,18 @@ The alias always routes to whichever account is currently marked as default.
 ### Health Check
 
 A health endpoint is available at `http://localhost:13491/health` to verify the server is running. The health endpoint is global — it is not tied to any specific account.
+
+### Media downloads
+
+Chat-history tool output for messages with media (images, voice notes, audio, video, documents, stickers) includes an `attachment.url` field pointing at the local MCP server:
+
+```
+http://127.0.0.1:13491/media/<slug>/<messageId>
+```
+
+A `GET` or `HEAD` against that URL returns the raw bytes with the right `Content-Type`/`Content-Length`/`Content-Disposition` headers; files are lazily downloaded from WhatsApp on first request and cached under `accounts/<slug>/attachments/<messageId>/`. The endpoint is loopback-only and uses the same trust model as `/mcp`.
+
+For MCP hosts that cannot fetch HTTP URLs directly, the `get_message_media` tool returns the same bytes as an inline `image`/`audio`/`resource` content block. Files larger than 25MB come back as a `resource_link` only — fetch them via the URL above.
 
 ## Multiple accounts
 

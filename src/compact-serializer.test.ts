@@ -203,6 +203,76 @@ describe('serializeCompact', () => {
       const result = serializeCompact([msg])
       expect(result).toContain('This is a very long ...')
     })
+
+    it('should render voice notes as [Voice note · 12s]', () => {
+      const msg = createMessage({
+        text: '[Attachment: voice]',
+        kind: 'voice',
+        durationSeconds: 12,
+        filename: 'voice',
+        mimeType: 'audio/ogg'
+      })
+      const result = serializeCompact([msg])
+      expect(result).toContain('John:+1234567890 > [Voice note · 12s]')
+    })
+
+    it('should render non-PTT audio as [Audio · Ns]', () => {
+      const msg = createMessage({
+        text: '[Attachment: track]',
+        kind: 'audio',
+        durationSeconds: 45,
+        filename: 'track',
+        mimeType: 'audio/mp4'
+      })
+      const result = serializeCompact([msg])
+      expect(result).toContain('[Audio · 45s]')
+    })
+
+    it('should render videos as [Video · Ns] when duration present', () => {
+      const msg = createMessage({
+        text: '[Attachment: clip.mp4]',
+        kind: 'video',
+        durationSeconds: 30,
+        filename: 'clip.mp4',
+        mimeType: 'video/mp4'
+      })
+      const result = serializeCompact([msg])
+      expect(result).toContain('[Video · 30s]')
+    })
+
+    it('should render images as [Image]', () => {
+      const msg = createMessage({
+        text: '[Attachment: photo.jpg]',
+        kind: 'image',
+        filename: 'photo.jpg',
+        mimeType: 'image/jpeg'
+      })
+      const result = serializeCompact([msg])
+      expect(result).toContain('[Image]')
+    })
+
+    it('should render stickers as [Sticker]', () => {
+      const msg = createMessage({
+        text: '[Attachment: sticker]',
+        kind: 'sticker',
+        filename: 'sticker',
+        mimeType: 'image/webp'
+      })
+      const result = serializeCompact([msg])
+      expect(result).toContain('[Sticker]')
+    })
+
+    it('should render documents as [Document: filename]', () => {
+      const msg = createMessage({
+        text: '[Attachment: report.pdf]',
+        kind: 'document',
+        filename: 'report.pdf',
+        mimeType: 'application/pdf'
+      })
+      const result = serializeCompact([msg])
+      expect(result).toContain('[Document: report.pdf]')
+    })
+
   })
 })
 

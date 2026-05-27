@@ -156,6 +156,87 @@ describe('toStructuredMessage', () => {
     expect(out.sender).toEqual({ name: 'Sender', phone: '+1', isMe: false })
   })
 
+  it('projects an image attachment with kind and url when mediaBaseUrl is provided', () => {
+    const input: TransformedMessage = {
+      type: 'message',
+      messageId: 'img-1',
+      timestamp: baseTimestamp,
+      sender: { name: 'Sender', phone: '+1' },
+      text: '[Attachment: photo.jpg]',
+      filename: 'photo.jpg',
+      mimeType: 'image/jpeg',
+      fileSize: 1024,
+      kind: 'image'
+    }
+    const out = toStructuredMessage(input, { mediaBaseUrl: 'http://127.0.0.1:8080/media/default' })
+    expect(structuredMessageSchema.parse(out)).toEqual(out)
+    expect(out.attachment).toEqual({
+      kind: 'image',
+      filename: 'photo.jpg',
+      mimeType: 'image/jpeg',
+      fileSize: 1024,
+      url: 'http://127.0.0.1:8080/media/default/img-1'
+    })
+  })
+
+  it('projects a voice note with durationSeconds and kind=voice', () => {
+    const input: TransformedMessage = {
+      type: 'message',
+      messageId: 'voice-1',
+      timestamp: baseTimestamp,
+      sender: { name: 'Sender', phone: '+1' },
+      text: '[Attachment: attachment_voice-1]',
+      filename: 'attachment_voice-1',
+      mimeType: 'audio/ogg; codecs=opus',
+      fileSize: 4096,
+      kind: 'voice',
+      durationSeconds: 12
+    }
+    const out = toStructuredMessage(input, { mediaBaseUrl: 'http://127.0.0.1:8080/media/default' })
+    expect(structuredMessageSchema.parse(out)).toEqual(out)
+    expect(out.attachment).toEqual({
+      kind: 'voice',
+      filename: 'attachment_voice-1',
+      mimeType: 'audio/ogg; codecs=opus',
+      fileSize: 4096,
+      durationSeconds: 12,
+      url: 'http://127.0.0.1:8080/media/default/voice-1'
+    })
+  })
+
+  it('omits attachment.url when mediaBaseUrl is not provided', () => {
+    const input: TransformedMessage = {
+      type: 'message',
+      messageId: 'sticker-1',
+      timestamp: baseTimestamp,
+      sender: { name: 'Sender', phone: '+1' },
+      filename: 'attachment_sticker-1',
+      mimeType: 'image/webp',
+      fileSize: 2048,
+      kind: 'sticker'
+    }
+    const out = toStructuredMessage(input)
+    expect(structuredMessageSchema.parse(out)).toEqual(out)
+    expect(out.attachment?.kind).toBe('sticker')
+    expect(out.attachment?.url).toBeUndefined()
+  })
+
+  it('strips a trailing slash on mediaBaseUrl before joining messageId', () => {
+    const input: TransformedMessage = {
+      type: 'message',
+      messageId: 'img-2',
+      timestamp: baseTimestamp,
+      sender: { name: 'Sender', phone: '+1' },
+      filename: 'p.jpg',
+      mimeType: 'image/jpeg',
+      fileSize: 1,
+      kind: 'image'
+    }
+    const out = toStructuredMessage(input, { mediaBaseUrl: 'http://127.0.0.1:9000/media/work/' })
+    expect(out.attachment?.url).toBe('http://127.0.0.1:9000/media/work/img-2')
+  })
+
+
   it('projects a system message with null sender and systemDetails', () => {
     const input: TransformedMessage = {
       type: 'system',

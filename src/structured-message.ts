@@ -1,5 +1,8 @@
 import { z } from 'zod'
-import { TransformedMessage } from './message-transformer'
+import { TransformedMessage, AttachmentKind } from './message-transformer'
+
+/** Permitted values for `attachment.kind`. */
+export const ATTACHMENT_KINDS: AttachmentKind[] = ['image', 'voice', 'audio', 'video', 'document', 'sticker']
 
 /**
  * Wire shape for a single structured message returned by the chat-history MCP
@@ -16,7 +19,15 @@ export interface StructuredMessage {
   text: string | null
   forwarded?: boolean
   replyTo?: { messageId?: string; sender: { name: string; phone: string | null }; preview: string }
-  attachment?: { filename?: string; mimeType?: string; fileSize?: number; reason?: string }
+  attachment?: {
+    kind?: AttachmentKind
+    filename?: string
+    mimeType?: string
+    fileSize?: number
+    durationSeconds?: number
+    url?: string
+    reason?: string
+  }
   deletedBy?: { name: string; phone: string | null }
   deletedMessage?: { messageId?: string; text: string | null; timestamp?: string }
   editedBy?: { name: string; phone: string | null }
@@ -53,9 +64,12 @@ const replySenderSchema = z.object({
 })
 
 const attachmentSchema = z.object({
+  kind: z.enum(['image', 'voice', 'audio', 'video', 'document', 'sticker']).optional(),
   filename: z.string().optional(),
   mimeType: z.string().optional(),
   fileSize: z.number().optional(),
+  durationSeconds: z.number().optional(),
+  url: z.string().optional(),
   reason: z.string().optional()
 })
 
@@ -188,6 +202,51 @@ export const sendMessageOutputShape = {
 }
 
 /**
+ * Wire shape for `get_message_media`. On success the tool returns either an
+ * inline content block (`returnedAs: 'inline'`) or only a `resource_link`
+ * block when the file exceeds `MAX_INLINE_TOOL_BYTES` (`returnedAs: 'link'`).
+ * `url` always points at the loopback `/media/<slug>/<messageId>` route so
+ * the host can fetch the raw bytes regardless of which branch was returned.
+ */
+export type GetMessageMediaResult =
+  | {
+      ok: true
+      messageId: string
+      kind: 'image' | 'voice' | 'audio' | 'video' | 'document' | 'sticker'
+      mimeType: string
+      filename: string
+      fileSize: number
+      url: string
+      returnedAs: 'inline' | 'link'
+      durationSeconds?: number
+    }
+  | {
+      ok: false
+      messageId: string
+      error: string
+      errorKind: 'message_not_found' | 'no_media' | 'not_connected' | 'download_failed'
+    }
+
+/**
+ * Raw shape suitable for `registerTool`'s `outputSchema` parameter. Follows
+ * the same flat-optional pattern as `sendMessageOutputShape`; consumers
+ * narrow via the `ok` discriminant.
+ */
+export const getMessageMediaOutputShape = {
+  ok: z.boolean(),
+  messageId: z.string(),
+  kind: z.enum(['image', 'voice', 'audio', 'video', 'document', 'sticker']).optional(),
+  mimeType: z.string().optional(),
+  filename: z.string().optional(),
+  fileSize: z.number().optional(),
+  durationSeconds: z.number().optional(),
+  url: z.string().optional(),
+  returnedAs: z.enum(['inline', 'link']).optional(),
+  error: z.string().optional(),
+  errorKind: z.enum(['message_not_found', 'no_media', 'not_connected', 'download_failed']).optional()
+}
+
+/**
  * Project an already-identity-resolved `TransformedMessage` into the
  * `structuredContent` wire shape. Drops internal-only fields
  * (`mentionedJids`, `replyToMessageId`) and folds `details` →
@@ -199,10 +258,17 @@ export const sendMessageOutputShape = {
  * `deletedMessage.messageId`, `editedMessage.messageId`) are surfaced. They
  * are omitted by default since they are not actionable without dedicated
  * delete/edit/reply-by-ID tools.
+ *
+ * `opts.mediaBaseUrl` is the per-account prefix for the local `/media` HTTP
+ * endpoint (e.g. `http://127.0.0.1:13491/media/default`). When provided and
+ * the message carries a fetchable media body (`kind` is set), the wire shape
+ * surfaces an `attachment.url` of the form `<mediaBaseUrl>/<messageId>` so
+ * an LLM/host can either fetch the bytes directly or call the
+ * `get_message_media` tool.
  */
 export function toStructuredMessage(
   msg: TransformedMessage,
-  opts?: { includeMessageIds?: boolean }
+  opts?: { includeMessageIds?: boolean; mediaBaseUrl?: string }
 ): StructuredMessage {
   const includeIds = opts?.includeMessageIds === true
   const isMe = !!msg.isFromMe
@@ -230,13 +296,20 @@ export function toStructuredMessage(
   }
 
   const hasAttachmentField = msg.filename !== undefined || msg.mimeType !== undefined ||
-                             msg.fileSize !== undefined || msg.reason !== undefined
+                             msg.fileSize !== undefined || msg.reason !== undefined ||
+                             msg.kind !== undefined || msg.durationSeconds !== undefined
   if (hasAttachmentField) {
-    const attachment: StructuredMessage['attachment'] = {}
-    if (msg.filename !== undefined) attachment!.filename = msg.filename
-    if (msg.mimeType !== undefined) attachment!.mimeType = msg.mimeType
-    if (msg.fileSize !== undefined) attachment!.fileSize = msg.fileSize
-    if (msg.reason !== undefined) attachment!.reason = msg.reason
+    const attachment: NonNullable<StructuredMessage['attachment']> = {}
+    if (msg.kind !== undefined) attachment.kind = msg.kind
+    if (msg.filename !== undefined) attachment.filename = msg.filename
+    if (msg.mimeType !== undefined) attachment.mimeType = msg.mimeType
+    if (msg.fileSize !== undefined) attachment.fileSize = msg.fileSize
+    if (msg.durationSeconds !== undefined) attachment.durationSeconds = msg.durationSeconds
+    if (msg.reason !== undefined) attachment.reason = msg.reason
+    if (opts?.mediaBaseUrl && msg.kind !== undefined && msg.messageId) {
+      const base = opts.mediaBaseUrl.endsWith('/') ? opts.mediaBaseUrl.slice(0, -1) : opts.mediaBaseUrl
+      attachment.url = `${base}/${msg.messageId}`
+    }
     result.attachment = attachment
   }
 

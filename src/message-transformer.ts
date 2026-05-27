@@ -20,16 +20,122 @@ async function loadBaileysModules() {
 // Re-export messageOps for use in processMessage
 export { messageOps }
 
-const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024 // 5MB
-const SUPPORTED_MIME_TYPES = [
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-]
+/**
+ * Maximum size for an attachment to be downloaded eagerly on receipt.
+ * Only applies to images and documents; larger items and other media kinds
+ * (audio, voice, video, sticker) are fetched lazily on demand via the
+ * `/media` HTTP endpoint.
+ */
+const EAGER_DOWNLOAD_CAP_BYTES = 5 * 1024 * 1024 // 5MB
+
+/** Discriminator for the six recognized WhatsApp media kinds. */
+export type AttachmentKind = 'image' | 'voice' | 'audio' | 'video' | 'document' | 'sticker'
+
+/**
+ * Map a Baileys `messageContent` object to the matching `*Message` key and
+ * its derived `kind` discriminator. Returns `null` when no recognized media
+ * key is present. Voice notes (`audioMessage.ptt === true`) are reported as
+ * `kind: 'voice'`; all other `audioMessage` as `kind: 'audio'`.
+ */
+function detectAttachmentKind(messageContent: any): { kind: AttachmentKind; payload: any } | null {
+  if (messageContent.imageMessage) return { kind: 'image', payload: messageContent.imageMessage }
+  if (messageContent.videoMessage) return { kind: 'video', payload: messageContent.videoMessage }
+  if (messageContent.documentMessage) return { kind: 'document', payload: messageContent.documentMessage }
+  if (messageContent.stickerMessage) return { kind: 'sticker', payload: messageContent.stickerMessage }
+  if (messageContent.audioMessage) {
+    const isPtt = messageContent.audioMessage.ptt === true
+    return { kind: isPtt ? 'voice' : 'audio', payload: messageContent.audioMessage }
+  }
+  return null
+}
+
+/** Coerce a Baileys numeric field (may be a Long with low/high words). */
+function coerceLongOrNumber(value: any): number {
+  if (typeof value === 'number') return value
+  if (typeof value === 'object' && value !== null) {
+    if (typeof value.toNumber === 'function') {
+      try { return value.toNumber() } catch { /* fall through */ }
+    }
+    if (typeof value.low === 'number') {
+      return (value.low >>> 0) + (value.high || 0) * 0x100000000
+    }
+  }
+  return 0
+}
 
 function attachmentsDirFor(slug: string): string {
   return path.join(accountDir(slug), 'attachments')
+}
+
+/**
+ * Marker shape used to round-trip raw protobuf `bytes` fields through SQLite
+ * TEXT. The Baileys media-fetch helper needs `mediaKey`, `fileEncSha256`,
+ * `fileSha256`, `jpegThumbnail`, etc. as `Buffer`/`Uint8Array` at call time;
+ * `JSON.parse` cannot recover them on its own, so we tag them on the way out
+ * and rebuild them on the way in via `restoreBuffersInPlace`.
+ */
+type BufferMarker = { type: 'Buffer'; data: string }
+
+function isBufferMarker(value: any): value is BufferMarker {
+  return !!value && typeof value === 'object' && value.type === 'Buffer' &&
+    (typeof value.data === 'string' || Array.isArray(value.data))
+}
+
+/**
+ * Walk a plain JS value and replace any `Uint8Array`/`Buffer` leaves with a
+ * compact base64 `BufferMarker`. Other values are returned as-is. Used when
+ * persisting the raw Baileys `IMessage` body alongside the projected
+ * `TransformedMessage`, so the on-disk JSON stays compact yet recoverable.
+ */
+export function toJsonSafeMediaPayload(value: any, depth = 0): any {
+  if (depth > 12) return null
+  if (value === null || value === undefined) return value
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value
+  if (value instanceof Uint8Array || Buffer.isBuffer(value)) {
+    return { type: 'Buffer', data: Buffer.from(value as Uint8Array).toString('base64') } as BufferMarker
+  }
+  if (Array.isArray(value)) return value.map((v) => toJsonSafeMediaPayload(v, depth + 1))
+  if (typeof value === 'object') {
+    if (typeof value.toNumber === 'function' && typeof value.low === 'number') {
+      // ProtobufJS Long — preserve numeric value when safely representable.
+      try { return value.toNumber() } catch { return { low: value.low, high: value.high, unsigned: !!value.unsigned } }
+    }
+    const out: Record<string, any> = {}
+    for (const k of Object.keys(value)) {
+      out[k] = toJsonSafeMediaPayload(value[k], depth + 1)
+    }
+    return out
+  }
+  return value
+}
+
+/**
+ * In-place inverse of `toJsonSafeMediaPayload`: walks a parsed JSON object
+ * and rewrites any `BufferMarker` it finds into a real `Buffer`. Safe to
+ * call on arbitrary structures and is a no-op when no markers are present.
+ */
+export function restoreBuffersInPlace(value: any): any {
+  if (!value || typeof value !== 'object') return value
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const item = value[i]
+      if (isBufferMarker(item)) {
+        value[i] = Array.isArray(item.data) ? Buffer.from(item.data) : Buffer.from(item.data, 'base64')
+      } else if (item && typeof item === 'object') {
+        restoreBuffersInPlace(item)
+      }
+    }
+    return value
+  }
+  for (const k of Object.keys(value)) {
+    const child = value[k]
+    if (isBufferMarker(child)) {
+      value[k] = Array.isArray(child.data) ? Buffer.from(child.data) : Buffer.from(child.data, 'base64')
+    } else if (child && typeof child === 'object') {
+      restoreBuffersInPlace(child)
+    }
+  }
+  return value
 }
 
 /**
@@ -98,6 +204,15 @@ export interface TransformedMessage {
   filename?: string
   mimeType?: string
   fileSize?: number
+  kind?: AttachmentKind
+  durationSeconds?: number
+  /**
+   * Persisted raw Baileys `IMessage` payload (i.e. `msg.message`) projected
+   * through `toJsonSafeMediaPayload` so its protobuf `bytes` fields survive a
+   * JSON round-trip. Consumed by `resolveMedia` to call
+   * `downloadMediaMessage` lazily on first request.
+   */
+  rawMessage?: any
   reason?: 'unsupported_type' | 'exceeds_size_limit' | 'download_failed'
   deletedMessage?: {
     messageId: string
@@ -154,6 +269,7 @@ export class MessageTransformer {
       if (transformed) {
         const contentJson = JSON.stringify(transformed)
         const hasAttachment = transformed.type === 'unsupported_attachment' ||
+                             !!transformed.kind ||
                              (transformed.type === 'message' && !!transformed.filename)
         const msgId = msg.key?.id || `msg-${Date.now()}`
         const senderJid = msg.key?.participant || msg.key?.remoteJid || 'unknown'
@@ -330,9 +446,9 @@ export class MessageTransformer {
       return transformed
     }
 
-    if (messageContent.imageMessage || messageContent.documentMessage ||
-        messageContent.audioMessage || messageContent.videoMessage) {
-      return await this.handleAttachment(messageId, timestamp, sender, messageContent, msg)
+    const detected = detectAttachmentKind(messageContent)
+    if (detected) {
+      return await this.handleAttachment(messageId, timestamp, sender, messageContent, msg, detected)
     }
 
     console.log(`[transformMessage] msgId=${messageId} unrecognized type, keys=[${unwrappedKeys.join(', ')}]`)
@@ -352,21 +468,21 @@ export class MessageTransformer {
   }
 
   private async handleAttachment(
-    messageId: string, timestamp: string, sender: { name: string; phone: string | null }, messageContent: any, originalMsg: any
+    messageId: string, timestamp: string, sender: { name: string; phone: string | null }, _messageContent: any, originalMsg: any,
+    detected: { kind: AttachmentKind; payload: any }
   ): Promise<TransformedMessage | null> {
-    const attachment = messageContent.imageMessage || messageContent.documentMessage ||
-                      messageContent.audioMessage || messageContent.videoMessage
-    if (!attachment) return null
+    const { kind, payload: attachment } = detected
 
     const mimeType = (attachment as any).mimetype || 'application/octet-stream'
     const filename = (attachment as any).filename || `attachment_${messageId}`
-    let fileSize = (attachment as any).fileLength || 0
-    if (typeof fileSize === 'object' && fileSize?.low !== undefined) {
-      fileSize = fileSize.low + (fileSize.high || 0) * 0x100000000
-    }
+    const fileSize = coerceLongOrNumber((attachment as any).fileLength)
 
-    const contextInfo = (messageContent.imageMessage?.contextInfo || messageContent.documentMessage?.contextInfo ||
-                         messageContent.audioMessage?.contextInfo || messageContent.videoMessage?.contextInfo)
+    const rawSeconds = (attachment as any).seconds
+    const durationSeconds = (kind === 'voice' || kind === 'audio' || kind === 'video') && typeof rawSeconds === 'number' && rawSeconds > 0
+      ? rawSeconds
+      : undefined
+
+    const contextInfo = (attachment as any).contextInfo
 
     const isFromMe = originalMsg.key?.fromMe || false
 
@@ -375,20 +491,40 @@ export class MessageTransformer {
       return result
     }
 
-    if (!SUPPORTED_MIME_TYPES.includes(mimeType)) {
-      return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, reason: 'unsupported_type', isFromMe })
+    // Persist the raw `*Message` payload so the on-demand `/media` endpoint
+    // can hand it back to Baileys' `downloadMediaMessage`. The wrapping
+    // `{ [kind+Message]: ... }` shape matches what Baileys consumes as
+    // `msg.message`.
+    const messageKey = `${kind === 'voice' ? 'audio' : kind}Message`
+    const rawMessage = toJsonSafeMediaPayload({ [messageKey]: attachment })
+
+    const buildMessageEntry = (): TransformedMessage => {
+      const entry: TransformedMessage = {
+        type: 'message', messageId, sender, timestamp,
+        text: `[Attachment: ${filename}]`,
+        filename, mimeType, fileSize, kind, isFromMe,
+        rawMessage
+      }
+      if (durationSeconds !== undefined) entry.durationSeconds = durationSeconds
+      return entry
     }
 
-    if (fileSize > MAX_ATTACHMENT_SIZE) {
-      return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, reason: 'exceeds_size_limit', isFromMe })
+    // Eager on-receipt download is preserved only for images and documents at
+    // or below the cap. Audio/voice/video/sticker — and oversize images/docs —
+    // are recorded with attachment metadata but fetched lazily on first
+    // request by the /media HTTP endpoint.
+    const eagerEligible = (kind === 'image' || kind === 'document') && fileSize <= EAGER_DOWNLOAD_CAP_BYTES
+
+    if (!eagerEligible) {
+      return applyReplyInfo(buildMessageEntry())
     }
 
     try {
       await this.downloadAttachment(messageId, originalMsg)
-      return applyReplyInfo({ type: 'message', messageId, sender, timestamp, text: `[Attachment: ${filename}]`, filename, mimeType, isFromMe })
+      return applyReplyInfo(buildMessageEntry())
     } catch (error) {
       logOps.insert(this.slug, 'error', 'transformer', `Failed to download attachment ${messageId}`, JSON.stringify({ error: String(error) }))
-      return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, reason: 'download_failed', isFromMe })
+      return applyReplyInfo({ type: 'unsupported_attachment', messageId, sender, timestamp, filename, mimeType, fileSize, kind, reason: 'download_failed', isFromMe })
     }
   }
 
