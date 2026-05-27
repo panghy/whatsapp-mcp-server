@@ -2,6 +2,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
 import http from 'http'
+import fs from 'fs'
+import path from 'path'
 import { chatOps, messageOps, settingOps, contactOps, getDatabase } from './database'
 import { serializeCompact, MeIdentity } from './compact-serializer'
 import { TransformedMessage, extractPhoneFromJid } from './message-transformer'
@@ -11,14 +13,27 @@ import {
   messagesByChatOutputShape,
   searchChatsOutputShape,
   sendMessageOutputShape,
+  getMessageMediaOutputShape,
   ChatRef,
   StructuredMessage,
   SearchChatsResultEntry,
-  SendMessageResult
+  SendMessageResult,
+  GetMessageMediaResult
 } from './structured-message'
-import { getAccount, getDefaultSlug } from './accounts'
+import { getAccount, getDefaultSlug, accountDir } from './accounts'
 import { getManager } from './whatsapp-manager'
 import { getMcpPort as getGlobalMcpPort, setMcpPort as setGlobalMcpPort } from './global-settings'
+
+// Dynamically loaded so the existing `vi.mock('@whiskeysockets/baileys', …)`
+// pattern in tests continues to work the same way as in message-transformer.
+let downloadMediaMessageFn: ((msg: any, type: 'buffer', opts: any) => Promise<Buffer>) | null = null
+async function loadDownloadMediaMessage(): Promise<typeof downloadMediaMessageFn> {
+  if (!downloadMediaMessageFn) {
+    const baileys = await import('@whiskeysockets/baileys')
+    downloadMediaMessageFn = (baileys as any).downloadMediaMessage
+  }
+  return downloadMediaMessageFn
+}
 
 // Per-account MCP server registry. Lazy-initialized on first request.
 const mcpServers = new Map<string, McpServer>()
@@ -292,6 +307,180 @@ function resolveAllIdentities(
 }
 
 /**
+ * Build the per-account `/media` URL prefix using the current MCP port. Read
+ * fresh on each tool call so port changes take effect without rebuilding the
+ * McpServer.
+ */
+function buildMediaBaseUrl(slug: string): string {
+  return `http://127.0.0.1:${getGlobalMcpPort()}/media/${slug}`
+}
+
+// --- Media download (shared between /media HTTP route and get_message_media) ---
+
+/**
+ * Hard upper bound on the size of an inline `get_message_media` payload. Over
+ * this limit the tool falls back to a `resource_link` block only so it never
+ * crashes MCP hosts with multi-megabyte base64 strings.
+ */
+const DEFAULT_MAX_INLINE_TOOL_BYTES = 25 * 1024 * 1024 // 25MB
+let maxInlineToolBytes = DEFAULT_MAX_INLINE_TOOL_BYTES
+
+/** Test-only override for the inline payload cap. Pass `null` to reset. */
+export function setMaxInlineToolBytesForTesting(bytes: number | null): void {
+  maxInlineToolBytes = bytes === null ? DEFAULT_MAX_INLINE_TOOL_BYTES : bytes
+}
+
+type MediaAttachmentKind = 'image' | 'voice' | 'audio' | 'video' | 'document' | 'sticker'
+
+interface ResolvedMedia {
+  filepath: string
+  filename: string
+  mimeType: string
+  fileSize: number
+  kind: MediaAttachmentKind
+  durationSeconds?: number
+}
+interface MediaFailure {
+  errorKind: 'message_not_found' | 'no_media' | 'not_connected' | 'download_failed'
+  httpStatus: 404 | 415 | 502 | 503
+  error: string
+}
+type MediaResolution = { ok: true; media: ResolvedMedia } | { ok: false; failure: MediaFailure }
+
+/** Validate a messageId path parameter — must not be empty or contain
+ *  separators / null bytes / dots that could enable directory traversal. */
+function isValidMessageId(messageId: string): boolean {
+  if (!messageId || messageId.length === 0 || messageId.length > 256) return false
+  if (messageId.includes('/') || messageId.includes('\\')) return false
+  if (messageId.includes('.') || messageId.includes('\0')) return false
+  return true
+}
+
+/** Map a mime type to a common file extension. Falls back to `bin`. */
+function deriveExtension(mimeType: string): string {
+  const base = (mimeType || '').split(';')[0].trim().toLowerCase()
+  const map: Record<string, string> = {
+    'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
+    'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/wav': 'wav', 'audio/aac': 'aac',
+    'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov', 'video/3gpp': '3gp',
+    'application/pdf': 'pdf'
+  }
+  return map[base] || 'bin'
+}
+
+/** Locate a Baileys `*Message` payload inside the stored `content_json`. The
+ *  ingestion path may persist the raw payload at the top level, under
+ *  `.message`, or under `.rawMessage`; checking all three keeps this helper
+ *  compatible with the persistence layout chosen by the sibling task. */
+function findMediaPayload(parsed: any): { kind: MediaAttachmentKind; payload: any } | null {
+  const candidates: any[] = [parsed, parsed?.message, parsed?.rawMessage].filter((c) => c && typeof c === 'object')
+  for (const c of candidates) {
+    if (c.imageMessage) return { kind: 'image', payload: c.imageMessage }
+    if (c.videoMessage) return { kind: 'video', payload: c.videoMessage }
+    if (c.documentMessage) return { kind: 'document', payload: c.documentMessage }
+    if (c.stickerMessage) return { kind: 'sticker', payload: c.stickerMessage }
+    if (c.audioMessage) {
+      const isPtt = c.audioMessage.ptt === true
+      return { kind: isPtt ? 'voice' : 'audio', payload: c.audioMessage }
+    }
+  }
+  return null
+}
+
+/** Coerce a Baileys numeric field (may be a Long with low/high words). */
+function coerceLong(value: any): number {
+  if (typeof value === 'number') return value
+  if (value && typeof value === 'object') {
+    if (typeof value.toNumber === 'function') {
+      try { return value.toNumber() } catch { /* fall through */ }
+    }
+    if (typeof value.low === 'number') {
+      return (value.low >>> 0) + (value.high || 0) * 0x100000000
+    }
+  }
+  return 0
+}
+
+/**
+ * Resolve the on-disk media for a given (slug, messageId). Looks up the
+ * stored message, identifies the media payload, returns the cached file when
+ * present, and otherwise lazily downloads via Baileys' `downloadMediaMessage`
+ * and writes it under `<accountDir>/attachments/<messageId>/<filename>`.
+ */
+export async function resolveMedia(slug: string, messageId: string): Promise<MediaResolution> {
+  const row = messageOps.getByWhatsappMessageId(slug, messageId) as any
+  if (!row) {
+    return { ok: false, failure: { errorKind: 'message_not_found', httpStatus: 404, error: `Message not found: ${messageId}` } }
+  }
+
+  let parsed: any
+  try { parsed = JSON.parse(row.content_json) }
+  catch { return { ok: false, failure: { errorKind: 'no_media', httpStatus: 415, error: 'Message content is not valid JSON' } } }
+
+  const found = findMediaPayload(parsed)
+  if (!found) {
+    return { ok: false, failure: { errorKind: 'no_media', httpStatus: 415, error: 'Message has no downloadable media' } }
+  }
+  const { kind, payload } = found
+
+  const mimeType = (payload?.mimetype || 'application/octet-stream') as string
+  const fileSizeFromMeta = coerceLong(payload?.fileLength)
+  const durationSeconds = payload?.seconds != null ? coerceLong(payload.seconds) : undefined
+  const filename = (payload?.fileName as string | undefined) || `${kind}_${messageId}.${deriveExtension(mimeType)}`
+
+  const attachmentDir = path.join(accountDir(slug), 'attachments', messageId)
+  const filepath = path.join(attachmentDir, filename)
+
+  if (fs.existsSync(filepath)) {
+    const stat = fs.statSync(filepath)
+    return { ok: true, media: { filepath, filename, mimeType, fileSize: stat.size, kind, durationSeconds } }
+  }
+
+  const socket = getManager(slug)?.socket
+  if (!socket) {
+    return { ok: false, failure: { errorKind: 'not_connected', httpStatus: 503, error: 'WhatsApp not connected' } }
+  }
+
+  const download = await loadDownloadMediaMessage()
+  if (!download) {
+    return { ok: false, failure: { errorKind: 'download_failed', httpStatus: 502, error: 'Baileys download helper is unavailable' } }
+  }
+
+  // Reconstruct a minimal Baileys WAMessage. `downloadMediaMessage` reads
+  // `msg.message.<kind>Message` and uses its `mediaKey` + URL to fetch.
+  const messageKey = `${kind === 'voice' ? 'audio' : kind}Message`
+  const reconstructed = {
+    key: { id: messageId, remoteJid: row.sender_jid, fromMe: false },
+    message: { [messageKey]: payload }
+  }
+
+  try {
+    const buffer = await download(reconstructed, 'buffer', {})
+    if (!fs.existsSync(attachmentDir)) fs.mkdirSync(attachmentDir, { recursive: true })
+    fs.writeFileSync(filepath, buffer)
+    const fileSize = buffer.length || fileSizeFromMeta
+    return { ok: true, media: { filepath, filename, mimeType, fileSize, kind, durationSeconds } }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { ok: false, failure: { errorKind: 'download_failed', httpStatus: 502, error: msg } }
+  }
+}
+
+/** RFC 5987-encoded `Content-Disposition` value covering non-ASCII filenames. */
+function buildContentDisposition(filename: string): string {
+  const asciiFallback = filename.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_')
+  const encoded = encodeURIComponent(filename).replace(/['()]/g, escape).replace(/\*/g, '%2A')
+  return `inline; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`
+}
+
+/** Human-readable byte size used in the over-cap text summary. */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
  * Build an McpServer whose tool handlers are bound to the given account slug.
  */
 export function createMcpServer(slug: string): McpServer {
@@ -487,7 +676,8 @@ export function createMcpServer(slug: string): McpServer {
 
       const output = serializeCompact(transformed, undefined, meIdentity)
       const chatRef: ChatRef = { jid: chat.whatsapp_jid, name: chat.name || chat.whatsapp_jid, type: chat.chat_type }
-      const structuredMessages: StructuredMessage[] = transformed.map(m => toStructuredMessage(m, { includeMessageIds }))
+      const mediaBaseUrl = buildMediaBaseUrl(slug)
+      const structuredMessages: StructuredMessage[] = transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl }))
       return {
         content: [{ type: 'text', text: output || '(no messages)' }],
         structuredContent: { chat: chatRef, messages: structuredMessages }
@@ -535,6 +725,7 @@ export function createMcpServer(slug: string): McpServer {
 
       let output = ''
       const structuredChats: Array<{ chat: ChatRef; messages: StructuredMessage[] }> = []
+      const mediaBaseUrl = buildMediaBaseUrl(slug)
       for (const [chatName, group] of byChat) {
         output += `\n=== ${chatName} ===\n`
         const transformed = group.msgs.map((m: any) => {
@@ -545,7 +736,7 @@ export function createMcpServer(slug: string): McpServer {
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
         output += serializeCompact(transformed, undefined, meIdentity) + '\n'
-        structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds })) })
+        structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl })) })
       }
 
       return {
@@ -600,6 +791,7 @@ export function createMcpServer(slug: string): McpServer {
 
       let body = ''
       const structuredChats: Array<{ chat: ChatRef; messages: StructuredMessage[] }> = []
+      const mediaBaseUrl = buildMediaBaseUrl(slug)
       for (const [chatName, group] of byChat) {
         body += `\n=== ${chatName} ===\n`
         const transformed = group.msgs.map((m: any) => {
@@ -610,7 +802,7 @@ export function createMcpServer(slug: string): McpServer {
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
         body += serializeCompact(transformed, undefined, meIdentity) + '\n'
-        structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds })) })
+        structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl })) })
       }
 
       const text = byChat.size === 0 ? '(no unread messages)' : `Messages since ${sinceStr}:\n${body}`
@@ -730,6 +922,84 @@ export function createMcpServer(slug: string): McpServer {
     }
   )
 
+  server.registerTool(
+    'get_message_media',
+    {
+      description: 'Return the media payload of a WhatsApp message (image, voice note, audio, video, document, or sticker) as an inline MCP content block. Use this only when your client cannot fetch HTTP URLs — when you can, prefer the `attachment.url` field on messages from chat-history tools, which streams the same bytes from the local MCP server without inflating the tool result. Files exceeding the inline cap (default 25MB) are returned as a `resource_link` only.',
+      inputSchema: {
+        messageId: z.string().describe('WhatsApp message ID of the message whose media to fetch'),
+        chatJid: z.string().optional().describe('Optional chat JID; only used to make error messages clearer')
+      },
+      outputSchema: getMessageMediaOutputShape,
+      annotations: { readOnlyHint: true }
+    },
+    async ({ messageId, chatJid }: { messageId: string; chatJid?: string }) => {
+      if (!isValidMessageId(messageId)) {
+        const failure: GetMessageMediaResult = {
+          ok: false, messageId, error: 'Invalid messageId', errorKind: 'message_not_found'
+        }
+        return { content: [{ type: 'text', text: 'Invalid messageId' }], isError: true, structuredContent: failure }
+      }
+
+      const result = await resolveMedia(slug, messageId)
+      if (!result.ok) {
+        const failure: GetMessageMediaResult = {
+          ok: false, messageId,
+          error: chatJid ? `${result.failure.error} (chat ${chatJid})` : result.failure.error,
+          errorKind: result.failure.errorKind
+        }
+        return { content: [{ type: 'text', text: failure.error }], isError: true, structuredContent: failure }
+      }
+
+      const { media } = result
+      const url = `${buildMediaBaseUrl(slug)}/${encodeURIComponent(messageId)}`
+
+      const labelMap: Record<MediaAttachmentKind, string> = {
+        image: 'Image', voice: 'Voice note', audio: 'Audio',
+        video: 'Video', document: 'Document', sticker: 'Sticker'
+      }
+      const summaryParts = [labelMap[media.kind]]
+      if (media.durationSeconds) summaryParts.push(`${media.durationSeconds}s`)
+      summaryParts.push(formatBytes(media.fileSize))
+      const summary = summaryParts.join(' · ')
+
+      const baseSuccess = {
+        ok: true as const, messageId, kind: media.kind, mimeType: media.mimeType,
+        filename: media.filename, fileSize: media.fileSize, url,
+        ...(media.durationSeconds !== undefined ? { durationSeconds: media.durationSeconds } : {})
+      }
+
+      if (media.fileSize > maxInlineToolBytes) {
+        const text = `${summary} — too large to return inline; fetch via ${url}`
+        const success: GetMessageMediaResult = { ...baseSuccess, returnedAs: 'link' }
+        return {
+          content: [
+            { type: 'text', text },
+            { type: 'resource_link', uri: url, mimeType: media.mimeType, name: media.filename }
+          ],
+          structuredContent: success
+        }
+      }
+
+      const buffer = fs.readFileSync(media.filepath)
+      const data = buffer.toString('base64')
+      let mediaBlock: any
+      if (media.kind === 'image') {
+        mediaBlock = { type: 'image', data, mimeType: media.mimeType }
+      } else if (media.kind === 'voice' || media.kind === 'audio') {
+        mediaBlock = { type: 'audio', data, mimeType: media.mimeType }
+      } else {
+        mediaBlock = { type: 'resource', resource: { uri: url, mimeType: media.mimeType, blob: data, name: media.filename } }
+      }
+
+      const success: GetMessageMediaResult = { ...baseSuccess, returnedAs: 'inline' }
+      return {
+        content: [{ type: 'text', text: summary }, mediaBlock],
+        structuredContent: success
+      }
+    }
+  )
+
   return server
 }
 
@@ -812,6 +1082,71 @@ function sendJson(res: http.ServerResponse, status: number, payload: unknown): v
 
 let transportCounter = 0
 
+// Match /media/<slug>/<messageId> with optional trailing slash.
+const MEDIA_PATH_RE = /^\/media\/([^/]+)\/([^/]+)\/?$/
+
+/**
+ * Handle `GET`/`HEAD /media/<slug>/<messageId>`. Streams cached bytes from
+ * disk, lazily downloading via Baileys on first request. Loopback-only —
+ * shares the trust model with the `/mcp` endpoint.
+ */
+async function handleMediaRequest(
+  method: string,
+  pathname: string,
+  res: http.ServerResponse
+): Promise<void> {
+  if (method !== 'GET' && method !== 'HEAD') {
+    res.setHeader('Allow', 'GET, HEAD')
+    sendJson(res, 405, { error: 'Method Not Allowed' })
+    return
+  }
+
+  const match = MEDIA_PATH_RE.exec(pathname)
+  if (!match) {
+    sendJson(res, 400, { error: 'Invalid media path' })
+    return
+  }
+  const slug = match[1]
+  let messageId: string
+  try { messageId = decodeURIComponent(match[2]) } catch { messageId = match[2] }
+
+  if (!isValidMessageId(messageId)) {
+    sendJson(res, 400, { error: 'Invalid messageId' })
+    return
+  }
+
+  const account = getAccount(slug)
+  if (!account) {
+    sendJson(res, 404, { error: `Unknown account: ${slug}` })
+    return
+  }
+
+  const result = await resolveMedia(slug, messageId)
+  if (!result.ok) {
+    sendJson(res, result.failure.httpStatus, { error: result.failure.error })
+    return
+  }
+
+  const { media } = result
+  res.statusCode = 200
+  res.setHeader('Content-Type', media.mimeType)
+  res.setHeader('Content-Length', String(media.fileSize))
+  res.setHeader('Content-Disposition', buildContentDisposition(media.filename))
+  res.setHeader('Cache-Control', 'private, max-age=3600')
+
+  if (method === 'HEAD') {
+    res.end()
+    return
+  }
+
+  const stream = fs.createReadStream(media.filepath)
+  stream.on('error', (err) => {
+    if (!res.headersSent) sendJson(res, 502, { error: err.message })
+    else res.destroy(err)
+  })
+  stream.pipe(res)
+}
+
 async function handleMcpRequest(
   slug: string,
   req: http.IncomingMessage,
@@ -869,6 +1204,13 @@ export async function startMcpServer(port: number): Promise<void> {
           managers[defaultSlug] = getManager(defaultSlug)?.state || 'unknown'
         }
         res.end(JSON.stringify({ status: 'ok', whatsapp: defaultSlug ? managers[defaultSlug] : 'unknown' }))
+        return
+      }
+
+      // Dispatch /media/* before /mcp/* so the media route never falls
+      // through to the MCP transport handler.
+      if (pathname.startsWith('/media/')) {
+        await handleMediaRequest(method, pathname, res)
         return
       }
 
