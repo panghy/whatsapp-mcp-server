@@ -35,7 +35,8 @@ import {
   getMcpPort,
   setMcpPort,
   refreshAccount,
-  setMaxInlineToolBytesForTesting
+  setMaxInlineToolBytesForTesting,
+  resolveMedia
 } from './mcp-server'
 
 const DEFAULT = 'default'
@@ -2137,6 +2138,128 @@ describe('MCP Server', () => {
       expect(sc.kind).toBe('image')
       expect(sc.returnedAs).toBe('inline')
       expect(result.result.content[1].type).toBe('image')
+    })
+  })
+
+  describe('resolveMedia disk-cache fallback', () => {
+    const PATH = require('path')
+
+    function seedLegacyRow(slug: string, msgId: string, contentJson: string): void {
+      chatOps.insert(slug, 'legacy@s.whatsapp.net', 'dm', undefined, 'Legacy Chat')
+      const chat = chatOps.getByWhatsappJid(slug, 'legacy@s.whatsapp.net') as any
+      messageOps.insert(slug, chat.id, msgId, Date.now(), 'legacy@s.whatsapp.net', contentJson, true)
+    }
+
+    function dropAttachment(slug: string, msgId: string, filename: string, contents: Buffer | string): string {
+      const dir = PATH.join(accountDir(slug), 'attachments', msgId)
+      fs.mkdirSync(dir, { recursive: true })
+      const filepath = PATH.join(dir, filename)
+      fs.writeFileSync(filepath, contents)
+      return filepath
+    }
+
+    beforeEach(() => {
+      makeAccount(DEFAULT)
+      mockDownloadMediaMessage.mockClear()
+    })
+
+    it('serves a legacy-layout disk-cached file when content_json has no *Message payload', async () => {
+      const bytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46])
+      seedLegacyRow(DEFAULT, 'LEGACY-IMG', JSON.stringify({
+        type: 'message', messageId: 'LEGACY-IMG', text: 'caption only, no rawMessage'
+      }))
+      const filepath = dropAttachment(DEFAULT, 'LEGACY-IMG', 'foo.jpg', bytes)
+
+      const result = await resolveMedia(DEFAULT, 'LEGACY-IMG')
+      expect('failure' in result).toBe(false)
+      if ('failure' in result) return
+      expect(result.media.filepath).toBe(filepath)
+      expect(result.media.filename).toBe('foo.jpg')
+      expect(result.media.mimeType).toBe('image/jpeg')
+      expect(result.media.fileSize).toBe(bytes.length)
+      expect(result.media.kind).toBe('unknown')
+      expect(mockDownloadMediaMessage).not.toHaveBeenCalled()
+    })
+
+    it('returns 415 when the legacy attachment directory is missing', async () => {
+      seedLegacyRow(DEFAULT, 'LEGACY-NONE', JSON.stringify({
+        type: 'message', messageId: 'LEGACY-NONE', text: 'plain text'
+      }))
+
+      const result = await resolveMedia(DEFAULT, 'LEGACY-NONE')
+      expect('failure' in result).toBe(true)
+      if (!('failure' in result)) return
+      expect(result.failure.httpStatus).toBe(415)
+      expect(result.failure.errorKind).toBe('no_media')
+      expect(result.failure.error).toBe('Message has no downloadable media')
+    })
+
+    it('returns 415 when the legacy attachment directory exists but is empty', async () => {
+      seedLegacyRow(DEFAULT, 'LEGACY-EMPTY', JSON.stringify({
+        type: 'message', messageId: 'LEGACY-EMPTY', text: 'plain text'
+      }))
+      fs.mkdirSync(PATH.join(accountDir(DEFAULT), 'attachments', 'LEGACY-EMPTY'), { recursive: true })
+
+      const result = await resolveMedia(DEFAULT, 'LEGACY-EMPTY')
+      expect('failure' in result).toBe(true)
+      if (!('failure' in result)) return
+      expect(result.failure.httpStatus).toBe(415)
+      expect(result.failure.error).toBe('Message has no downloadable media')
+    })
+
+    it('returns 415 Message content is not valid JSON when content_json fails to parse', async () => {
+      chatOps.insert(DEFAULT, 'badjson@s.whatsapp.net', 'dm', undefined, 'Bad JSON')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'badjson@s.whatsapp.net') as any
+      messageOps.insert(DEFAULT, chat.id, 'LEGACY-BADJSON', Date.now(), 'sender@s.whatsapp.net', '{not valid json', true)
+      dropAttachment(DEFAULT, 'LEGACY-BADJSON', 'should-not-be-served.jpg', Buffer.from('ignored'))
+
+      const result = await resolveMedia(DEFAULT, 'LEGACY-BADJSON')
+      expect('failure' in result).toBe(true)
+      if (!('failure' in result)) return
+      expect(result.failure.httpStatus).toBe(415)
+      expect(result.failure.error).toBe('Message content is not valid JSON')
+    })
+
+    it('still serves the happy-path v1.6.0 cache hit when rawMessage is present', async () => {
+      const bytes = Buffer.from('happy-png-bytes')
+      chatOps.insert(DEFAULT, 'happy@s.whatsapp.net', 'dm', undefined, 'Happy')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'happy@s.whatsapp.net') as any
+      messageOps.insert(DEFAULT, chat.id, 'HAPPY-IMG', Date.now(), 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'HAPPY-IMG',
+        rawMessage: { imageMessage: { mimetype: 'image/png', fileLength: bytes.length } }
+      }), true)
+      dropAttachment(DEFAULT, 'HAPPY-IMG', 'image_HAPPY-IMG.png', bytes)
+
+      const result = await resolveMedia(DEFAULT, 'HAPPY-IMG')
+      expect('failure' in result).toBe(false)
+      if ('failure' in result) return
+      expect(result.media.kind).toBe('image')
+      expect(result.media.mimeType).toBe('image/png')
+      expect(result.media.filename).toBe('image_HAPPY-IMG.png')
+      expect(result.media.fileSize).toBe(bytes.length)
+      expect(mockDownloadMediaMessage).not.toHaveBeenCalled()
+    })
+
+    it('picks the lexicographically-first entry and logs a warning when the legacy dir has multiple files', async () => {
+      seedLegacyRow(DEFAULT, 'LEGACY-MULTI', JSON.stringify({
+        type: 'message', messageId: 'LEGACY-MULTI', text: 'plain text'
+      }))
+      dropAttachment(DEFAULT, 'LEGACY-MULTI', 'b.png', Buffer.from('second'))
+      dropAttachment(DEFAULT, 'LEGACY-MULTI', 'a.jpg', Buffer.from('first-bytes'))
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        const result = await resolveMedia(DEFAULT, 'LEGACY-MULTI')
+        expect('failure' in result).toBe(false)
+        if ('failure' in result) return
+        expect(result.media.filename).toBe('a.jpg')
+        expect(result.media.mimeType).toBe('image/jpeg')
+        expect(warnSpy).toHaveBeenCalledTimes(1)
+        expect(warnSpy.mock.calls[0][0]).toContain('LEGACY-MULTI')
+        expect(warnSpy.mock.calls[0][0]).toContain('2 files')
+      } finally {
+        warnSpy.mockRestore()
+      }
     })
   })
 
