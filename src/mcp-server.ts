@@ -330,7 +330,7 @@ export function setMaxInlineToolBytesForTesting(bytes: number | null): void {
   maxInlineToolBytes = bytes === null ? DEFAULT_MAX_INLINE_TOOL_BYTES : bytes
 }
 
-type MediaAttachmentKind = 'image' | 'voice' | 'audio' | 'video' | 'document' | 'sticker'
+type MediaAttachmentKind = 'image' | 'voice' | 'audio' | 'video' | 'document' | 'sticker' | 'unknown'
 
 interface ResolvedMedia {
   filepath: string
@@ -368,6 +368,22 @@ function deriveExtension(mimeType: string): string {
   return map[base] || 'bin'
 }
 
+/** Infer a mime type from a filename extension. Inverse of `deriveExtension`,
+ *  with a couple of common aliases (`jpeg`, `opus`) for legacy filenames. Falls
+ *  back to `application/octet-stream` when the extension is unrecognized. */
+function inferMimeTypeFromFilename(filename: string): string {
+  const dot = filename.lastIndexOf('.')
+  if (dot < 0 || dot === filename.length - 1) return 'application/octet-stream'
+  const ext = filename.substring(dot + 1).toLowerCase()
+  const map: Record<string, string> = {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+    ogg: 'audio/ogg', opus: 'audio/ogg', mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', aac: 'audio/aac',
+    mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', '3gp': 'video/3gpp',
+    pdf: 'application/pdf'
+  }
+  return map[ext] || 'application/octet-stream'
+}
+
 /** Locate a Baileys `*Message` payload inside the stored `content_json`. The
  *  ingestion path may persist the raw payload at the top level, under
  *  `.message`, or under `.rawMessage`; checking all three keeps this helper
@@ -402,6 +418,49 @@ function coerceLong(value: any): number {
 }
 
 /**
+ * Serve a legacy v1.5.x cached attachment when the persisted row has no
+ * Baileys `*Message` payload (so we cannot lazy-download via Baileys), but
+ * the eager-download era left the bytes under
+ * `<accountDir>/attachments/<messageId>/`. The directory invariant is
+ * "exactly one file per messageId"; if we find more than one we pick the
+ * lexicographically-first entry and warn so the anomaly can be investigated.
+ * Returns the existing 415 failure when the directory is missing or empty.
+ */
+function resolveLegacyDiskCache(messageId: string, attachmentDir: string): MediaResolution {
+  let entries: string[]
+  try { entries = fs.readdirSync(attachmentDir) }
+  catch { return { ok: false, failure: { errorKind: 'no_media', httpStatus: 415, error: 'Message has no downloadable media' } } }
+
+  const files = entries.sort()
+  if (files.length === 0) {
+    return { ok: false, failure: { errorKind: 'no_media', httpStatus: 415, error: 'Message has no downloadable media' } }
+  }
+  if (files.length > 1) {
+    console.warn(`[mcp] legacy attachment dir for ${messageId} contains ${files.length} files; serving ${files[0]}`)
+  }
+
+  const filename = files[0]
+  const filepath = path.join(attachmentDir, filename)
+  let stat: fs.Stats
+  try { stat = fs.statSync(filepath) }
+  catch { return { ok: false, failure: { errorKind: 'no_media', httpStatus: 415, error: 'Message has no downloadable media' } } }
+  if (!stat.isFile()) {
+    return { ok: false, failure: { errorKind: 'no_media', httpStatus: 415, error: 'Message has no downloadable media' } }
+  }
+
+  return {
+    ok: true,
+    media: {
+      filepath,
+      filename,
+      mimeType: inferMimeTypeFromFilename(filename),
+      fileSize: stat.size,
+      kind: 'unknown'
+    }
+  }
+}
+
+/**
  * Resolve the on-disk media for a given (slug, messageId). Looks up the
  * stored message, identifies the media payload, returns the cached file when
  * present, and otherwise lazily downloads via Baileys' `downloadMediaMessage`
@@ -417,9 +476,15 @@ export async function resolveMedia(slug: string, messageId: string): Promise<Med
   try { parsed = JSON.parse(row.content_json) }
   catch { return { ok: false, failure: { errorKind: 'no_media', httpStatus: 415, error: 'Message content is not valid JSON' } } }
 
+  const attachmentDir = path.join(accountDir(slug), 'attachments', messageId)
+
   const found = findMediaPayload(parsed)
   if (!found) {
-    return { ok: false, failure: { errorKind: 'no_media', httpStatus: 415, error: 'Message has no downloadable media' } }
+    // Legacy v1.5.x rows have no Baileys `*Message` payload to drive a lazy
+    // download, but the eager-download path used to drop the bytes under
+    // `<accountDir>/attachments/<messageId>/<filename>`. If that file is still
+    // on disk, serve it; otherwise preserve the existing 415 behavior.
+    return resolveLegacyDiskCache(messageId, attachmentDir)
   }
   const { kind, payload } = found
 
@@ -428,7 +493,6 @@ export async function resolveMedia(slug: string, messageId: string): Promise<Med
   const durationSeconds = payload?.seconds != null ? coerceLong(payload.seconds) : undefined
   const filename = (payload?.fileName as string | undefined) || `${kind}_${messageId}.${deriveExtension(mimeType)}`
 
-  const attachmentDir = path.join(accountDir(slug), 'attachments', messageId)
   const filepath = path.join(attachmentDir, filename)
 
   if (fs.existsSync(filepath)) {
@@ -959,15 +1023,19 @@ export function createMcpServer(slug: string): McpServer {
 
       const labelMap: Record<MediaAttachmentKind, string> = {
         image: 'Image', voice: 'Voice note', audio: 'Audio',
-        video: 'Video', document: 'Document', sticker: 'Sticker'
+        video: 'Video', document: 'Document', sticker: 'Sticker', unknown: 'File'
       }
       const summaryParts = [labelMap[media.kind]]
       if (media.durationSeconds) summaryParts.push(`${media.durationSeconds}s`)
       summaryParts.push(formatBytes(media.fileSize))
       const summary = summaryParts.join(' · ')
 
+      // Legacy disk-cache hits surface `kind: 'unknown'`; the wire-shape
+      // enum doesn't include 'unknown', so coerce to the generic `document`
+      // bucket (which also drives the resource-block fallback below).
+      const wireKind: Exclude<MediaAttachmentKind, 'unknown'> = media.kind === 'unknown' ? 'document' : media.kind
       const baseSuccess = {
-        ok: true as const, messageId, kind: media.kind, mimeType: media.mimeType,
+        ok: true as const, messageId, kind: wireKind, mimeType: media.mimeType,
         filename: media.filename, fileSize: media.fileSize, url,
         ...(media.durationSeconds !== undefined ? { durationSeconds: media.durationSeconds } : {})
       }
