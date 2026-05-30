@@ -1953,7 +1953,7 @@ describe('MCP Server', () => {
       expect(sc.durationSeconds).toBe(8)
     })
 
-    it('returns a resource content block (with blob) for a sticker', async () => {
+    it('returns an image content block for a sticker', async () => {
       const bytes = Buffer.from('sticker-webp')
       insertMediaMessage(DEFAULT, 'stickerchat@s.whatsapp.net', 'ST1', 'sticker',
         { mimetype: 'image/webp', fileLength: bytes.length })
@@ -1962,12 +1962,13 @@ describe('MCP Server', () => {
 
       const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'ST1' })
       const block = result.result.content[1]
-      expect(block.type).toBe('resource')
-      expect(block.resource.mimeType).toBe('image/webp')
-      expect(block.resource.blob).toBeDefined()
-      expect(Buffer.from(block.resource.blob, 'base64').equals(bytes)).toBe(true)
+      expect(block.type).toBe('image')
+      expect(block.mimeType).toBe('image/webp')
+      expect(block.data).toBeDefined()
+      expect(Buffer.from(block.data, 'base64').equals(bytes)).toBe(true)
       const sc = result.result.structuredContent
       expect(sc.kind).toBe('sticker')
+      expect(sc.mimeType).toBe('image/webp')
       expect(sc.returnedAs).toBe('inline')
     })
 

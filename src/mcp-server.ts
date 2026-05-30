@@ -987,7 +987,7 @@ export function createMcpServer(slug: string): McpServer {
       const buffer = fs.readFileSync(media.filepath)
       const data = buffer.toString('base64')
       let mediaBlock: any
-      if (media.kind === 'image') {
+      if (media.kind === 'image' || media.kind === 'sticker') {
         mediaBlock = { type: 'image', data, mimeType: media.mimeType }
       } else if (media.kind === 'voice' || media.kind === 'audio') {
         mediaBlock = { type: 'audio', data, mimeType: media.mimeType }
