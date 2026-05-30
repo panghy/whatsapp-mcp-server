@@ -358,11 +358,8 @@ describe('resolveMedia + /media route — integration coverage', () => {
     expect(mockDownloadMediaMessage).toHaveBeenCalledTimes(1)
   })
 
-  // 7. Legacy row (no rawMessage), cache hit — depends on Task A's behavior
-  // change. Keep skipped until the disk-cache fallback for legacy rows lands.
-  // TODO(intent://local/note/95001022-4f5a-4b0e-a787-ccd588b08d66): unskip
-  // once Task A merges into main.
-  it.skip('case #7: legacy row (no rawMessage) + cache hit → disk-cache fallback returns ok', async () => {
+  // 7. Legacy row (no rawMessage), cache hit — exercises the v1.6.1 disk-cache fallback (Task A / PR #57).
+  it('case #7: legacy row (no rawMessage) + cache hit → disk-cache fallback returns ok', async () => {
     const bytes = Buffer.from('legacy-cached-image')
     seedMediaRow(DEFAULT, 'LEG1', 'image', {
       includeRawMessage: false,
