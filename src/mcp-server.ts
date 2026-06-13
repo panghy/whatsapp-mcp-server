@@ -23,7 +23,7 @@ import {
 } from './structured-message'
 import { getAccount, getDefaultSlug, accountDir } from './accounts'
 import { getManager } from './whatsapp-manager'
-import { getMcpPort as getGlobalMcpPort, setMcpPort as setGlobalMcpPort } from './global-settings'
+import { getMcpPort as getGlobalMcpPort, setMcpPort as setGlobalMcpPort, getMediaInlineMaxBytes } from './global-settings'
 
 // Dynamically loaded so the existing `vi.mock('@whiskeysockets/baileys', …)`
 // pattern in tests continues to work the same way as in message-transformer.
@@ -319,16 +319,24 @@ function buildMediaBaseUrl(slug: string): string {
 // --- Media download (shared between /media HTTP route and get_message_media) ---
 
 /**
- * Hard upper bound on the size of an inline `get_message_media` payload. Over
- * this limit the tool falls back to a `resource_link` block only so it never
- * crashes MCP hosts with multi-megabyte base64 strings.
+ * Default upper bound on the size of an inline `get_message_media` payload.
+ * Over this limit the tool falls back to a host file path / `resource_link`
+ * block so it never crashes MCP hosts with multi-megabyte base64 strings.
+ *
+ * The default is the persisted `mediaInlineMaxBytes` global setting, read fresh
+ * on each tool call (like `buildMediaBaseUrl`) so changes take effect without
+ * rebuilding the McpServer. The per-call `maxInlineBytes` argument overrides it.
  */
-const DEFAULT_MAX_INLINE_TOOL_BYTES = 25 * 1024 * 1024 // 25MB
-let maxInlineToolBytes = DEFAULT_MAX_INLINE_TOOL_BYTES
+let maxInlineToolBytesOverride: number | null = null
 
 /** Test-only override for the inline payload cap. Pass `null` to reset. */
 export function setMaxInlineToolBytesForTesting(bytes: number | null): void {
-  maxInlineToolBytes = bytes === null ? DEFAULT_MAX_INLINE_TOOL_BYTES : bytes
+  maxInlineToolBytesOverride = bytes
+}
+
+/** Resolve the effective default cap: test override wins, else the persisted setting. */
+function getDefaultInlineToolBytes(): number {
+  return maxInlineToolBytesOverride ?? getMediaInlineMaxBytes()
 }
 
 type MediaAttachmentKind = 'image' | 'voice' | 'audio' | 'video' | 'document' | 'sticker' | 'unknown'
@@ -1117,7 +1125,7 @@ export function createMcpServer(slug: string): McpServer {
       // media is within the effective cap and otherwise upgrades to a concrete
       // file path. The per-call `maxInlineBytes` overrides the global cap.
       const mode: 'auto' | 'inline' | 'file' = output ?? 'auto'
-      const effectiveCap = typeof maxInlineBytes === 'number' ? maxInlineBytes : maxInlineToolBytes
+      const effectiveCap = typeof maxInlineBytes === 'number' ? maxInlineBytes : getDefaultInlineToolBytes()
 
       if (mode === 'file' || (mode === 'auto' && media.fileSize > effectiveCap)) {
         const filePath = media.filepath

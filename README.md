@@ -130,7 +130,14 @@ http://127.0.0.1:13491/media/<slug>/<messageId>
 
 A `GET` or `HEAD` against that URL returns the raw bytes with the right `Content-Type`/`Content-Length`/`Content-Disposition` headers; files are lazily downloaded from WhatsApp on first request and cached under `accounts/<slug>/attachments/<messageId>/`. The endpoint is loopback-only and uses the same trust model as `/mcp`.
 
-For MCP hosts that cannot fetch HTTP URLs directly, the `get_message_media` tool returns the same bytes as an inline `image`/`audio`/`resource` content block. Files larger than 25MB come back as a `resource_link` only — fetch them via the URL above.
+For MCP hosts that cannot fetch HTTP URLs directly, the `get_message_media` tool returns the same bytes as an inline `image`/`audio`/`resource` content block. Files larger than the inline cap (default 25MB, configurable under **Settings → MCP Server → Inline media cap**) come back as a host file `path` (with zero base64) — fetch them via the URL above or read the path directly. The cap can also be overridden per call with the `maxInlineBytes` argument, and `output:"file"` always returns a path instead of inline bytes.
+
+#### Security model (local files)
+
+The media path returned by `get_message_media` (in `output:"file"`/`auto` mode) and the `attachmentPath` argument of `send_message` operate on **plaintext files on your local disk**:
+
+- **Cleartext on disk.** `output:"file"` returns the cached, decrypted media at `accounts/<slug>/attachments/<messageId>/`. The bytes are written unencrypted so other tools (e.g. a transcription model) can read them by path. Account data lives under Electron's user-only `userData` directory, which the app intends to keep restricted to the current OS user (`0600` files / `0700` directories); anyone who can read that directory can read your media.
+- **Arbitrary local reads by design.** `send_message`'s `attachmentPath` accepts an absolute path or `file://` URL and reads whatever regular file the path points to. This is intentional — the MCP server runs as you and trusts the local caller — so only point MCP clients you trust at this loopback-only server.
 
 ## Multiple accounts
 

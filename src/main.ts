@@ -52,7 +52,9 @@ import {
   getMcpPort as getGlobalMcpPort,
   setMcpPort as setGlobalMcpPort,
   getMcpAutoStart as getGlobalMcpAutoStart,
-  setMcpAutoStart as setGlobalMcpAutoStart
+  setMcpAutoStart as setGlobalMcpAutoStart,
+  getMediaInlineMaxBytes as getGlobalMediaInlineMaxBytes,
+  setMediaInlineMaxBytes as setGlobalMediaInlineMaxBytes
 } from './global-settings'
 
 // Auto-updater configuration
@@ -1174,5 +1176,15 @@ ipcMain.handle('mcp-get-auto-start', async () => getGlobalMcpAutoStart())
 
 ipcMain.handle('mcp-set-auto-start', async (_, enabled: boolean) => {
   setGlobalMcpAutoStart(enabled)
+  return { success: true }
+})
+
+ipcMain.handle('media-get-inline-max-bytes', async () => getGlobalMediaInlineMaxBytes())
+
+ipcMain.handle('media-set-inline-max-bytes', async (_, bytes: number) => {
+  if (!Number.isInteger(bytes) || bytes < 1) {
+    throw new Error('Inline media cap must be a positive integer number of bytes')
+  }
+  setGlobalMediaInlineMaxBytes(bytes)
   return { success: true }
 })
