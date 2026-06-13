@@ -1,6 +1,7 @@
 import { vi, describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import fs from 'fs'
 import http from 'http'
+import crypto from 'crypto'
 
 // Hoisted tmpdir so the electron mock (also hoisted) can see it.
 const testDir = vi.hoisted(() => {
@@ -394,8 +395,8 @@ describe('resolveMedia + /media route — integration coverage', () => {
     expect(r.status).toBe(415)
   })
 
-  // 9. Over-cap inline → get_message_media returns resource_link only.
-  it('case #9: over-cap → get_message_media returns resource_link pointing at /media URL', async () => {
+  // 9. Over-cap in auto mode → get_message_media returns a file path (no base64).
+  it('case #9: auto over-cap → get_message_media returns a file path with a file:// resource_link', async () => {
     const bytes = Buffer.alloc(2048, 0xab)
     seedMediaRow(DEFAULT, 'BIG1', 'image', {
       includeRawMessage: true,
@@ -408,17 +409,22 @@ describe('resolveMedia + /media route — integration coverage', () => {
     const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'BIG1' })
     expect(result.result.isError).toBeFalsy()
     const blocks = result.result.content
-    // No inline blob anywhere — only a text summary plus a resource_link.
+    // No inline blob anywhere — only a text summary plus a file:// resource_link.
     expect(blocks).toHaveLength(2)
     expect(blocks[0].type).toBe('text')
-    expect(blocks[0].text).toMatch(/too large/i)
     expect(blocks[1].type).toBe('resource_link')
-    expect(blocks[1].uri).toMatch(/\/media\/default\/BIG1$/)
+    expect(blocks[1].uri).toMatch(/^file:\/\//)
+    expect(blocks[1].uri).toMatch(/image_BIG1\.jpg$/)
     for (const block of blocks) {
       expect(block.data).toBeUndefined()
       if (block.resource) expect(block.resource.blob).toBeUndefined()
     }
-    expect(result.result.structuredContent.returnedAs).toBe('link')
+    const sc = result.result.structuredContent
+    expect(sc.returnedAs).toBe('file')
+    expect(PATH.isAbsolute(sc.path)).toBe(true)
+    expect(fs.statSync(sc.path).size).toBe(bytes.length)
+    // The loopback /media URL is still carried alongside the path.
+    expect(sc.url).toMatch(/\/media\/default\/BIG1$/)
   })
 
   // 10. Unknown messageId → message_not_found / 404 (both paths).
@@ -458,5 +464,92 @@ describe('resolveMedia + /media route — integration coverage', () => {
     await startMcpServer(testPort)
     const r = await rawGet(testPort, '/media/default/MAL1')
     expect(r.status).toBe(415)
+  })
+
+  // 13. output:"file" → real on-disk file, byteLength/SHA-256 match, no base64.
+  it('case #13: output:"file" returns a path whose bytes match fileSize and the inline payload', async () => {
+    const bytes = Buffer.alloc(4096, 0x37)
+    seedMediaRow(DEFAULT, 'FILE13', 'image', {
+      includeRawMessage: true,
+      includeCachedFile: { bytes, filename: defaultFilename('image', 'FILE13') },
+      payloadOverrides: { fileLength: bytes.length }
+    })
+    await startMcpServer(testPort)
+
+    const fileRes = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'FILE13', output: 'file' })
+    expect(fileRes.result.isError).toBeFalsy()
+    const sc = fileRes.result.structuredContent
+    expect(sc.returnedAs).toBe('file')
+    expect(PATH.isAbsolute(sc.path)).toBe(true)
+    expect(sc.fileSize).toBe(bytes.length)
+
+    // File on disk has byteLength === fileSize.
+    const onDisk = fs.readFileSync(sc.path)
+    expect(onDisk.length).toBe(sc.fileSize)
+
+    // No base64 block anywhere; a file:// resource_link is present.
+    const blocks = fileRes.result.content
+    for (const block of blocks) {
+      expect(block.data).toBeUndefined()
+      if (block.resource) expect(block.resource.blob).toBeUndefined()
+    }
+    const link = blocks.find((b: any) => b.type === 'resource_link')
+    expect(link).toBeDefined()
+    expect(link.uri).toBe(`file://${sc.path}`)
+
+    // Content SHA-256 equals the inline-decoded bytes.
+    const inlineRes = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'FILE13', output: 'inline' })
+    const inlineBlock = inlineRes.result.content.find((b: any) => b.type === 'image')
+    const inlineBytes = Buffer.from(inlineBlock.data, 'base64')
+    const fileSha = crypto.createHash('sha256').update(onDisk).digest('hex')
+    const inlineSha = crypto.createHash('sha256').update(inlineBytes).digest('hex')
+    expect(fileSha).toBe(inlineSha)
+  })
+
+  // 14. inline mode is byte-identical to the historical inline output.
+  it('case #14: output:"inline" is byte-identical to the default inline result', async () => {
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    seedMediaRow(DEFAULT, 'INL14', 'image', {
+      includeRawMessage: true,
+      includeCachedFile: { bytes, filename: defaultFilename('image', 'INL14') },
+      payloadOverrides: { mimetype: 'image/jpeg', fileLength: bytes.length }
+    })
+    await startMcpServer(testPort)
+
+    const explicit = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'INL14', output: 'inline' })
+    const auto = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'INL14' })
+
+    expect(explicit.result.content).toEqual(auto.result.content)
+    expect(explicit.result.structuredContent).toEqual(auto.result.structuredContent)
+    expect(explicit.result.structuredContent.returnedAs).toBe('inline')
+    const img = explicit.result.content.find((b: any) => b.type === 'image')
+    expect(img.data).toBe(bytes.toString('base64'))
+  })
+
+  // 15. account isolation — same messageId in two slugs maps to two paths.
+  it('case #15: output:"file" is account-isolated — same id, two slugs, two paths, no cross-read', async () => {
+    makeAccount('work')
+    const defaultBytes = Buffer.from('default-account-bytes')
+    const workBytes = Buffer.from('work-account-different')
+    seedMediaRow(DEFAULT, 'SHARED', 'image', {
+      includeRawMessage: true,
+      includeCachedFile: { bytes: defaultBytes, filename: defaultFilename('image', 'SHARED') },
+      payloadOverrides: { fileLength: defaultBytes.length }
+    })
+    seedMediaRow('work', 'SHARED', 'image', {
+      includeRawMessage: true,
+      includeCachedFile: { bytes: workBytes, filename: defaultFilename('image', 'SHARED') },
+      payloadOverrides: { fileLength: workBytes.length }
+    })
+    await startMcpServer(testPort)
+
+    const def = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'SHARED', output: 'file' })
+    const work = await callMcpTool(testPort, '/mcp/work', 'get_message_media', { messageId: 'SHARED', output: 'file' })
+
+    const defPath = def.result.structuredContent.path
+    const workPath = work.result.structuredContent.path
+    expect(defPath).not.toBe(workPath)
+    expect(fs.readFileSync(defPath).equals(defaultBytes)).toBe(true)
+    expect(fs.readFileSync(workPath).equals(workBytes)).toBe(true)
   })
 })
