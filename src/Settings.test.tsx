@@ -468,6 +468,13 @@ describe('Settings MCP Server tab', () => {
     expect(html).toContain('Restart required to apply changes.')
     expect(html).not.toContain('All accounts share this port and are routed by slug')
   })
+
+  it('renders the inline media cap control defaulting to 25 (MB)', () => {
+    const html = renderMcp()
+    expect(html).toMatch(/<label[^>]*for="media-inline-max-mb"[^>]*>Inline media cap \(MB\)<\/label>/)
+    expect(html).toMatch(/<input[^>]*id="media-inline-max-mb"[^>]*value="25"/)
+    expect(html).toContain('larger media comes back as a host file path with zero base64')
+  })
 })
 
 describe('Settings System tab', () => {

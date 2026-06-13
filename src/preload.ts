@@ -78,6 +78,8 @@ contextBridge.exposeInMainWorld('electron', {
   restartMcpServer: () => ipcRenderer.invoke('mcp-restart'),
   getMcpAutoStart: () => ipcRenderer.invoke('mcp-get-auto-start'),
   setMcpAutoStart: (enabled: boolean) => ipcRenderer.invoke('mcp-set-auto-start', enabled),
+  getMediaInlineMaxBytes: () => ipcRenderer.invoke('media-get-inline-max-bytes'),
+  setMediaInlineMaxBytes: (bytes: number) => ipcRenderer.invoke('media-set-inline-max-bytes', bytes),
 })
 
 // Expose ipcRenderer for listening to events

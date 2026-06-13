@@ -134,6 +134,8 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
   const [mcpPort, setMcpPort] = useState('13491')
   const [mcpPortSaved, setMcpPortSaved] = useState(false)
   const [mcpAutoStart, setMcpAutoStart] = useState(false)
+  const [mediaInlineMaxMb, setMediaInlineMaxMb] = useState('25')
+  const [mediaInlineMaxSaved, setMediaInlineMaxSaved] = useState(false)
   const [mcpUrls, setMcpUrls] = useState<Record<string, McpUrlInfo>>({})
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null)
   // App version
@@ -149,18 +151,20 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
   const loadSettings = useCallback(async () => {
     try {
       setLoading(true); setError(null)
-      const [groupsData, name, autoLaunchEnabled, mcpStatusData, autoStart] = await Promise.all([
+      const [groupsData, name, autoLaunchEnabled, mcpStatusData, autoStart, inlineMaxBytes] = await Promise.all([
         window.electron.getGroups(slug),
         window.electron.getUserDisplayName(slug),
         window.electron.getAutoLaunch(),
         window.electron.getMcpStatus(),
         window.electron.getMcpAutoStart(),
+        window.electron.getMediaInlineMaxBytes(),
       ])
       setGroups(groupsData)
       setDisplayName(name || '')
       setAutoLaunch(autoLaunchEnabled)
       setMcpStatus(mcpStatusData); setMcpPort(String(mcpStatusData.port))
       setMcpAutoStart(autoStart)
+      setMediaInlineMaxMb(String(Math.round((inlineMaxBytes / (1024 * 1024)) * 100) / 100))
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load settings'
       setError(msg); console.error('Failed to load settings:', err)
@@ -248,6 +252,15 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
     catch (err) { console.error('Failed to save MCP port:', err) }
   }
   const handleMcpPortKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') { void handleMcpPortSave() } }
+
+  const handleMediaInlineMaxSave = async () => {
+    const mb = parseFloat(mediaInlineMaxMb)
+    if (!Number.isFinite(mb) || mb <= 0) return
+    const bytes = Math.round(mb * 1024 * 1024)
+    try { await window.electron.setMediaInlineMaxBytes(bytes); setMediaInlineMaxSaved(true); setTimeout(() => setMediaInlineMaxSaved(false), 2000) }
+    catch (err) { console.error('Failed to save inline media cap:', err) }
+  }
+  const handleMediaInlineMaxKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') { void handleMediaInlineMaxSave() } }
 
   const handleRelinkWhatsApp = async () => {
     if (window.confirm(`Re-link account "${slug}"? This clears its WhatsApp session and shows a new QR code. Messages are preserved.`)) {
@@ -521,6 +534,14 @@ export default function Settings({ slug, accounts, defaultSlug, statusByAccount,
             <div className="setting-item" style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ fontWeight: 500, fontSize: '0.95rem' }}>Auto-start MCP server</span>
               <label className="toggle-switch"><input type="checkbox" checked={mcpAutoStart} onChange={handleMcpAutoStartChange} /><span className="slider"></span></label>
+            </div>
+            <div className="setting-item">
+              <label htmlFor="media-inline-max-mb">Inline media cap (MB)</label>
+              <div style={{ position: 'relative' }}>
+                <input id="media-inline-max-mb" type="number" inputMode="decimal" min={1} step={1} value={mediaInlineMaxMb} onChange={(e) => setMediaInlineMaxMb(e.target.value)} onBlur={handleMediaInlineMaxSave} onKeyDown={handleMediaInlineMaxKeyDown} placeholder="25" />
+                {mediaInlineMaxSaved && (<span style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', fontSize: '0.75rem', color: 'hsl(var(--success, 142 76% 36%))', opacity: 0.8 }}>Saved</span>)}
+              </div>
+              <p className="setting-description"><code>get_message_media</code> returns inline bytes up to this size; larger media comes back as a host file path with zero base64.</p>
             </div>
 
             <div className="mcp-url-list" style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid hsl(var(--border))' }} data-testid="mcp-all-endpoints">
