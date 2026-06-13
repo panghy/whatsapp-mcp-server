@@ -36,8 +36,13 @@ import {
   setMcpPort,
   refreshAccount,
   setMaxInlineToolBytesForTesting,
-  resolveMedia
+  resolveMedia,
+  normalizeAttachmentPath,
+  inferSendMediaType,
+  isValidMessageId,
+  deriveExtension
 } from './mcp-server'
+import { pathToFileURL } from 'url'
 
 const DEFAULT = 'default'
 
@@ -1973,7 +1978,7 @@ describe('MCP Server', () => {
       expect(sc.returnedAs).toBe('inline')
     })
 
-    it('returns a resource_link only when the file exceeds MAX_INLINE_TOOL_BYTES', async () => {
+    it('returns a file path (no base64) when the file exceeds the inline cap in auto mode', async () => {
       const bytes = Buffer.alloc(2048, 0xaa)
       insertMediaMessage(DEFAULT, 'bigchat@s.whatsapp.net', 'BIG1', 'image',
         { mimetype: 'image/png', fileLength: bytes.length })
@@ -1986,9 +1991,9 @@ describe('MCP Server', () => {
       const content = result.result.content
       expect(content).toHaveLength(2)
       expect(content[0].type).toBe('text')
-      expect(content[0].text).toMatch(/too large/i)
       expect(content[1].type).toBe('resource_link')
-      expect(content[1].uri).toMatch(/\/media\/default\/BIG1$/)
+      expect(content[1].uri).toMatch(/^file:\/\//)
+      expect(content[1].uri).toMatch(/image_BIG1\.png$/)
       expect(content[1].mimeType).toBe('image/png')
       // No inline base64 blob anywhere in the response.
       for (const block of content) {
@@ -1997,7 +2002,11 @@ describe('MCP Server', () => {
       }
       const sc = result.result.structuredContent
       expect(sc.ok).toBe(true)
-      expect(sc.returnedAs).toBe('link')
+      expect(sc.returnedAs).toBe('file')
+      expect(sc.path).toMatch(/image_BIG1\.png$/)
+      expect(PATH.isAbsolute(sc.path)).toBe(true)
+      // `url` (the loopback /media route) is still carried for HTTP-capable hosts.
+      expect(sc.url).toMatch(/\/media\/default\/BIG1$/)
     })
 
     it('errorKind=message_not_found for an unknown messageId', async () => {
@@ -2039,6 +2048,122 @@ describe('MCP Server', () => {
       const sc = result.result.structuredContent
       expect(sc.errorKind).toBe('download_failed')
       expect(sc.error).toMatch(/network down/)
+    })
+
+    it('output:"file" returns a path (no base64) even when the file is within the inline cap', async () => {
+      const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+      insertMediaMessage(DEFAULT, 'filechat@s.whatsapp.net', 'FILE1', 'image', { mimetype: 'image/png', fileLength: bytes.length })
+      writeCachedFile(DEFAULT, 'FILE1', 'image_FILE1.png', bytes)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'FILE1', output: 'file' })
+      expect(result.result.isError).toBeFalsy()
+      const content = result.result.content
+      expect(content).toHaveLength(2)
+      expect(content[0].type).toBe('text')
+      expect(content[1].type).toBe('resource_link')
+      expect(content[1].uri).toMatch(/^file:\/\//)
+      expect(content[1].uri).toMatch(/image_FILE1\.png$/)
+      for (const block of content) {
+        expect(block.data).toBeUndefined()
+        if (block.resource) expect(block.resource.blob).toBeUndefined()
+      }
+      const sc = result.result.structuredContent
+      expect(sc.returnedAs).toBe('file')
+      expect(PATH.isAbsolute(sc.path)).toBe(true)
+      expect(sc.path).toMatch(/image_FILE1\.png$/)
+      expect(fs.readFileSync(sc.path).equals(bytes)).toBe(true)
+    })
+
+    it('output:"inline" forces inline bytes even when the file exceeds the inline cap', async () => {
+      const bytes = Buffer.alloc(2048, 0xcd)
+      insertMediaMessage(DEFAULT, 'inlinechat@s.whatsapp.net', 'INL1', 'image', { mimetype: 'image/png', fileLength: bytes.length })
+      writeCachedFile(DEFAULT, 'INL1', 'image_INL1.png', bytes)
+      setMaxInlineToolBytesForTesting(1024)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'INL1', output: 'inline' })
+      expect(result.result.isError).toBeFalsy()
+      const content = result.result.content
+      expect(content[1].type).toBe('image')
+      expect(content[1].data).toBe(bytes.toString('base64'))
+      expect(result.result.structuredContent.returnedAs).toBe('inline')
+      expect(result.result.structuredContent.path).toBeUndefined()
+    })
+
+    it('maxInlineBytes per-call override upgrades an otherwise-inline file to a path', async () => {
+      const bytes = Buffer.alloc(2048, 0xee)
+      insertMediaMessage(DEFAULT, 'capchat@s.whatsapp.net', 'CAP1', 'image', { mimetype: 'image/png', fileLength: bytes.length })
+      writeCachedFile(DEFAULT, 'CAP1', 'image_CAP1.png', bytes)
+      // Global cap is the default (25MB) so without the override this would inline.
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'CAP1', maxInlineBytes: 1024 })
+      expect(result.result.isError).toBeFalsy()
+      const sc = result.result.structuredContent
+      expect(sc.returnedAs).toBe('file')
+      expect(sc.path).toMatch(/image_CAP1\.png$/)
+      // The same call without the override inlines (auto under the global cap).
+      const inlineResult = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'CAP1' })
+      expect(inlineResult.result.structuredContent.returnedAs).toBe('inline')
+    })
+
+    it('output:"file" is idempotent — repeated calls reuse the same on-disk path', async () => {
+      const bytes = Buffer.from('idempotent-bytes')
+      insertMediaMessage(DEFAULT, 'idemchat@s.whatsapp.net', 'IDEM1', 'image', { mimetype: 'image/png', fileLength: bytes.length })
+      writeCachedFile(DEFAULT, 'IDEM1', 'image_IDEM1.png', bytes)
+      await startMcpServer(testPort)
+
+      const r1 = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'IDEM1', output: 'file' })
+      const r2 = await callMcpTool(testPort, '/mcp', 'get_message_media', { messageId: 'IDEM1', output: 'file' })
+      expect(r1.result.structuredContent.path).toBe(r2.result.structuredContent.path)
+    })
+  })
+
+  describe('isValidMessageId — path-segment sanitization', () => {
+    it('accepts plain alphanumerics and the filename-safe separators', () => {
+      expect(isValidMessageId('IMG1')).toBe(true)
+      expect(isValidMessageId('3EB0C767D26B8A3F7A')).toBe(true)
+      expect(isValidMessageId('E2E-TOOL-1')).toBe(true)
+      expect(isValidMessageId('a_b')).toBe(true)
+    })
+
+    it('rejects traversal sequences, absolute paths and separators', () => {
+      expect(isValidMessageId('..')).toBe(false)
+      expect(isValidMessageId('../etc')).toBe(false)
+      expect(isValidMessageId('/etc/passwd')).toBe(false)
+      expect(isValidMessageId('a/b')).toBe(false)
+      expect(isValidMessageId('a\\b')).toBe(false)
+      expect(isValidMessageId('a.b')).toBe(false)
+      expect(isValidMessageId('a\0b')).toBe(false)
+    })
+
+    it('rejects empty, over-length and other non-alphanumeric values', () => {
+      expect(isValidMessageId('')).toBe(false)
+      expect(isValidMessageId('a'.repeat(257))).toBe(false)
+      expect(isValidMessageId('a+b')).toBe(false)
+      expect(isValidMessageId('a b')).toBe(false)
+      expect(isValidMessageId('a%2eb')).toBe(false)
+      expect(isValidMessageId('a:b')).toBe(false)
+    })
+  })
+
+  describe('deriveExtension — mime → file extension', () => {
+    it('maps opus voice notes (with codec params) to ogg', () => {
+      expect(deriveExtension('audio/ogg; codecs=opus')).toBe('ogg')
+    })
+
+    it('maps common image/audio/video/document mime types', () => {
+      expect(deriveExtension('image/jpeg')).toBe('jpg')
+      expect(deriveExtension('image/png')).toBe('png')
+      expect(deriveExtension('audio/mpeg')).toBe('mp3')
+      expect(deriveExtension('video/mp4')).toBe('mp4')
+      expect(deriveExtension('application/pdf')).toBe('pdf')
+    })
+
+    it('falls back to bin for unknown or empty mime types', () => {
+      expect(deriveExtension('application/x-unknown')).toBe('bin')
+      expect(deriveExtension('')).toBe('bin')
     })
   })
 
@@ -2263,6 +2388,211 @@ describe('MCP Server', () => {
       }
     })
   })
+
+  describe('send_message media file paths', () => {
+    const PATH = require('path')
+
+    function captureSocket() {
+      const calls: Array<{ jid: string; content: any }> = []
+      const socket = {
+        sendMessage: vi.fn(async (jid: string, content: any) => {
+          calls.push({ jid, content })
+          return { key: { id: 'OUT1' } }
+        })
+      }
+      return { socket, calls }
+    }
+
+    function writeTmp(name: string, contents: Buffer): string {
+      const p = PATH.join(testDir, name)
+      fs.writeFileSync(p, contents)
+      return p
+    }
+
+    beforeEach(() => { makeAccount(DEFAULT) })
+
+    it('round-trips a voice note from get_message_media cache via a file:// path with byte-identical payload and no base64', async () => {
+      // Seed a voice message + its cached bytes on account A. `resolveMedia`
+      // returns the same `filepath` that get_message_media output:"file" emits.
+      makeAccount('acctb')
+      const bytes = Buffer.from('ogg-opus-voice-note-bytes')
+      const msgId = 'RT-VOICE-1'
+      chatOps.insert(DEFAULT, 'rt@s.whatsapp.net', 'dm', undefined, 'RT Chat')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, 'rt@s.whatsapp.net') as any
+      messageOps.insert(DEFAULT, chat.id, msgId, Date.now(), 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: msgId, timestamp: new Date().toISOString(),
+        sender: { name: 'Sender', phone: '+123' },
+        message: { audioMessage: { mimetype: 'audio/ogg; codecs=opus', seconds: 7, ptt: true, fileLength: bytes.length } }
+      }), true)
+      const dir = PATH.join(accountDir(DEFAULT), 'attachments', msgId)
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(PATH.join(dir, `voice_${msgId}.ogg`), bytes)
+
+      const resolved = await resolveMedia(DEFAULT, msgId)
+      expect('failure' in resolved).toBe(false)
+      if ('failure' in resolved) return
+      const filePath = resolved.media.filepath
+
+      const { socket, calls } = captureSocket()
+      setManager('acctb', { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp/acctb', 'send_message', {
+        jid: 'dest@s.whatsapp.net', text: 'forwarded', attachmentPath: pathToFileURL(filePath).href
+      })
+
+      expect(result.result.isError).toBeFalsy()
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(true)
+      expect(sc.attachment.kind).toBe('voice')
+      expect(sc.attachment.filename).toBe(`voice_${msgId}.ogg`)
+
+      expect(calls).toHaveLength(1)
+      const content = calls[0].content
+      expect(Buffer.isBuffer(content.audio)).toBe(true)
+      expect(Buffer.compare(content.audio, bytes)).toBe(0)
+      expect(content.ptt).toBe(true)
+      expect(content.mimetype).toBe('audio/ogg; codecs=opus')
+      expect(JSON.stringify(result.result.structuredContent)).not.toContain(bytes.toString('base64'))
+    })
+
+    it('regression: an absolute image path still sends as an image', async () => {
+      const filePath = writeTmp('reg.png', Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      const { socket, calls } = captureSocket()
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'd@s.whatsapp.net', text: 'cap', attachmentPath: filePath
+      })
+      expect(result.result.structuredContent.attachment.kind).toBe('image')
+      expect(calls[0].content).toEqual({ image: expect.any(Buffer), caption: 'cap' })
+    })
+
+    it('regression: an absolute document path still sends as a document', async () => {
+      const filePath = writeTmp('reg.pdf', Buffer.from('%PDF-1.4'))
+      const { socket, calls } = captureSocket()
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'd@s.whatsapp.net', text: 'cap', attachmentPath: filePath
+      })
+      expect(result.result.structuredContent.attachment.kind).toBe('document')
+      expect(calls[0].content).toEqual({ document: expect.any(Buffer), fileName: 'reg.pdf', caption: 'cap' })
+    })
+
+    it('sends an .mp4 as a video and an .mp3 as audio', async () => {
+      const videoPath = writeTmp('clip.mp4', Buffer.from('mp4-bytes'))
+      const audioPath = writeTmp('song.mp3', Buffer.from('mp3-bytes'))
+      const { socket, calls } = captureSocket()
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const v = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'd@s.whatsapp.net', text: 'v', attachmentPath: videoPath
+      })
+      expect(v.result.structuredContent.attachment.kind).toBe('video')
+      expect(calls[0].content).toEqual({ video: expect.any(Buffer), caption: 'v' })
+
+      const a = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'd@s.whatsapp.net', text: 'a', attachmentPath: audioPath
+      })
+      expect(a.result.structuredContent.attachment.kind).toBe('audio')
+      expect(calls[1].content.mimetype).toBe('audio/mpeg')
+      expect(Buffer.isBuffer(calls[1].content.audio)).toBe(true)
+    })
+
+    it('honors the mediaType override for an unknown extension', async () => {
+      const filePath = writeTmp('note.bin', Buffer.from('opaque'))
+      const { socket, calls } = captureSocket()
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'd@s.whatsapp.net', text: 'x', attachmentPath: filePath, mediaType: 'audio'
+      })
+      expect(result.result.structuredContent.attachment.kind).toBe('audio')
+      expect(Buffer.isBuffer(calls[0].content.audio)).toBe(true)
+      expect(calls[0].content.mimetype).toBeUndefined()
+    })
+
+    it('rejects a directory with errorKind=attachment_not_a_file', async () => {
+      const dirPath = PATH.join(testDir, 'a-directory')
+      fs.mkdirSync(dirPath, { recursive: true })
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'd@s.whatsapp.net', text: 'x', attachmentPath: dirPath
+      })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toContain('not a regular file')
+      expect(result.result.structuredContent.errorKind).toBe('attachment_not_a_file')
+    })
+
+    it('rejects a missing file with errorKind=attachment_not_found', async () => {
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'd@s.whatsapp.net', text: 'x', attachmentPath: PATH.join(testDir, 'nope.jpg')
+      })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.structuredContent.errorKind).toBe('attachment_not_found')
+    })
+
+    const canTestUnreadable = process.platform !== 'win32' &&
+      !(typeof process.getuid === 'function' && process.getuid() === 0)
+    it.skipIf(!canTestUnreadable)('rejects an unreadable file with errorKind=attachment_unreadable', async () => {
+      const filePath = writeTmp('secret.png', Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      fs.chmodSync(filePath, 0o000)
+      setManager(DEFAULT, { socket: { sendMessage: vi.fn() } } as any)
+      await startMcpServer(testPort)
+      try {
+        const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+          jid: 'd@s.whatsapp.net', text: 'x', attachmentPath: filePath
+        })
+        expect(result.result.isError).toBe(true)
+        expect(result.result.structuredContent.errorKind).toBe('attachment_unreadable')
+      } finally {
+        fs.chmodSync(filePath, 0o644)
+      }
+    })
+  })
+
+  describe('send_message path helpers (unit)', () => {
+    it('normalizeAttachmentPath returns plain absolute paths unchanged', () => {
+      expect(normalizeAttachmentPath('/tmp/voice.ogg')).toBe('/tmp/voice.ogg')
+    })
+
+    it('normalizeAttachmentPath decodes a file:// URI to a host path', () => {
+      const p = pathToFileURL('/tmp/a folder/voice note.ogg').href
+      expect(normalizeAttachmentPath(p)).toBe('/tmp/a folder/voice note.ogg')
+    })
+
+    it('inferSendMediaType maps extensions to WhatsApp media kinds', () => {
+      expect(inferSendMediaType('/x/a.ogg')).toEqual({ kind: 'voice', mimetype: 'audio/ogg; codecs=opus' })
+      expect(inferSendMediaType('/x/a.opus')).toEqual({ kind: 'voice', mimetype: 'audio/ogg; codecs=opus' })
+      expect(inferSendMediaType('/x/a.mp3')).toEqual({ kind: 'audio', mimetype: 'audio/mpeg' })
+      expect(inferSendMediaType('/x/a.m4a').kind).toBe('audio')
+      expect(inferSendMediaType('/x/a.wav').kind).toBe('audio')
+      expect(inferSendMediaType('/x/a.aac').kind).toBe('audio')
+      expect(inferSendMediaType('/x/a.JPG').kind).toBe('image')
+      expect(inferSendMediaType('/x/a.png').kind).toBe('image')
+      expect(inferSendMediaType('/x/a.webp').kind).toBe('image')
+      expect(inferSendMediaType('/x/a.mp4')).toEqual({ kind: 'video', mimetype: 'video/mp4' })
+      expect(inferSendMediaType('/x/a.mov').kind).toBe('video')
+      expect(inferSendMediaType('/x/a.3gp').kind).toBe('video')
+      expect(inferSendMediaType('/x/a.pdf')).toEqual({ kind: 'document' })
+      expect(inferSendMediaType('/x/a.unknownext')).toEqual({ kind: 'document' })
+    })
+
+    it('inferSendMediaType honors an explicit override while keeping the ext mimetype', () => {
+      expect(inferSendMediaType('/x/a.mp3', 'document')).toEqual({ kind: 'document', mimetype: 'audio/mpeg' })
+      expect(inferSendMediaType('/x/a.bin', 'audio')).toEqual({ kind: 'audio', mimetype: undefined })
+    })
+  })
+
 
 })
 

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import http from 'http'
 import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import { chatOps, messageOps, settingOps, contactOps, getDatabase } from './database'
 import { serializeCompact, MeIdentity } from './compact-serializer'
 import { TransformedMessage, extractPhoneFromJid, restoreBuffersInPlace } from './message-transformer'
@@ -347,17 +348,19 @@ interface MediaFailure {
 }
 type MediaResolution = { ok: true; media: ResolvedMedia } | { ok: false; failure: MediaFailure }
 
-/** Validate a messageId path parameter — must not be empty or contain
- *  separators / null bytes / dots that could enable directory traversal. */
-function isValidMessageId(messageId: string): boolean {
+/** Validate a messageId path parameter. Every accepted value is used verbatim
+ *  as a single on-disk path segment (`<accountDir>/attachments/<messageId>/`),
+ *  so the charset is restricted to `[A-Za-z0-9_-]` — alphanumerics plus the two
+ *  filename-safe separators WhatsApp/Baileys IDs actually use. This rejects all
+ *  traversal vectors (`/`, `\`, `.`, `..`, null bytes) and any other non-alnum
+ *  punctuation outright, so no value can escape the attachments directory. */
+export function isValidMessageId(messageId: string): boolean {
   if (!messageId || messageId.length === 0 || messageId.length > 256) return false
-  if (messageId.includes('/') || messageId.includes('\\')) return false
-  if (messageId.includes('.') || messageId.includes('\0')) return false
-  return true
+  return /^[A-Za-z0-9_-]+$/.test(messageId)
 }
 
 /** Map a mime type to a common file extension. Falls back to `bin`. */
-function deriveExtension(mimeType: string): string {
+export function deriveExtension(mimeType: string): string {
   const base = (mimeType || '').split(';')[0].trim().toLowerCase()
   const map: Record<string, string> = {
     'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
@@ -366,6 +369,57 @@ function deriveExtension(mimeType: string): string {
     'application/pdf': 'pdf'
   }
   return map[base] || 'bin'
+}
+
+/** Explicit overrides accepted by `send_message`'s `mediaType` hint and the
+ *  set of WhatsApp send branches the tool knows how to dispatch. */
+export type SendMediaType = 'image' | 'voice' | 'audio' | 'video' | 'document'
+
+/** Extension → send media type + best-guess mimetype. Voice notes (ogg/opus)
+ *  are distinguished from other audio so they can be sent as `ptt`. Anything
+ *  not listed falls back to `document` in `inferSendMediaType`. */
+const SEND_MEDIA_BY_EXT: Record<string, { kind: SendMediaType; mimetype: string }> = {
+  '.jpg': { kind: 'image', mimetype: 'image/jpeg' },
+  '.jpeg': { kind: 'image', mimetype: 'image/jpeg' },
+  '.png': { kind: 'image', mimetype: 'image/png' },
+  '.gif': { kind: 'image', mimetype: 'image/gif' },
+  '.webp': { kind: 'image', mimetype: 'image/webp' },
+  '.ogg': { kind: 'voice', mimetype: 'audio/ogg; codecs=opus' },
+  '.opus': { kind: 'voice', mimetype: 'audio/ogg; codecs=opus' },
+  '.mp3': { kind: 'audio', mimetype: 'audio/mpeg' },
+  '.m4a': { kind: 'audio', mimetype: 'audio/mp4' },
+  '.wav': { kind: 'audio', mimetype: 'audio/wav' },
+  '.aac': { kind: 'audio', mimetype: 'audio/aac' },
+  '.mp4': { kind: 'video', mimetype: 'video/mp4' },
+  '.webm': { kind: 'video', mimetype: 'video/webm' },
+  '.mov': { kind: 'video', mimetype: 'video/quicktime' },
+  '.3gp': { kind: 'video', mimetype: 'video/3gpp' }
+}
+
+/** Normalize an attachment locator into a host filesystem path. Accepts a
+ *  `file://` URI (percent-decoded via the WHATWG URL parser, symmetric to the
+ *  paths `get_message_media` `output:"file"` emits) or returns the input
+ *  unchanged when it is already a plain path. Throws on a malformed URI. */
+export function normalizeAttachmentPath(input: string): string {
+  if (/^file:\/\//i.test(input)) {
+    return fileURLToPath(input)
+  }
+  return input
+}
+
+/** Infer the WhatsApp send media type (and a best-guess mimetype) from a
+ *  file path's extension. An explicit `override` wins for the kind but the
+ *  extension-derived mimetype is still surfaced when available. Unknown
+ *  extensions fall back to `document`. */
+export function inferSendMediaType(
+  filePath: string,
+  override?: SendMediaType
+): { kind: SendMediaType; mimetype?: string } {
+  const ext = path.extname(filePath).toLowerCase()
+  const byExt = SEND_MEDIA_BY_EXT[ext]
+  if (override) return { kind: override, mimetype: byExt?.mimetype }
+  if (byExt) return { kind: byExt.kind, mimetype: byExt.mimetype }
+  return { kind: 'document' }
 }
 
 /** Infer a mime type from a filename extension. Inverse of `deriveExtension`,
@@ -883,16 +937,17 @@ export function createMcpServer(slug: string): McpServer {
   server.registerTool(
     'send_message',
     {
-      description: 'Send a WhatsApp message to a contact or group. Supports text messages and file attachments (images, documents). Requires the chat JID from search_chats.',
+      description: 'Send a WhatsApp message to a contact or group. Supports text messages and file attachments (images, voice notes, audio, video, documents). The attachment may be an absolute host path or a `file://` URI (e.g. a path returned by get_message_media output:"file"); the media type is inferred from the file extension unless `mediaType` is given. Requires the chat JID from search_chats.',
       inputSchema: {
         jid: z.string().describe('WhatsApp JID of the recipient (get this from search_chats)'),
         text: z.string().describe('The message text to send'),
-        attachmentPath: z.string().optional().describe('Optional absolute path to a file to attach (images, PDFs, documents)')
+        attachmentPath: z.string().optional().describe('Optional absolute path or file:// URI of a file to attach (images, voice notes, audio, video, PDFs, documents)'),
+        mediaType: z.enum(['image', 'voice', 'audio', 'video', 'document']).optional().describe('Optional override for how the attachment is sent; when omitted the type is inferred from the file extension')
       },
       outputSchema: sendMessageOutputShape,
       annotations: { readOnlyHint: false, destructiveHint: false }
     },
-    async ({ jid, text, attachmentPath }: { jid: string; text: string; attachmentPath?: string }) => {
+    async ({ jid, text, attachmentPath, mediaType }: { jid: string; text: string; attachmentPath?: string; mediaType?: SendMediaType }) => {
       const socket = getManager(slug)?.socket
       if (!socket) {
         const failure: SendMessageResult = {
@@ -907,42 +962,58 @@ export function createMcpServer(slug: string): McpServer {
 
       try {
         let sendResult: any
-        let attachmentInfo: { filename: string; kind: 'image' | 'document' } | undefined
+        let attachmentInfo: { filename: string; kind: SendMediaType } | undefined
         if (attachmentPath) {
-          const fs = await import('fs')
-          const path = await import('path')
-
-          if (!fs.existsSync(attachmentPath)) {
-            const failure: SendMessageResult = {
-              ok: false,
-              jid,
-              error: `Attachment file not found: ${attachmentPath}`,
-              errorKind: 'attachment_not_found'
-            }
-            return {
-              content: [{ type: 'text', text: `Attachment file not found: ${attachmentPath}` }],
-              isError: true,
-              structuredContent: failure
-            }
+          const fail = (errorKind: Extract<SendMessageResult, { ok: false }>['errorKind'], message: string) => {
+            const failure: SendMessageResult = { ok: false, jid, error: message, errorKind }
+            return { content: [{ type: 'text' as const, text: message }], isError: true, structuredContent: failure }
           }
 
-          const buffer = fs.readFileSync(attachmentPath)
-          const filename = path.basename(attachmentPath)
-          const ext = path.extname(attachmentPath).toLowerCase()
-
-          const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
-          const docExts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx']
-
-          if (imageExts.includes(ext)) {
-            sendResult = await socket.sendMessage(jid, { image: buffer, caption: text })
-            attachmentInfo = { filename, kind: 'image' }
-          } else if (docExts.includes(ext)) {
-            sendResult = await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
-            attachmentInfo = { filename, kind: 'document' }
-          } else {
-            sendResult = await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
-            attachmentInfo = { filename, kind: 'document' }
+          let resolvedPath: string
+          try {
+            resolvedPath = normalizeAttachmentPath(attachmentPath)
+          } catch {
+            return fail('attachment_not_found', `Attachment file not found: ${attachmentPath}`)
           }
+
+          let stat: fs.Stats
+          try {
+            stat = fs.statSync(resolvedPath)
+          } catch {
+            return fail('attachment_not_found', `Attachment file not found: ${resolvedPath}`)
+          }
+          if (!stat.isFile()) {
+            return fail('attachment_not_a_file', `Attachment path is not a regular file: ${resolvedPath}`)
+          }
+          try {
+            fs.accessSync(resolvedPath, fs.constants.R_OK)
+          } catch {
+            return fail('attachment_unreadable', `Attachment file is not readable: ${resolvedPath}`)
+          }
+
+          const buffer = fs.readFileSync(resolvedPath)
+          const filename = path.basename(resolvedPath)
+          const { kind, mimetype } = inferSendMediaType(resolvedPath, mediaType)
+
+          switch (kind) {
+            case 'image':
+              sendResult = await socket.sendMessage(jid, { image: buffer, caption: text })
+              break
+            case 'voice':
+              sendResult = await socket.sendMessage(jid, { audio: buffer, ptt: true, ...(mimetype ? { mimetype } : {}) })
+              break
+            case 'audio':
+              sendResult = await socket.sendMessage(jid, { audio: buffer, ...(mimetype ? { mimetype } : {}) })
+              break
+            case 'video':
+              sendResult = await socket.sendMessage(jid, { video: buffer, caption: text })
+              break
+            case 'document':
+            default:
+              sendResult = await socket.sendMessage(jid, { document: buffer, fileName: filename, caption: text })
+              break
+          }
+          attachmentInfo = { filename, kind }
         } else {
           sendResult = await socket.sendMessage(jid, { text })
         }
@@ -992,15 +1063,17 @@ export function createMcpServer(slug: string): McpServer {
   server.registerTool(
     'get_message_media',
     {
-      description: 'Return the media payload of a WhatsApp message (image, voice note, audio, video, document, or sticker) as an inline MCP content block. Use this only when your client cannot fetch HTTP URLs — when you can, prefer the `attachment.url` field on messages from chat-history tools, which streams the same bytes from the local MCP server without inflating the tool result. Files exceeding the inline cap (default 25MB) are returned as a `resource_link` only.',
+      description: 'Return the media payload of a WhatsApp message (image, voice note, audio, video, document, or sticker). By default (`output:"auto"`) it returns an inline MCP content block when the file is within the inline cap (default 25MB) and otherwise a host file `path` with zero base64. Set `output:"file"` to always get a path (no base64) or `output:"inline"` to always get inline bytes. Prefer the `attachment.url` field on messages from chat-history tools when your client can fetch HTTP URLs.',
       inputSchema: {
         messageId: z.string().describe('WhatsApp message ID of the message whose media to fetch'),
-        chatJid: z.string().optional().describe('Optional chat JID; only used to make error messages clearer')
+        chatJid: z.string().optional().describe('Optional chat JID; only used to make error messages clearer'),
+        output: z.enum(['auto', 'inline', 'file']).optional().describe('How to return the payload. "auto" (default): inline bytes when within the inline cap, otherwise a host file path. "inline": always inline bytes (never a path). "file": always a host file path with zero base64.'),
+        maxInlineBytes: z.number().optional().describe('Per-call override of the inline payload cap in bytes. In "auto" mode, media larger than this is returned as a file path instead of inline bytes.')
       },
       outputSchema: getMessageMediaOutputShape,
       annotations: { readOnlyHint: true }
     },
-    async ({ messageId, chatJid }: { messageId: string; chatJid?: string }) => {
+    async ({ messageId, chatJid, output, maxInlineBytes }: { messageId: string; chatJid?: string; output?: 'auto' | 'inline' | 'file'; maxInlineBytes?: number }) => {
       if (!isValidMessageId(messageId)) {
         const failure: GetMessageMediaResult = {
           ok: false, messageId, error: 'Invalid messageId', errorKind: 'message_not_found'
@@ -1040,13 +1113,20 @@ export function createMcpServer(slug: string): McpServer {
         ...(media.durationSeconds !== undefined ? { durationSeconds: media.durationSeconds } : {})
       }
 
-      if (media.fileSize > maxInlineToolBytes) {
-        const text = `${summary} — too large to return inline; fetch via ${url}`
-        const success: GetMessageMediaResult = { ...baseSuccess, returnedAs: 'link' }
+      // `output` selects the return shape; `auto` (default) inlines when the
+      // media is within the effective cap and otherwise upgrades to a concrete
+      // file path. The per-call `maxInlineBytes` overrides the global cap.
+      const mode: 'auto' | 'inline' | 'file' = output ?? 'auto'
+      const effectiveCap = typeof maxInlineBytes === 'number' ? maxInlineBytes : maxInlineToolBytes
+
+      if (mode === 'file' || (mode === 'auto' && media.fileSize > effectiveCap)) {
+        const filePath = media.filepath
+        const text = `${summary} — available at ${filePath}`
+        const success: GetMessageMediaResult = { ...baseSuccess, returnedAs: 'file', path: filePath }
         return {
           content: [
             { type: 'text', text },
-            { type: 'resource_link', uri: url, mimeType: media.mimeType, name: media.filename }
+            { type: 'resource_link', uri: `file://${filePath}`, mimeType: media.mimeType, name: media.filename }
           ],
           structuredContent: success
         }

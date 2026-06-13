@@ -172,13 +172,18 @@ export type SendMessageResult =
       jid: string
       messageId?: string
       timestamp?: string
-      attachment?: { filename: string; kind: 'image' | 'document' }
+      attachment?: { filename: string; kind: 'image' | 'voice' | 'audio' | 'video' | 'document' }
     }
   | {
       ok: false
       jid: string
       error: string
-      errorKind: 'not_connected' | 'attachment_not_found' | 'send_failed'
+      errorKind:
+        | 'not_connected'
+        | 'attachment_not_found'
+        | 'attachment_not_a_file'
+        | 'attachment_unreadable'
+        | 'send_failed'
     }
 
 /**
@@ -195,18 +200,26 @@ export const sendMessageOutputShape = {
   timestamp: z.string().optional(),
   attachment: z.object({
     filename: z.string(),
-    kind: z.enum(['image', 'document'])
+    kind: z.enum(['image', 'voice', 'audio', 'video', 'document'])
   }).optional(),
   error: z.string().optional(),
-  errorKind: z.enum(['not_connected', 'attachment_not_found', 'send_failed']).optional()
+  errorKind: z.enum([
+    'not_connected',
+    'attachment_not_found',
+    'attachment_not_a_file',
+    'attachment_unreadable',
+    'send_failed'
+  ]).optional()
 }
 
 /**
- * Wire shape for `get_message_media`. On success the tool returns either an
- * inline content block (`returnedAs: 'inline'`) or only a `resource_link`
- * block when the file exceeds `MAX_INLINE_TOOL_BYTES` (`returnedAs: 'link'`).
- * `url` always points at the loopback `/media/<slug>/<messageId>` route so
- * the host can fetch the raw bytes regardless of which branch was returned.
+ * Wire shape for `get_message_media`. On success the tool returns one of three
+ * shapes selected by the caller's `output` mode: an inline content block
+ * (`returnedAs: 'inline'`), a host file path with zero base64
+ * (`returnedAs: 'file'`, with `path` set to the raw absolute on-disk path), or
+ * — for backward compatibility — a bare `resource_link` (`returnedAs: 'link'`).
+ * `url` always points at the loopback `/media/<slug>/<messageId>` route so the
+ * host can fetch the raw bytes regardless of which branch was returned.
  */
 export type GetMessageMediaResult =
   | {
@@ -217,7 +230,8 @@ export type GetMessageMediaResult =
       filename: string
       fileSize: number
       url: string
-      returnedAs: 'inline' | 'link'
+      returnedAs: 'inline' | 'link' | 'file'
+      path?: string
       durationSeconds?: number
     }
   | {
@@ -241,7 +255,8 @@ export const getMessageMediaOutputShape = {
   fileSize: z.number().optional(),
   durationSeconds: z.number().optional(),
   url: z.string().optional(),
-  returnedAs: z.enum(['inline', 'link']).optional(),
+  returnedAs: z.enum(['inline', 'link', 'file']).optional(),
+  path: z.string().optional(),
   error: z.string().optional(),
   errorKind: z.enum(['message_not_found', 'no_media', 'not_connected', 'download_failed']).optional()
 }
