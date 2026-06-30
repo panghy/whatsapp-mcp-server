@@ -95,3 +95,18 @@ The multi-account feature is covered by a set of unit tests under `src/`. When c
 
 Run `npm test` to execute the whole vitest suite; these files are part of the standard CI run.
 
+## Baileys patch (patch-package)
+
+We apply a one-line patch to `@whiskeysockets/baileys` so the WhatsApp client identifies as `MACOS` instead of `WEB` during the handshake. This avoids the 428 "Connection Terminated" rejection that newer WhatsApp servers return for the `WEB` platform. The patch is applied automatically by `patch-package` via the `postinstall` script.
+
+- Patch file: `patches/@whiskeysockets+baileys+7.0.0-rc13.patch` (version-pinned to the installed Baileys version).
+- Target: `node_modules/@whiskeysockets/baileys/lib/Utils/validate-connection.js`, the `platform` field in `getUserAgent` (`WEB` → `MACOS`).
+
+When bumping `@whiskeysockets/baileys` to a new version, the existing patch will likely fail to apply (filename includes the old version). Regenerate it:
+
+1. Bump and install the new Baileys version normally.
+2. Manually re-apply the same one-line edit (WEB → MACOS) inside `node_modules/@whiskeysockets/baileys/lib/Utils/validate-connection.js`.
+3. Run `npx patch-package @whiskeysockets/baileys` to produce a new `patches/@whiskeysockets+baileys+<new-version>.patch`.
+4. Delete the old `patches/@whiskeysockets+baileys+<old-version>.patch`.
+5. Run `npm ci` to confirm the new patch re-applies cleanly via `postinstall`.
+
