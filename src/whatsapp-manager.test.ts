@@ -1747,6 +1747,12 @@ describe('WhatsAppManager Tests', () => {
   })
 
   describe('handleConnectionClose() — disconnect logging', () => {
+    // Prime module-level Baileys vars (DisconnectReason, etc.) so these tests
+    // are order-independent and can run in isolation.
+    beforeAll(async () => {
+      await initializeWhatsApp('diag-prime-slug')
+    })
+
     it('logs the statusCode and message before deciding to reconnect', () => {
       vi.useFakeTimers()
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
