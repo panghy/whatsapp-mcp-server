@@ -19,6 +19,11 @@ let useMultiFileAuthState: any
 let DisconnectReason: any
 let Browsers: any
 let fetchLatestWaWebVersion: any
+let fetchLatestBaileysVersion: any
+
+// Hardcoded current fallback for the WA-Web protocol version. Kept in sync with
+// a known-good revision so we never silently drop back to an ancient build.
+const FALLBACK_WA_VERSION: [number, number, number] = [2, 3000, 1042371453]
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -58,7 +63,67 @@ async function loadBaileysModules() {
     DisconnectReason = baileys.DisconnectReason
     Browsers = baileys.Browsers
     fetchLatestWaWebVersion = baileys.fetchLatestWaWebVersion
+    fetchLatestBaileysVersion = (baileys as any).fetchLatestBaileysVersion
   }
+}
+
+function parseWaVersionString(raw: string): [number, number, number] | null {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  if (trimmed.includes('.')) {
+    const parts = trimmed.split('.')
+    if (parts.length !== 3) return null
+    const nums = parts.map(p => Number(p))
+    if (nums.some(n => !Number.isFinite(n) || !Number.isInteger(n) || n < 0)) return null
+    return [nums[0], nums[1], nums[2]]
+  }
+  const rev = Number(trimmed)
+  if (!Number.isFinite(rev) || !Number.isInteger(rev) || rev < 0) return null
+  return [2, 3000, rev]
+}
+
+/**
+ * Resolve the WA-Web protocol version with this priority:
+ *   1. WA_VERSION env var ("2.3000.<rev>" or bare "<rev>")
+ *   2. fetchLatestWaWebVersion() — only when isLatest === true
+ *   3. fetchLatestBaileysVersion() — only when isLatest === true
+ *   4. Hardcoded fallback (FALLBACK_WA_VERSION)
+ * Never throws.
+ */
+export async function resolveWaVersion(): Promise<{ version: [number, number, number]; source: string }> {
+  try {
+    const envRaw = process.env.WA_VERSION
+    if (envRaw) {
+      const parsed = parseWaVersionString(envRaw)
+      if (parsed) {
+        return { version: parsed, source: 'env' }
+      }
+    }
+  } catch { /* env access shouldn't throw, but be defensive */ }
+
+  try {
+    await loadBaileysModules()
+  } catch { /* fall through to fallback */ }
+
+  if (fetchLatestWaWebVersion) {
+    try {
+      const result = await fetchLatestWaWebVersion({})
+      if (result && result.isLatest === true && Array.isArray(result.version)) {
+        return { version: result.version as [number, number, number], source: 'wa-web' }
+      }
+    } catch { /* try next source */ }
+  }
+
+  if (fetchLatestBaileysVersion) {
+    try {
+      const result = await fetchLatestBaileysVersion()
+      if (result && result.isLatest === true && Array.isArray(result.version)) {
+        return { version: result.version as [number, number, number], source: 'baileys' }
+      }
+    } catch { /* fall through to hardcoded fallback */ }
+  }
+
+  return { version: FALLBACK_WA_VERSION, source: 'fallback' }
 }
 
 /**
@@ -79,14 +144,11 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
       // Fetcher may not be initialized yet
     }
 
-    // Fetch the latest WA Web version to avoid 405 errors
-    let version: [number, number, number]
-    try {
-      const result = await fetchLatestWaWebVersion({})
-      version = result.version
-    } catch {
-      version = [2, 3000, 1034074495]
-    }
+    // Resolve the WA-Web protocol version (env override → live fetch → fallback).
+    const { version, source } = await resolveWaVersion()
+    console.log(
+      `[whatsapp-manager:${manager.slug}] Using WA version ${version[0]}.${version[1]}.${version[2]} (source: ${source})`
+    )
 
     const socket = makeWASocket({
       auth: manager.authState,
@@ -184,7 +246,13 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
 }
 
 export function handleConnectionClose(manager: WhatsAppManager, lastDisconnect: any): void {
-  const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut
+  const bErr = lastDisconnect?.error as Boom | undefined
+  const statusCode = bErr?.output?.statusCode
+  const errMessage = (bErr as any)?.message ?? (lastDisconnect?.error?.message) ?? 'unknown'
+  console.log(
+    `[whatsapp-manager:${manager.slug}] connection closed (statusCode=${statusCode ?? 'unknown'}): ${errMessage}`
+  )
+  const shouldReconnect = statusCode !== DisconnectReason.loggedOut
   if (shouldReconnect) {
     manager.state = 'connecting'
     const delay = manager.reconnectDelay || 2000
