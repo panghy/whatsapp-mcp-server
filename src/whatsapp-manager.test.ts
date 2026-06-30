@@ -46,6 +46,11 @@ const mockUseMultiFileAuthState = vi.hoisted(() => vi.fn().mockResolvedValue({
 }))
 const mockFetchLatestWaWebVersion = vi.hoisted(() => vi.fn().mockResolvedValue({
   version: [2, 3000, 1034074495],
+  isLatest: true,
+}))
+const mockFetchLatestBaileysVersion = vi.hoisted(() => vi.fn().mockResolvedValue({
+  version: [2, 3000, 1034074495],
+  isLatest: true,
 }))
 
 // Mock electron BEFORE importing whatsapp-manager module
@@ -63,6 +68,7 @@ vi.mock('@whiskeysockets/baileys', () => ({
   DisconnectReason: { loggedOut: 401 },
   Browsers: { macOS: vi.fn(() => ['macOS', 'Desktop', '1.0']) },
   fetchLatestWaWebVersion: mockFetchLatestWaWebVersion,
+  fetchLatestBaileysVersion: mockFetchLatestBaileysVersion,
 }))
 
 // Mock group-metadata-fetcher module
@@ -83,6 +89,7 @@ import {
   clearWhatsAppSession,
   initializeWhatsApp,
   handleConnectionClose,
+  resolveWaVersion,
   WhatsAppManager,
 } from './whatsapp-manager'
 
@@ -1655,6 +1662,163 @@ describe('WhatsAppManager Tests', () => {
       // Auth dir left on disk — handler no longer wipes it.
       const authDir = path.join(testDir, 'accounts', TEST_SLUG, 'whatsapp-auth')
       expect(fs.existsSync(authDir)).toBe(true)
+    })
+  })
+
+  describe('resolveWaVersion()', () => {
+    const originalEnv = process.env.WA_VERSION
+
+    beforeEach(() => {
+      delete process.env.WA_VERSION
+      mockFetchLatestWaWebVersion.mockReset()
+      mockFetchLatestBaileysVersion.mockReset()
+      mockFetchLatestWaWebVersion.mockResolvedValue({ version: [2, 3000, 9999999], isLatest: true })
+      mockFetchLatestBaileysVersion.mockResolvedValue({ version: [2, 3000, 8888888], isLatest: true })
+    })
+
+    afterEach(() => {
+      if (originalEnv === undefined) {
+        delete process.env.WA_VERSION
+      } else {
+        process.env.WA_VERSION = originalEnv
+      }
+    })
+
+    it('parses dotted env value "2.3000.1042371453"', async () => {
+      process.env.WA_VERSION = '2.3000.1042371453'
+      const result = await resolveWaVersion()
+      expect(result).toEqual({ version: [2, 3000, 1042371453], source: 'env' })
+      expect(mockFetchLatestWaWebVersion).not.toHaveBeenCalled()
+      expect(mockFetchLatestBaileysVersion).not.toHaveBeenCalled()
+    })
+
+    it('parses bare revision env value "1042371453"', async () => {
+      process.env.WA_VERSION = '1042371453'
+      const result = await resolveWaVersion()
+      expect(result).toEqual({ version: [2, 3000, 1042371453], source: 'env' })
+    })
+
+    it('falls through when env value is invalid', async () => {
+      process.env.WA_VERSION = 'not-a-version'
+      const result = await resolveWaVersion()
+      expect(result.source).toBe('wa-web')
+      expect(result.version).toEqual([2, 3000, 9999999])
+    })
+
+    it('uses wa-web result when isLatest === true', async () => {
+      const result = await resolveWaVersion()
+      expect(result).toEqual({ version: [2, 3000, 9999999], source: 'wa-web' })
+      expect(mockFetchLatestBaileysVersion).not.toHaveBeenCalled()
+    })
+
+    it('skips wa-web when isLatest === false and falls back to baileys', async () => {
+      mockFetchLatestWaWebVersion.mockResolvedValue({ version: [2, 3000, 1], isLatest: false })
+      const result = await resolveWaVersion()
+      expect(result).toEqual({ version: [2, 3000, 8888888], source: 'baileys' })
+    })
+
+    it('skips baileys when its isLatest === false and uses hardcoded fallback', async () => {
+      mockFetchLatestWaWebVersion.mockResolvedValue({ version: [2, 3000, 1], isLatest: false })
+      mockFetchLatestBaileysVersion.mockResolvedValue({ version: [2, 3000, 2], isLatest: false })
+      const result = await resolveWaVersion()
+      expect(result).toEqual({ version: [2, 3000, 1042371453], source: 'fallback' })
+    })
+
+    it('falls back when wa-web fetch throws', async () => {
+      mockFetchLatestWaWebVersion.mockRejectedValue(new Error('network'))
+      const result = await resolveWaVersion()
+      expect(result).toEqual({ version: [2, 3000, 8888888], source: 'baileys' })
+    })
+
+    it('falls back when both fetches throw', async () => {
+      mockFetchLatestWaWebVersion.mockRejectedValue(new Error('network'))
+      mockFetchLatestBaileysVersion.mockRejectedValue(new Error('network'))
+      const result = await resolveWaVersion()
+      expect(result).toEqual({ version: [2, 3000, 1042371453], source: 'fallback' })
+    })
+
+    it('never throws — returns fallback even on unexpected shapes', async () => {
+      mockFetchLatestWaWebVersion.mockResolvedValue(null)
+      mockFetchLatestBaileysVersion.mockResolvedValue(undefined)
+      const result = await resolveWaVersion()
+      expect(result.source).toBe('fallback')
+      expect(result.version).toEqual([2, 3000, 1042371453])
+    })
+  })
+
+  describe('handleConnectionClose() — disconnect logging', () => {
+    // Prime module-level Baileys vars (DisconnectReason, etc.) so these tests
+    // are order-independent and can run in isolation.
+    beforeAll(async () => {
+      await initializeWhatsApp('diag-prime-slug')
+    })
+
+    it('logs the statusCode and message before deciding to reconnect', () => {
+      vi.useFakeTimers()
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      const manager: WhatsAppManager = {
+        slug: 'diag-slug',
+        socket: null,
+        state: 'connected',
+        qrCode: null,
+        error: null,
+        reconnectDelay: 2000,
+      }
+
+      handleConnectionClose(manager, {
+        error: { output: { statusCode: 515 }, message: 'Stream Errored (restart required)' },
+      })
+
+      const logged = logSpy.mock.calls.map(args => args.join(' ')).join('\n')
+      expect(logged).toContain('[whatsapp-manager:diag-slug] connection closed (statusCode=515): Stream Errored (restart required)')
+      expect(manager.state).toBe('connecting')
+
+      logSpy.mockRestore()
+    })
+
+    it('logs "unknown" when no statusCode is available', () => {
+      vi.useFakeTimers()
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      const manager: WhatsAppManager = {
+        slug: 'diag-slug-2',
+        socket: null,
+        state: 'connected',
+        qrCode: null,
+        error: null,
+        reconnectDelay: 2000,
+      }
+
+      handleConnectionClose(manager, { error: new Error('socket hangup') })
+
+      const logged = logSpy.mock.calls.map(args => args.join(' ')).join('\n')
+      expect(logged).toContain('[whatsapp-manager:diag-slug-2] connection closed (statusCode=unknown): socket hangup')
+
+      logSpy.mockRestore()
+    })
+
+    it('logs before triggering the logged-out branch', () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+      const manager: WhatsAppManager = {
+        slug: 'diag-slug-3',
+        socket: null,
+        state: 'connected',
+        qrCode: null,
+        error: null,
+        reconnectDelay: 2000,
+      }
+
+      handleConnectionClose(manager, {
+        error: { output: { statusCode: 401 }, message: 'Logged Out' },
+      })
+
+      const logged = logSpy.mock.calls.map(args => args.join(' ')).join('\n')
+      expect(logged).toContain('[whatsapp-manager:diag-slug-3] connection closed (statusCode=401): Logged Out')
+      expect(manager.state).toBe('disconnected')
+
+      logSpy.mockRestore()
     })
   })
 
