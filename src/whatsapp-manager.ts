@@ -265,9 +265,19 @@ export function handleConnectionClose(manager: WhatsAppManager, lastDisconnect: 
       })
     }, delay)
   } else {
-    // Device removed / logged out: preserve the account's data. Disable the
-    // MCP endpoint for this slug until the user explicitly re-links.
-    console.log(`[whatsapp-manager:${manager.slug}] Device removed — disabling MCP endpoint; auth/DB preserved`)
+    // Device removed / logged out: clear stale auth so next Connect shows a QR.
+    // Preserve the SQLite DB (messages). Disable MCP endpoint until re-link.
+    console.log(`[whatsapp-manager:${manager.slug}] Device removed — clearing stale auth, disabling MCP endpoint; DB preserved`)
+
+    // Clear the auth directory asynchronously (don't block)
+    clearWhatsAppSession(manager.slug).catch(err => {
+      console.error(`[whatsapp-manager:${manager.slug}] Failed to clear auth session:`, err)
+    })
+
+    // Reset auth state so next initializeWhatsApp re-initializes cleanly
+    manager.authState = undefined
+    manager.saveCreds = undefined
+
     try {
       setMcpEnabled(manager.slug, false)
     } catch (err) {

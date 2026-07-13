@@ -278,6 +278,23 @@ export default function App() {
 
   if (currentView === 'hero') {
     const awaitingQr = nameConfirmed && connecting && !whatsappStatus.qrCode
+    const needsRelink = whatsappStatus.hasAuth === true || (whatsappStatus.error && whatsappStatus.error.includes('Device removed'))
+
+    const handleRelink = async () => {
+      if (!selectedSlug) return
+      setConnecting(true)
+      try {
+        await window.electron.relinkWhatsApp(selectedSlug)
+        setNameConfirmed(false)
+        setUserName('')
+        const status = await window.electron.whatsappGetStatus(selectedSlug)
+        setStatusByAccount((prev) => ({ ...prev, [selectedSlug]: status }))
+      } catch (error) {
+        console.error('Failed to relink WhatsApp:', error)
+        setConnecting(false)
+      }
+    }
+
     return (
       <div className="app-shell">
         {switcher}
@@ -286,7 +303,7 @@ export default function App() {
           <p className="hero-subtitle">{awaitingQr ? 'Connecting to WhatsApp…' : `Connect account "${slug}" to get started`}</p>
           {awaitingQr && (<><div className="loading-spinner" /><p className="hero-status" style={{ fontSize: '0.875rem', color: 'hsl(var(--muted-foreground))' }}>Waiting for QR code</p></>)}
           {!awaitingQr && nameConfirmed && whatsappStatus.qrCode && (<div className="qr-display"><img src={whatsappStatus.qrCode} alt="WhatsApp QR Code" /><p className="hero-status">Scan with WhatsApp to connect</p></div>)}
-          {!awaitingQr && !nameConfirmed && (
+          {!awaitingQr && !nameConfirmed && !needsRelink && (
             <>
               <div style={{ marginBottom: '1rem', width: '100%', maxWidth: '300px' }}>
                 <label htmlFor="userName" style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'hsl(var(--muted-foreground))' }}>Your full name</label>
@@ -294,6 +311,9 @@ export default function App() {
               </div>
               <button onClick={handleConnect} disabled={connecting || !userName.trim()}>{connecting ? 'Connecting…' : 'Connect WhatsApp'}</button>
             </>
+          )}
+          {!awaitingQr && !nameConfirmed && needsRelink && (
+            <button onClick={handleRelink} disabled={connecting}>{connecting ? 'Re-linking…' : 'Re-link Device'}</button>
           )}
           {!awaitingQr && nameConfirmed && !whatsappStatus.qrCode && !connecting && (<button onClick={handleConnect}>Connect WhatsApp</button>)}
           {whatsappStatus.error && (<p style={{ color: 'hsl(var(--destructive))', marginTop: '1rem' }}>{whatsappStatus.error}</p>)}

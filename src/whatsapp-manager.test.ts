@@ -1632,6 +1632,12 @@ describe('WhatsAppManager Tests', () => {
       expect(logsBefore.length).toBeGreaterThanOrEqual(1)
       expect(actualAccounts.getAccount(TEST_SLUG)?.mcpEnabled).toBe(true)
 
+      // Create a dummy file in the auth dir to verify it gets cleared.
+      const authDir = path.join(testDir, 'accounts', TEST_SLUG, 'whatsapp-auth')
+      fs.mkdirSync(authDir, { recursive: true })
+      fs.writeFileSync(path.join(authDir, 'creds.json'), '{"test":"stale-creds"}')
+      expect(fs.existsSync(path.join(authDir, 'creds.json'))).toBe(true)
+
       // Trigger the device-removed branch (statusCode === DisconnectReason.loggedOut).
       const manager: WhatsAppManager = {
         slug: TEST_SLUG,
@@ -1640,6 +1646,8 @@ describe('WhatsAppManager Tests', () => {
         qrCode: null,
         error: null,
         reconnectDelay: 2000,
+        authState: { creds: { me: { id: 'fake' } } }, // fake auth state
+        saveCreds: vi.fn(), // fake save function
       }
       handleConnectionClose(manager, {
         error: { output: { statusCode: 401 } }, // DisconnectReason.loggedOut per baileys mock
@@ -1652,6 +1660,10 @@ describe('WhatsAppManager Tests', () => {
       expect(manager.state).toBe('disconnected')
       expect(manager.error).toContain('Device removed')
 
+      // Auth state should be reset
+      expect(manager.authState).toBeUndefined()
+      expect(manager.saveCreds).toBeUndefined()
+
       // DB rows preserved — nothing was mass-deleted (spec §6).
       expect((actualDb.chatOps.getAll(TEST_SLUG) as any[]).length).toBe(1)
       expect((actualDb.contactOps.getAll(TEST_SLUG) as any[]).length).toBe(1)
@@ -1659,9 +1671,9 @@ describe('WhatsAppManager Tests', () => {
       const logsAfter = actualDb.logOps.getAll(TEST_SLUG) as any[]
       expect(logsAfter.length).toBeGreaterThanOrEqual(logsBefore.length)
 
-      // Auth dir left on disk — handler no longer wipes it.
-      const authDir = path.join(testDir, 'accounts', TEST_SLUG, 'whatsapp-auth')
-      expect(fs.existsSync(authDir)).toBe(true)
+      // Auth dir should be cleared (wait a bit for async clearWhatsAppSession to complete)
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(fs.existsSync(authDir)).toBe(false)
     })
   })
 
