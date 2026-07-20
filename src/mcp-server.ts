@@ -22,7 +22,7 @@ import {
   GetMessageMediaResult
 } from './structured-message'
 import { getAccount, getDefaultSlug, accountDir } from './accounts'
-import { getManager } from './whatsapp-manager'
+import { getManager, markPresenceUnavailable } from './whatsapp-manager'
 import { getMcpPort as getGlobalMcpPort, setMcpPort as setGlobalMcpPort, getMediaInlineMaxBytes } from './global-settings'
 
 // Dynamically loaded so the existing `vi.mock('@whiskeysockets/baileys', …)`
@@ -1025,6 +1025,10 @@ export function createMcpServer(slug: string): McpServer {
         } else {
           sendResult = await socket.sendMessage(jid, { text })
         }
+
+        // Re-set presence to 'unavailable' so the phone keeps receiving push
+        // notifications after the bridge sends a message.
+        markPresenceUnavailable(socket)
 
         // baileys returns WAProto.WebMessageInfo. `key.id` is the message id;
         // `messageTimestamp` is whole seconds and may be a Long (long.js) or a

@@ -33,9 +33,11 @@ const originalLoad = (Module as any)._load
 // Hoisted mock functions
 const mockEvOn = vi.hoisted(() => vi.fn())
 const mockSocketEnd = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+const mockSendPresenceUpdate = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 const mockSocket = vi.hoisted(() => ({
   ev: { on: mockEvOn },
   end: mockSocketEnd,
+  sendPresenceUpdate: mockSendPresenceUpdate,
 }))
 
 const mockSaveCreds = vi.hoisted(() => vi.fn())
@@ -89,6 +91,7 @@ import {
   clearWhatsAppSession,
   initializeWhatsApp,
   handleConnectionClose,
+  markPresenceUnavailable,
   resolveWaVersion,
   WhatsAppManager,
 } from './whatsapp-manager'
@@ -113,6 +116,79 @@ describe('WhatsAppManager Tests', () => {
   afterEach(() => {
     vi.useRealTimers()
   })
+
+  describe('markPresenceUnavailable', () => {
+    it('calls sendPresenceUpdate("unavailable") on a raw socket', () => {
+      const socket = { sendPresenceUpdate: vi.fn().mockResolvedValue(undefined) }
+
+      markPresenceUnavailable(socket)
+
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledTimes(1)
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+    })
+
+    it('resolves the socket from a manager object', () => {
+      const socket = { sendPresenceUpdate: vi.fn().mockResolvedValue(undefined) }
+      const manager: WhatsAppManager = {
+        slug: SLUG, socket, state: 'connected', qrCode: null, error: null
+      }
+
+      markPresenceUnavailable(manager)
+
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledTimes(1)
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+    })
+
+    it('is a no-op when the manager has no socket', () => {
+      const manager: WhatsAppManager = {
+        slug: SLUG, socket: null, state: 'disconnected', qrCode: null, error: null
+      }
+
+      expect(() => markPresenceUnavailable(manager)).not.toThrow()
+      expect(() => markPresenceUnavailable(null)).not.toThrow()
+      expect(() => markPresenceUnavailable(undefined)).not.toThrow()
+      expect(() => markPresenceUnavailable({})).not.toThrow()
+    })
+
+    it('never throws when sendPresenceUpdate throws synchronously', () => {
+      const socket = {
+        sendPresenceUpdate: vi.fn(() => { throw new Error('sync boom') })
+      }
+
+      expect(() => markPresenceUnavailable(socket)).not.toThrow()
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+    })
+
+    it('never throws when sendPresenceUpdate rejects', async () => {
+      const socket = {
+        sendPresenceUpdate: vi.fn().mockRejectedValue(new Error('async boom'))
+      }
+
+      expect(() => markPresenceUnavailable(socket)).not.toThrow()
+      // Let the rejected promise settle; the rejection must be swallowed
+      // (an unhandled rejection would fail the test run).
+      await new Promise(resolve => setImmediate(resolve))
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+    })
+
+    it('marks presence unavailable exactly once when the connection opens', async () => {
+      const manager = await initializeWhatsApp(SLUG)
+      expect(manager.socket).toBe(mockSocket)
+
+      const handlerCall = mockEvOn.mock.calls.find(
+        (call: any[]) => call[0] === 'connection.update'
+      )
+      expect(handlerCall).toBeDefined()
+      const handler = handlerCall![1]
+
+      handler({ connection: 'open' })
+
+      expect(manager.state).toBe('connected')
+      expect(mockSendPresenceUpdate).toHaveBeenCalledTimes(1)
+      expect(mockSendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+    })
+  })
+
 
   describe('WhatsAppManager interface', () => {
     it('should define all required properties', () => {
