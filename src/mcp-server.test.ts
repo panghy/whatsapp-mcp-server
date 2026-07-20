@@ -958,6 +958,70 @@ describe('MCP Server', () => {
       expect(socket.sendMessage).toHaveBeenCalledWith('recipient@s.whatsapp.net', { text: 'Hello World' })
     })
 
+    it('re-sets presence to unavailable after a successful text send', async () => {
+      const socket = {
+        sendMessage: vi.fn().mockResolvedValue({}),
+        sendPresenceUpdate: vi.fn().mockResolvedValue(undefined)
+      }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello World'
+      })
+      expect(result.result.isError).toBeFalsy()
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledTimes(1)
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+    })
+
+    it('re-sets presence to unavailable after a successful media send', async () => {
+      const imagePath = require('path').join(testDir, 'presence-test.jpg')
+      fs.writeFileSync(imagePath, Buffer.from('jpeg-bytes'))
+      const socket = {
+        sendMessage: vi.fn().mockResolvedValue({ key: { id: 'M1' } }),
+        sendPresenceUpdate: vi.fn().mockResolvedValue(undefined)
+      }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'pic', attachmentPath: imagePath
+      })
+      expect(result.result.isError).toBeFalsy()
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledTimes(1)
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+    })
+
+    it('does not touch presence when the send fails', async () => {
+      const socket = {
+        sendMessage: vi.fn().mockRejectedValue(new Error('Network error')),
+        sendPresenceUpdate: vi.fn().mockResolvedValue(undefined)
+      }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello'
+      })
+      expect(result.result.isError).toBe(true)
+      expect(socket.sendPresenceUpdate).not.toHaveBeenCalled()
+    })
+
+    it('still reports success when the presence update fails', async () => {
+      const socket = {
+        sendMessage: vi.fn().mockResolvedValue({}),
+        sendPresenceUpdate: vi.fn().mockRejectedValue(new Error('presence boom'))
+      }
+      setManager(DEFAULT, { socket } as any)
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'send_message', {
+        jid: 'recipient@s.whatsapp.net', text: 'Hello'
+      })
+      expect(result.result.isError).toBeFalsy()
+      expect(result.result.content[0].text).toBe('Message sent to recipient@s.whatsapp.net')
+    })
+
     it('propagates send failures as error content', async () => {
       const socket = { sendMessage: vi.fn().mockRejectedValue(new Error('Network error')) }
       setManager(DEFAULT, { socket } as any)

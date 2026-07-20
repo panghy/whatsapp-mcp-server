@@ -8,6 +8,7 @@ import {
   disconnectWhatsApp,
   clearWhatsAppSession,
   getManager,
+  markPresenceUnavailable,
   WhatsAppManager
 } from './whatsapp-manager'
 import {
@@ -1046,7 +1047,11 @@ ipcMain.handle('send-message', async (_, payload: { slug: string; jid: string; t
   const { slug, jid, text } = payload || ({} as any)
   const mgr = getManager(slug)
   if (!mgr?.socket) throw new Error(`WhatsApp not connected for "${slug}"`)
-  try { await mgr.socket.sendMessage(jid, { text }); return { success: true } }
+  try {
+    await mgr.socket.sendMessage(jid, { text })
+    markPresenceUnavailable(mgr)
+    return { success: true }
+  }
   catch (error) { console.error('Failed to send message:', error); throw error }
 })
 

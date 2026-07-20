@@ -127,6 +127,25 @@ export async function resolveWaVersion(): Promise<{ version: [number, number, nu
 }
 
 /**
+ * Explicitly mark the bridge's presence as 'unavailable' so the phone keeps
+ * receiving push notifications. Accepts either a manager or a raw socket.
+ * Fire-and-forget: never throws, errors are logged only.
+ */
+export function markPresenceUnavailable(managerOrSocket: WhatsAppManager | any): void {
+  try {
+    const socket = typeof managerOrSocket?.sendPresenceUpdate === 'function'
+      ? managerOrSocket
+      : managerOrSocket?.socket
+    if (typeof socket?.sendPresenceUpdate !== 'function') return
+    Promise.resolve(socket.sendPresenceUpdate('unavailable')).catch((error: any) => {
+      console.error('[whatsapp-manager] Failed to mark presence unavailable:', error)
+    })
+  } catch (error) {
+    console.error('[whatsapp-manager] Failed to mark presence unavailable:', error)
+  }
+}
+
+/**
  * Create a new socket connection with event listeners
  */
 async function connectSocket(manager: WhatsAppManager): Promise<void> {
@@ -217,6 +236,9 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
         manager.qrCode = null
         manager.error = null
         manager.reconnectDelay = 2000
+        // Keep the phone receiving push notifications: the bridge should never
+        // appear as an active/available client.
+        markPresenceUnavailable(socket)
         // Re-enable MCP endpoint for this account if it was previously disabled
         // after a device-removed event.
         try {

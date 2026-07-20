@@ -368,6 +368,39 @@ describe('main IPC surface', () => {
         invoke('send-message', { slug: 'acct1', jid: 'x@s.whatsapp.net', text: 'hi' })
       ).rejects.toThrow(/not connected/)
     })
+
+    it('send-message re-sets presence to unavailable after a successful send', async () => {
+      const socket = {
+        sendMessage: vi.fn().mockResolvedValue({}),
+        sendPresenceUpdate: vi.fn().mockResolvedValue(undefined)
+      }
+      setManager('acct1', { slug: 'acct1', socket, state: 'connected', qrCode: null, error: null })
+      try {
+        const result = await invoke('send-message', { slug: 'acct1', jid: 'x@s.whatsapp.net', text: 'hi' })
+        expect(result.success).toBe(true)
+        expect(socket.sendMessage).toHaveBeenCalledWith('x@s.whatsapp.net', { text: 'hi' })
+        expect(socket.sendPresenceUpdate).toHaveBeenCalledTimes(1)
+        expect(socket.sendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+      } finally {
+        listManagers().delete('acct1')
+      }
+    })
+
+    it('send-message does not touch presence when the send fails', async () => {
+      const socket = {
+        sendMessage: vi.fn().mockRejectedValue(new Error('send boom')),
+        sendPresenceUpdate: vi.fn().mockResolvedValue(undefined)
+      }
+      setManager('acct1', { slug: 'acct1', socket, state: 'connected', qrCode: null, error: null })
+      try {
+        await expect(
+          invoke('send-message', { slug: 'acct1', jid: 'x@s.whatsapp.net', text: 'hi' })
+        ).rejects.toThrow(/send boom/)
+        expect(socket.sendPresenceUpdate).not.toHaveBeenCalled()
+      } finally {
+        listManagers().delete('acct1')
+      }
+    })
   })
 
   describe('MCP IPC handlers', () => {
