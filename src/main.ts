@@ -391,6 +391,31 @@ const createTray = () => {
 }
 
 
+// Minimum interval between 'sync-health' log rows for the same event kind.
+// Events arriving faster than this are aggregated into the next allowed row.
+const SYNC_HEALTH_LOG_INTERVAL_MS = 60_000
+
+/**
+ * Rate-bounded logger for the 'sync-health' category: the first event of a
+ * kind logs immediately, subsequent ones within the interval are counted and
+ * folded into the next allowed log row so a busy account cannot flood the
+ * log table.
+ */
+function createSyncHealthLogger(slug: string) {
+  const lastLoggedAt: Record<string, number> = {}
+  const pendingCounts: Record<string, number> = {}
+  return (key: string, count: number, describe: (total: number) => string, level: string = 'info') => {
+    pendingCounts[key] = (pendingCounts[key] || 0) + count
+    const now = Date.now()
+    if (now - (lastLoggedAt[key] || 0) < SYNC_HEALTH_LOG_INTERVAL_MS) return
+    lastLoggedAt[key] = now
+    const total = pendingCounts[key]
+    pendingCounts[key] = 0
+    try { logOps.insert(slug, level, 'sync-health', describe(total)) }
+    catch (error) { console.error(`[SyncHealth:${slug}] Failed to write log:`, error) }
+  }
+}
+
 /**
  * Register Baileys event handlers for a given slug/socket.
  * Called on initial connect and again on every reconnect (via onSocketCreated).
@@ -403,6 +428,8 @@ export function registerHandlersForSlug(slug: string, socket: any): void {
 
   const groupMetadataFetcher = initializeGroupMetadataFetcher(slug)
   groupMetadataFetcher.setSocket(socket)
+
+  const logSyncHealth = createSyncHealthLogger(slug)
 
   let contactSyncComplete = false
   let pendingGroupsBuffer: Array<{ chatId: number; jid: string }> = []
@@ -486,6 +513,12 @@ export function registerHandlersForSlug(slug: string, socket: any): void {
       }
     } else if (update.connection === 'close') {
       updateTrayMenu()
+      const closeError = (update.lastDisconnect as any)?.error
+      if (closeError) {
+        logSyncHealth('connection-error', 1, total =>
+          `Connection closed with error${total > 1 ? ` (${total} occurrences)` : ''}; app-state sync interrupted: ${closeError?.message || String(closeError)}`,
+          'warn')
+      }
     }
   })
 
@@ -609,6 +642,12 @@ export function registerHandlersForSlug(slug: string, socket: any): void {
     }
 
     if (events['messages.update']) {
+      const statusUpdates = (events['messages.update'] as any[]).filter((u: any) => u?.update?.status != null)
+      if (statusUpdates.length > 0) {
+        const readCount = statusUpdates.filter((u: any) => u.update.status >= 4).length
+        logSyncHealth('messages.update-status', statusUpdates.length, total =>
+          `messages.update: ${total} delivery/read status change(s) (${readCount} read in latest batch)`)
+      }
       for (const update of events['messages.update']) {
         if (update.update?.message) {
           const jid = update.key?.remoteJid
@@ -634,6 +673,24 @@ export function registerHandlersForSlug(slug: string, socket: any): void {
             catch (error) { console.error(`[RealTime:${slug}] Failed to process message deletion:`, error) }
           }
         }
+      }
+    }
+
+    if (events['chats.update']) {
+      const unreadUpdates = (events['chats.update'] as any[]).filter((u: any) => u?.unreadCount != null)
+      if (unreadUpdates.length > 0) {
+        const sample = unreadUpdates[unreadUpdates.length - 1]
+        logSyncHealth('chats.update-unread', unreadUpdates.length, total =>
+          `chats.update: ${total} unread-count change(s) received (latest: ${sample.id} -> ${sample.unreadCount})`)
+      }
+    }
+
+    if (events['message-receipt.update']) {
+      const receipts = events['message-receipt.update'] as any[]
+      if (receipts.length > 0) {
+        const readReceipts = receipts.filter((r: any) => r?.receipt?.readTimestamp != null).length
+        logSyncHealth('message-receipt.update', receipts.length, total =>
+          `message-receipt.update: ${total} receipt(s) (${readReceipts} read in latest batch)`)
       }
     }
 
