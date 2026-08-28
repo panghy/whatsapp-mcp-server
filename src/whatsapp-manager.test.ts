@@ -92,6 +92,9 @@ import {
   initializeWhatsApp,
   handleConnectionClose,
   markPresenceUnavailable,
+  startPresenceKeepalive,
+  stopPresenceKeepalive,
+  PRESENCE_REASSERT_INTERVAL_MS,
   resolveWaVersion,
   WhatsAppManager,
 } from './whatsapp-manager'
@@ -186,6 +189,151 @@ describe('WhatsAppManager Tests', () => {
       expect(manager.state).toBe('connected')
       expect(mockSendPresenceUpdate).toHaveBeenCalledTimes(1)
       expect(mockSendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+
+      stopPresenceKeepalive(manager)
+    })
+  })
+
+  describe('presence keepalive', () => {
+    it('re-asserts unavailable on every interval tick while connected', () => {
+      vi.useFakeTimers()
+      const socket = { sendPresenceUpdate: vi.fn().mockResolvedValue(undefined) }
+      const manager: WhatsAppManager = {
+        slug: SLUG, socket, state: 'connected', qrCode: null, error: null
+      }
+
+      startPresenceKeepalive(manager, socket)
+      expect(manager.presenceTimer).toBeTruthy()
+      expect(socket.sendPresenceUpdate).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(PRESENCE_REASSERT_INTERVAL_MS)
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledTimes(1)
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+
+      vi.advanceTimersByTime(PRESENCE_REASSERT_INTERVAL_MS * 2)
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledTimes(3)
+
+      stopPresenceKeepalive(manager)
+    })
+
+    it('is started when the connection opens and ticks on the live socket', async () => {
+      const manager = await initializeWhatsApp(SLUG)
+      expect(manager.socket).toBe(mockSocket)
+
+      const handlerCall = mockEvOn.mock.calls.find(
+        (call: any[]) => call[0] === 'connection.update'
+      )
+      const handler = handlerCall![1]
+
+      vi.useFakeTimers()
+      handler({ connection: 'open' })
+
+      expect(manager.presenceTimer).toBeTruthy()
+      expect(mockSendPresenceUpdate).toHaveBeenCalledTimes(1)
+
+      vi.advanceTimersByTime(PRESENCE_REASSERT_INTERVAL_MS)
+      expect(mockSendPresenceUpdate).toHaveBeenCalledTimes(2)
+      expect(mockSendPresenceUpdate).toHaveBeenLastCalledWith('unavailable')
+
+      stopPresenceKeepalive(manager)
+    })
+
+    it('stopPresenceKeepalive clears the timer and prevents further ticks', () => {
+      vi.useFakeTimers()
+      const socket = { sendPresenceUpdate: vi.fn().mockResolvedValue(undefined) }
+      const manager: WhatsAppManager = {
+        slug: SLUG, socket, state: 'connected', qrCode: null, error: null
+      }
+
+      startPresenceKeepalive(manager, socket)
+      stopPresenceKeepalive(manager)
+
+      expect(manager.presenceTimer).toBeNull()
+      vi.advanceTimersByTime(PRESENCE_REASSERT_INTERVAL_MS * 3)
+      expect(socket.sendPresenceUpdate).not.toHaveBeenCalled()
+    })
+
+    it('replaces an existing timer when started again (no duplicate ticks)', () => {
+      vi.useFakeTimers()
+      const socketA = { sendPresenceUpdate: vi.fn().mockResolvedValue(undefined) }
+      const socketB = { sendPresenceUpdate: vi.fn().mockResolvedValue(undefined) }
+      const manager: WhatsAppManager = {
+        slug: SLUG, socket: socketA, state: 'connected', qrCode: null, error: null
+      }
+
+      startPresenceKeepalive(manager, socketA)
+      manager.socket = socketB
+      startPresenceKeepalive(manager, socketB)
+
+      vi.advanceTimersByTime(PRESENCE_REASSERT_INTERVAL_MS)
+      expect(socketA.sendPresenceUpdate).not.toHaveBeenCalled()
+      expect(socketB.sendPresenceUpdate).toHaveBeenCalledTimes(1)
+
+      stopPresenceKeepalive(manager)
+    })
+
+    it('self-cancels without touching a dead socket when the socket was replaced', () => {
+      vi.useFakeTimers()
+      const oldSocket = { sendPresenceUpdate: vi.fn().mockResolvedValue(undefined) }
+      const manager: WhatsAppManager = {
+        slug: SLUG, socket: oldSocket, state: 'connected', qrCode: null, error: null
+      }
+
+      startPresenceKeepalive(manager, oldSocket)
+      manager.socket = { sendPresenceUpdate: vi.fn() }
+
+      vi.advanceTimersByTime(PRESENCE_REASSERT_INTERVAL_MS)
+      expect(oldSocket.sendPresenceUpdate).not.toHaveBeenCalled()
+      expect(manager.presenceTimer).toBeNull()
+    })
+
+    it('self-cancels when the manager is no longer connected', () => {
+      vi.useFakeTimers()
+      const socket = { sendPresenceUpdate: vi.fn().mockResolvedValue(undefined) }
+      const manager: WhatsAppManager = {
+        slug: SLUG, socket, state: 'connected', qrCode: null, error: null
+      }
+
+      startPresenceKeepalive(manager, socket)
+      manager.state = 'disconnected'
+
+      vi.advanceTimersByTime(PRESENCE_REASSERT_INTERVAL_MS)
+      expect(socket.sendPresenceUpdate).not.toHaveBeenCalled()
+      expect(manager.presenceTimer).toBeNull()
+    })
+
+    it('is stopped by handleConnectionClose', () => {
+      vi.useFakeTimers()
+      const socket = { sendPresenceUpdate: vi.fn().mockResolvedValue(undefined) }
+      const manager: WhatsAppManager = {
+        slug: SLUG, socket, state: 'connected', qrCode: null, error: null,
+        reconnectDelay: 2000,
+      }
+
+      startPresenceKeepalive(manager, socket)
+      handleConnectionClose(manager, {
+        error: { output: { statusCode: 515 }, message: 'Stream Errored' },
+      })
+
+      expect(manager.presenceTimer).toBeNull()
+      vi.advanceTimersByTime(PRESENCE_REASSERT_INTERVAL_MS)
+      expect(socket.sendPresenceUpdate).not.toHaveBeenCalled()
+    })
+
+    it('is stopped by disconnectWhatsApp', async () => {
+      const socket = {
+        sendPresenceUpdate: vi.fn().mockResolvedValue(undefined),
+        end: vi.fn().mockResolvedValue(undefined),
+      }
+      const manager: WhatsAppManager = {
+        slug: SLUG, socket, state: 'connected', qrCode: null, error: null
+      }
+
+      startPresenceKeepalive(manager, socket)
+      await disconnectWhatsApp(manager)
+
+      expect(manager.presenceTimer).toBeNull()
+      expect(manager.socket).toBeNull()
     })
   })
 
