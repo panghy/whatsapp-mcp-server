@@ -37,6 +37,7 @@ export interface WhatsAppManager {
   saveCreds?: any
   reconnectDelay?: number
   onSocketCreated?: (socket: any) => void
+  presenceTimer?: NodeJS.Timeout | null
 }
 
 // Per-slug registry.
@@ -145,6 +146,39 @@ export function markPresenceUnavailable(managerOrSocket: WhatsAppManager | any):
   }
 }
 
+// How often to re-assert 'unavailable' while connected. Baileys sessions can
+// drift back to 'available' when receiving messages (Baileys #2553), which
+// suppresses push notifications on the user's real devices.
+export const PRESENCE_REASSERT_INTERVAL_MS = 60_000
+
+/**
+ * Start a periodic timer that re-asserts presence 'unavailable' on the given
+ * socket. Replaces any existing timer. The timer self-cancels if the socket
+ * has been replaced or the manager is no longer connected.
+ */
+export function startPresenceKeepalive(manager: WhatsAppManager, socket: any): void {
+  stopPresenceKeepalive(manager)
+  const timer = setInterval(() => {
+    if (manager.socket !== socket || manager.state !== 'connected') {
+      stopPresenceKeepalive(manager)
+      return
+    }
+    markPresenceUnavailable(socket)
+  }, PRESENCE_REASSERT_INTERVAL_MS)
+  if (typeof timer.unref === 'function') timer.unref()
+  manager.presenceTimer = timer
+}
+
+/**
+ * Stop the periodic presence keepalive timer, if any.
+ */
+export function stopPresenceKeepalive(manager: WhatsAppManager): void {
+  if (manager.presenceTimer) {
+    clearInterval(manager.presenceTimer)
+    manager.presenceTimer = null
+  }
+}
+
 /**
  * Create a new socket connection with event listeners
  */
@@ -201,6 +235,7 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
 
     // Clean up old socket if it exists
     if (manager.socket) {
+      stopPresenceKeepalive(manager)
       try {
         await manager.socket.end(new Error('Reconnecting'))
       } catch {
@@ -237,8 +272,10 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
         manager.error = null
         manager.reconnectDelay = 2000
         // Keep the phone receiving push notifications: the bridge should never
-        // appear as an active/available client.
+        // appear as an active/available client. Re-assert periodically because
+        // the session can drift back to 'available' (Baileys #2553).
         markPresenceUnavailable(socket)
+        startPresenceKeepalive(manager, socket)
         // Re-enable MCP endpoint for this account if it was previously disabled
         // after a device-removed event.
         try {
@@ -268,6 +305,7 @@ async function connectSocket(manager: WhatsAppManager): Promise<void> {
 }
 
 export function handleConnectionClose(manager: WhatsAppManager, lastDisconnect: any): void {
+  stopPresenceKeepalive(manager)
   const bErr = lastDisconnect?.error as Boom | undefined
   const statusCode = bErr?.output?.statusCode
   const errMessage = (bErr as any)?.message ?? (lastDisconnect?.error?.message) ?? 'unknown'
@@ -348,6 +386,7 @@ export async function initializeWhatsApp(slug: string): Promise<WhatsAppManager>
 }
 
 export async function disconnectWhatsApp(manager: WhatsAppManager): Promise<void> {
+  stopPresenceKeepalive(manager)
   if (manager.socket) {
     try {
       await manager.socket.end(new Error('User disconnected'))
