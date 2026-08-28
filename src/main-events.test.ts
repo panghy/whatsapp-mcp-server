@@ -50,7 +50,7 @@ vi.mock('electron-updater', () => {
 
 import Settings from 'electron-settings'
 import { addAccount } from './accounts'
-import { contactOps, closeAllDatabases, initializeDatabase } from './database'
+import { contactOps, logOps, closeAllDatabases, initializeDatabase } from './database'
 import { resetSyncOrchestrators } from './sync-orchestrator'
 import { resetGroupMetadataFetchers } from './group-metadata-fetcher'
 
@@ -174,6 +174,83 @@ describe('main.ts realtime LID/PN harvesting', () => {
     expect(row).toBeTruthy()
     expect(row.name).toBe('Address Book')
     expect(row.push_name).toBe('Cryptic Push')
+  })
+
+  describe('sync-health diagnostics logging', () => {
+    const syncHealthLogs = () => logOps.getByCategory(SLUG, 'sync-health') as any[]
+
+    it('logs chats.update entries carrying unreadCount', async () => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      await sock.fire({
+        'chats.update': [{ id: PN, unreadCount: 0 }, { id: 'other@s.whatsapp.net' }],
+      })
+      const logs = syncHealthLogs()
+      expect(logs.length).toBe(1)
+      expect(logs[0].level).toBe('info')
+      expect(logs[0].message).toContain('chats.update: 1 unread-count change(s)')
+      expect(logs[0].message).toContain(`${PN} -> 0`)
+    })
+
+    it('logs messages.update read-status changes', async () => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      await sock.fire({
+        'messages.update': [
+          { key: { remoteJid: PN, id: 'M1' }, update: { status: 4 } },
+          { key: { remoteJid: PN, id: 'M2' }, update: { status: 3 } },
+        ],
+      })
+      const logs = syncHealthLogs()
+      expect(logs.length).toBe(1)
+      expect(logs[0].message).toContain('messages.update: 2 delivery/read status change(s)')
+      expect(logs[0].message).toContain('1 read')
+    })
+
+    it('logs message-receipt.update summaries', async () => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      await sock.fire({
+        'message-receipt.update': [
+          { key: { remoteJid: PN, id: 'M1' }, receipt: { userJid: PN, readTimestamp: 1234 } },
+          { key: { remoteJid: PN, id: 'M2' }, receipt: { userJid: PN, receiptTimestamp: 1234 } },
+        ],
+      })
+      const logs = syncHealthLogs()
+      expect(logs.length).toBe(1)
+      expect(logs[0].message).toContain('message-receipt.update: 2 receipt(s)')
+      expect(logs[0].message).toContain('1 read')
+    })
+
+    it('rate-bounds repeated events of the same kind into a single log row', async () => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      await sock.fire({ 'chats.update': [{ id: PN, unreadCount: 2 }] })
+      await sock.fire({ 'chats.update': [{ id: PN, unreadCount: 0 }] })
+      await sock.fire({ 'chats.update': [{ id: PN, unreadCount: 1 }] })
+      expect(syncHealthLogs().length).toBe(1)
+    })
+
+    it('logs connection close errors at warn', async () => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      for (const cb of sock.onListeners['connection.update'] || []) {
+        await cb({ connection: 'close', lastDisconnect: { error: new Error('Connection Failure') } })
+      }
+      const logs = syncHealthLogs()
+      expect(logs.length).toBe(1)
+      expect(logs[0].level).toBe('warn')
+      expect(logs[0].message).toContain('Connection Failure')
+    })
+
+    it('does not log a sync-health row on a clean connection close', async () => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      for (const cb of sock.onListeners['connection.update'] || []) {
+        await cb({ connection: 'close' })
+      }
+      expect(syncHealthLogs().length).toBe(0)
+    })
   })
 })
 
