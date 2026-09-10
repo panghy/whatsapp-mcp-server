@@ -989,6 +989,66 @@ describe('MCP Server', () => {
       assertReactions(result.result.content[0].text, chat.messages, '(me)', { name: '(me)', phone: null })
     })
 
+    describe('batching across multiple chats', () => {
+      const CHAT_B_JID = 'react-chat-b@s.whatsapp.net'
+      const CHAT_C_JID = 'react-chat-c@s.whatsapp.net'
+
+      beforeEach(() => {
+        chatOps.insert(DEFAULT, CHAT_B_JID, 'dm', undefined, 'React Chat B')
+        chatOps.insert(DEFAULT, CHAT_C_JID, 'group', undefined, 'React Chat C')
+        const chatB = (chatOps.getByWhatsappJid(DEFAULT, CHAT_B_JID) as any).id
+        const chatC = (chatOps.getByWhatsappJid(DEFAULT, CHAT_C_JID) as any).id
+        messageOps.insert(DEFAULT, chatB, 'b-msg', now - 900, 'sender@s.whatsapp.net', JSON.stringify({
+          type: 'message', messageId: 'b-msg', timestamp: new Date(now - 900).toISOString(),
+          text: 'chat b text', sender: { name: 'Sender', phone: '+123' }
+        }), false)
+        messageOps.insert(DEFAULT, chatC, 'c-msg', now - 800, 'sender@s.whatsapp.net', JSON.stringify({
+          type: 'message', messageId: 'c-msg', timestamp: new Date(now - 800).toISOString(),
+          text: 'chat c text', sender: { name: 'Sender', phone: '+123' }
+        }), false)
+        reactionOps.upsert(DEFAULT, { targetMessageId: 'b-msg', chatId: chatB, reactorJid: REACTOR_JID, emoji: '😂', isFromMe: false, timestamp: now - 850 })
+        reactionOps.upsert(DEFAULT, { targetMessageId: 'c-msg', chatId: chatC, reactorJid: 'me', emoji: '🔥', isFromMe: true, timestamp: now - 750 })
+      })
+
+      afterEach(() => { vi.restoreAllMocks() })
+
+      function assertBatched(spy: ReturnType<typeof vi.spyOn>, text: string, chats: any[]) {
+        expect(spy).toHaveBeenCalledTimes(1)
+        expect([...(spy.mock.calls[0][1] as string[])].sort()).toEqual(['b-msg', 'c-msg', 'plain-msg', 'reacted-msg'])
+
+        expect(text).toContain('Sender:+123 > hello [reactions: 👍 Alice:+15551234567, ❤️ (me)]')
+        expect(text).toContain('Sender:+123 > chat b text [reactions: 😂 Alice:+15551234567]')
+        expect(text).toContain('Sender:+123 > chat c text [reactions: 🔥 (me)]')
+        expect(text).toContain('Sender:+123 > no reactions here\n')
+        expect(text.indexOf('=== React Chat C ===')).toBeLessThan(text.indexOf('=== React Chat B ==='))
+        expect(text.indexOf('=== React Chat B ===')).toBeLessThan(text.indexOf('=== React Chat ==='))
+
+        const byJid = new Map(chats.map((c: any) => [c.chat.jid, c.messages]))
+        expect(byJid.get(CHAT_B_JID)[0].reactions).toEqual([
+          { emoji: '😂', sender: { name: 'Alice', phone: '+15551234567', isMe: false }, timestamp: new Date(now - 850).toISOString() }
+        ])
+        expect(byJid.get(CHAT_C_JID)[0].reactions).toEqual([
+          { emoji: '🔥', sender: { name: '(me)', phone: null, isMe: true }, timestamp: new Date(now - 750).toISOString() }
+        ])
+        expect(byJid.get(CHAT_JID).find((m: any) => m.text === 'hello').reactions).toHaveLength(2)
+        expect('reactions' in byJid.get(CHAT_JID).find((m: any) => m.text === 'no reactions here')).toBe(false)
+      }
+
+      it('get_recent_messages loads reactions for all chats in a single query', async () => {
+        const spy = vi.spyOn(reactionOps, 'getByTargetMessageIds')
+        await startMcpServer(testPort)
+        const result = await callMcpTool(testPort, '/mcp', 'get_recent_messages', { since: new Date(now - 10000).toISOString() })
+        assertBatched(spy, result.result.content[0].text, result.result.structuredContent.chats)
+      })
+
+      it('get_unread_messages loads reactions for all chats in a single query', async () => {
+        const spy = vi.spyOn(reactionOps, 'getByTargetMessageIds')
+        await startMcpServer(testPort)
+        const result = await callMcpTool(testPort, '/mcp', 'get_unread_messages', { since: new Date(now - 10000).toISOString() })
+        assertBatched(spy, result.result.content[0].text, result.result.structuredContent.chats)
+      })
+    })
+
     it('leaves output byte-identical when no reactions are stored', async () => {
       reactionOps.remove(DEFAULT, 'reacted-msg', REACTOR_JID)
       reactionOps.remove(DEFAULT, 'reacted-msg', 'me')

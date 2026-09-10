@@ -887,21 +887,26 @@ export function createMcpServer(slug: string): McpServer {
         byChat.get(key)!.msgs.push(m)
       }
 
-      let output = ''
-      const structuredChats: Array<{ chat: ChatRef; messages: StructuredMessage[] }> = []
-      const mediaBaseUrl = buildMediaBaseUrl(slug)
-      for (const [chatName, group] of byChat) {
-        output += `\n=== ${chatName} ===\n`
-        const transformed = group.msgs.map((m: any) => {
+      const resolvedGroups = Array.from(byChat, ([chatName, group]) => ({
+        chatName,
+        meta: group.meta,
+        transformed: group.msgs.map((m: any) => {
           try {
             const parsed = JSON.parse(m.content_json) as TransformedMessage
             return resolveAllIdentities(slug, m, parsed, meIdentity)
           }
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
-        attachReactions(slug, transformed, meIdentity)
+      }))
+      attachReactions(slug, resolvedGroups.flatMap(g => g.transformed), meIdentity)
+
+      let output = ''
+      const structuredChats: Array<{ chat: ChatRef; messages: StructuredMessage[] }> = []
+      const mediaBaseUrl = buildMediaBaseUrl(slug)
+      for (const { chatName, meta, transformed } of resolvedGroups) {
+        output += `\n=== ${chatName} ===\n`
         output += serializeCompact(transformed, undefined, meIdentity) + '\n'
-        structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl })) })
+        structuredChats.push({ chat: meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl })) })
       }
 
       return {
@@ -954,21 +959,26 @@ export function createMcpServer(slug: string): McpServer {
         byChat.get(key)!.msgs.push(m)
       }
 
-      let body = ''
-      const structuredChats: Array<{ chat: ChatRef; messages: StructuredMessage[] }> = []
-      const mediaBaseUrl = buildMediaBaseUrl(slug)
-      for (const [chatName, group] of byChat) {
-        body += `\n=== ${chatName} ===\n`
-        const transformed = group.msgs.map((m: any) => {
+      const resolvedGroups = Array.from(byChat, ([chatName, group]) => ({
+        chatName,
+        meta: group.meta,
+        transformed: group.msgs.map((m: any) => {
           try {
             const parsed = JSON.parse(m.content_json) as TransformedMessage
             return resolveAllIdentities(slug, m, parsed, meIdentity)
           }
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
-        attachReactions(slug, transformed, meIdentity)
+      }))
+      attachReactions(slug, resolvedGroups.flatMap(g => g.transformed), meIdentity)
+
+      let body = ''
+      const structuredChats: Array<{ chat: ChatRef; messages: StructuredMessage[] }> = []
+      const mediaBaseUrl = buildMediaBaseUrl(slug)
+      for (const { chatName, meta, transformed } of resolvedGroups) {
+        body += `\n=== ${chatName} ===\n`
         body += serializeCompact(transformed, undefined, meIdentity) + '\n'
-        structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl })) })
+        structuredChats.push({ chat: meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl })) })
       }
 
       const text = byChat.size === 0 ? '(no unread messages)' : `Messages since ${sinceStr}:\n${body}`
