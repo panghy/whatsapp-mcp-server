@@ -22,7 +22,7 @@ vi.mock('@whiskeysockets/baileys', () => ({
 }))
 
 // NOW import modules - mocks are in place
-import { initializeDatabase, closeDatabase, chatOps, messageOps, logOps, settingOps } from './database'
+import { initializeDatabase, closeDatabase, getDatabase, chatOps, messageOps, logOps, settingOps, reactionOps } from './database'
 import { MessageTransformer, extractPhoneFromJid, normalizePhoneNumber, initializeMessageTransformer } from './message-transformer'
 
 const SLUG = 'default'
@@ -703,6 +703,175 @@ describe('Message Transformer Tests', () => {
 
       const messages = messageOps.getByChatId(SLUG, chatId) as { whatsapp_message_id: string }[]
       expect(messages).toHaveLength(0)
+    })
+  })
+
+  describe('processMessage - reactions', () => {
+    const DM_JID = '1234567890@s.whatsapp.net'
+    const GROUP_JID = 'group-1@g.us'
+    const ALICE = '9998887777@s.whatsapp.net'
+    const OWN_JID_WITH_DEVICE = '15550001111:7@s.whatsapp.net'
+    const OWN_JID = '15550001111@s.whatsapp.net'
+    const socketWithUser = { ev: { on: vi.fn() }, user: { id: OWN_JID_WITH_DEVICE } }
+
+    function reactionMsg(opts: {
+      id: string
+      remoteJid: string
+      targetId: string
+      text: string | undefined
+      fromMe?: boolean
+      participant?: string
+      senderTimestampMs?: number | string | { low: number; high: number }
+      messageTimestamp?: number
+      wrap?: 'deviceSentMessage' | 'ephemeralMessage'
+    }) {
+      const reactionMessage: any = { key: { remoteJid: opts.remoteJid, fromMe: false, id: opts.targetId }, text: opts.text }
+      if (opts.senderTimestampMs !== undefined) reactionMessage.senderTimestampMs = opts.senderTimestampMs
+      const inner = { reactionMessage }
+      const message = opts.wrap ? { [opts.wrap]: { message: inner } } : inner
+      return {
+        key: { id: opts.id, remoteJid: opts.remoteJid, fromMe: opts.fromMe ?? false, participant: opts.participant },
+        messageTimestamp: opts.messageTimestamp ?? Math.floor(Date.now() / 1000),
+        message,
+      }
+    }
+
+    it('stores a reaction row and does not insert a messages row', async () => {
+      const chatId = createTestChat(DM_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+      await transformer.processMessage({
+        key: { id: 'target-1', remoteJid: DM_JID, fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: { conversation: 'hello' },
+      }, chatId)
+      const before = messageOps.getCountByChatId(SLUG, chatId)
+
+      await transformer.processMessage(reactionMsg({ id: 'r-1', remoteJid: DM_JID, targetId: 'target-1', text: '👍', senderTimestampMs: 1700000000000 }), chatId)
+
+      expect(messageOps.getCountByChatId(SLUG, chatId)).toBe(before)
+      expect(messageOps.getByWhatsappMessageId(SLUG, 'r-1')).toBeUndefined()
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ target_message_id: 'target-1', chat_id: chatId, reactor_jid: DM_JID, emoji: '👍', is_from_me: 0, timestamp: 1700000000000 })
+    })
+
+    it('does not update chats.last_activity for a reaction', async () => {
+      const chatId = createTestChat(DM_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+      const before = (chatOps.getById(SLUG, chatId) as any).last_activity
+      await transformer.processMessage(reactionMsg({ id: 'r-1', remoteJid: DM_JID, targetId: 'target-1', text: '👍' }), chatId)
+      expect((chatOps.getById(SLUG, chatId) as any).last_activity).toBe(before)
+    })
+
+    it('persists a reaction whose target message has not been stored', async () => {
+      const chatId = createTestChat(DM_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+      await transformer.processMessage(reactionMsg({ id: 'r-1', remoteJid: DM_JID, targetId: 'not-yet-stored', text: '🔥' }), chatId)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['not-yet-stored'])).toHaveLength(1)
+    })
+
+    it('re-delivery is idempotent, a newer emoji replaces, an older one does not overwrite, and empty text deletes', async () => {
+      const chatId = createTestChat(GROUP_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+      const base = { remoteJid: GROUP_JID, participant: ALICE, targetId: 'target-1' }
+
+      await transformer.processMessage(reactionMsg({ ...base, id: 'r-1', text: '👍', senderTimestampMs: 1000 }), chatId)
+      await transformer.processMessage(reactionMsg({ ...base, id: 'r-1', text: '👍', senderTimestampMs: 1000 }), chatId)
+      let rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].reactor_jid).toBe(ALICE)
+
+      await transformer.processMessage(reactionMsg({ ...base, id: 'r-2', text: '❤️', senderTimestampMs: 2000 }), chatId)
+      rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].emoji).toBe('❤️')
+
+      await transformer.processMessage(reactionMsg({ ...base, id: 'r-0', text: '😂', senderTimestampMs: 500 }), chatId)
+      rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].emoji).toBe('❤️')
+
+      await transformer.processMessage(reactionMsg({ ...base, id: 'r-3', text: '', senderTimestampMs: 3000 }), chatId)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1'])).toHaveLength(0)
+      expect(messageOps.getCountByChatId(SLUG, chatId)).toBe(0)
+    })
+
+    it('treats undefined text as a removal', async () => {
+      const chatId = createTestChat(DM_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+      await transformer.processMessage(reactionMsg({ id: 'r-1', remoteJid: DM_JID, targetId: 'target-1', text: '👍', senderTimestampMs: 1000 }), chatId)
+      await transformer.processMessage(reactionMsg({ id: 'r-2', remoteJid: DM_JID, targetId: 'target-1', text: undefined, senderTimestampMs: 2000 }), chatId)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1'])).toHaveLength(0)
+    })
+
+    it('stores a from-me reaction in a DM under the own JID (device suffix stripped) with is_from_me = 1', async () => {
+      const chatId = createTestChat(DM_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+
+      await transformer.processMessage(reactionMsg({ id: 'r-them', remoteJid: DM_JID, targetId: 'target-1', text: '👍', senderTimestampMs: 1000 }), chatId)
+      await transformer.processMessage(reactionMsg({ id: 'r-me', remoteJid: DM_JID, targetId: 'target-1', text: '❤️', fromMe: true, senderTimestampMs: 1001 }), chatId)
+
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+      expect(rows).toHaveLength(2)
+      const mine = rows.find((r) => r.is_from_me === 1)
+      const theirs = rows.find((r) => r.is_from_me === 0)
+      expect(mine).toMatchObject({ reactor_jid: OWN_JID, emoji: '❤️' })
+      expect(theirs).toMatchObject({ reactor_jid: DM_JID, emoji: '👍' })
+    })
+
+    it('falls back to the literal "me" for from-me reactions when the socket has no user', async () => {
+      const chatId = createTestChat(DM_JID)
+      const transformer = new MessageTransformer(SLUG, mockSocket)
+      await transformer.processMessage(reactionMsg({ id: 'r-me', remoteJid: DM_JID, targetId: 'target-1', text: '❤️', fromMe: true }), chatId)
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ reactor_jid: 'me', is_from_me: 1 })
+    })
+
+    it('uses key.participant as reactor in groups', async () => {
+      const chatId = createTestChat(GROUP_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+      await transformer.processMessage(reactionMsg({ id: 'r-1', remoteJid: GROUP_JID, participant: ALICE, targetId: 'target-1', text: '👍' }), chatId)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1'])[0].reactor_jid).toBe(ALICE)
+    })
+
+    it('unwraps deviceSentMessage / ephemeralMessage wrappers around a reaction', async () => {
+      const chatId = createTestChat(DM_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+      await transformer.processMessage(reactionMsg({ id: 'r-1', remoteJid: DM_JID, targetId: 'target-1', text: '👍', fromMe: true, wrap: 'deviceSentMessage' }), chatId)
+      await transformer.processMessage(reactionMsg({ id: 'r-2', remoteJid: DM_JID, targetId: 'target-2', text: '🔥', wrap: 'ephemeralMessage' }), chatId)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1', 'target-2'])).toHaveLength(2)
+      expect(messageOps.getCountByChatId(SLUG, chatId)).toBe(0)
+    })
+
+    it('falls back to messageTimestamp when senderTimestampMs is absent, and parses Long-like / string senderTimestampMs', async () => {
+      const chatId = createTestChat(DM_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+      const seconds = 1700000000
+
+      await transformer.processMessage(reactionMsg({ id: 'r-1', remoteJid: DM_JID, targetId: 'fallback', text: '👍', messageTimestamp: seconds }), chatId)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['fallback'])[0].timestamp).toBe(seconds * 1000)
+
+      await transformer.processMessage(reactionMsg({ id: 'r-2', remoteJid: DM_JID, targetId: 'string-ts', text: '👍', senderTimestampMs: '1700000001234' }), chatId)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['string-ts'])[0].timestamp).toBe(1700000001234)
+
+      const ms = 1700000002345
+      const long = { low: ms % 0x100000000, high: Math.floor(ms / 0x100000000) }
+      await transformer.processMessage(reactionMsg({ id: 'r-3', remoteJid: DM_JID, targetId: 'long-ts', text: '👍', senderTimestampMs: long }), chatId)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['long-ts'])[0].timestamp).toBe(ms)
+    })
+
+    it('ignores a reactionMessage without a target key id', async () => {
+      const chatId = createTestChat(DM_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+      await transformer.processMessage({
+        key: { id: 'r-1', remoteJid: DM_JID, fromMe: false },
+        messageTimestamp: Math.floor(Date.now() / 1000),
+        message: { reactionMessage: { text: '👍' } },
+      }, chatId)
+      const count = (getDatabase(SLUG).prepare('SELECT COUNT(*) as c FROM message_reactions').get() as { c: number }).c
+      expect(count).toBe(0)
+      expect(messageOps.getCountByChatId(SLUG, chatId)).toBe(0)
     })
   })
 

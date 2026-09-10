@@ -99,6 +99,11 @@ function runMigrations(database: Database.Database): void {
     applyMigration8(database)
     database.prepare('INSERT INTO schema_version (version) VALUES (?)').run(8)
   }
+
+  if (version < 9) {
+    applyMigration9(database)
+    database.prepare('INSERT INTO schema_version (version) VALUES (?)').run(9)
+  }
 }
 
 function applyMigration1(database: Database.Database): void {
@@ -281,6 +286,26 @@ function applyMigration8(database: Database.Database): void {
   try { database.exec('ALTER TABLE contacts ADD COLUMN verified_name TEXT') } catch { }
 }
 
+// Emoji reactions live in their own table keyed by the reacted-to message's
+// whatsapp_message_id. No FK to messages: during history sync a reaction can
+// arrive before its target message.
+function applyMigration9(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS message_reactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      target_message_id TEXT NOT NULL,
+      chat_id INTEGER NOT NULL,
+      reactor_jid TEXT NOT NULL,
+      emoji TEXT NOT NULL,
+      is_from_me INTEGER NOT NULL DEFAULT 0,
+      timestamp INTEGER NOT NULL,
+      UNIQUE(target_message_id, reactor_jid)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_message_reactions_target_message_id ON message_reactions(target_message_id);
+  `)
+}
+
 
 // CRUD Operations for messages
 export const messageOps = {
@@ -330,6 +355,62 @@ export const messageOps = {
   getLatestTimestamp: (slug: string) => {
     const result = getDatabase(slug).prepare('SELECT MAX(timestamp) as max_ts FROM messages').get() as { max_ts: number | null }
     return result?.max_ts || null
+  }
+}
+
+export interface ReactionRow {
+  id: number
+  target_message_id: string
+  chat_id: number
+  reactor_jid: string
+  emoji: string
+  is_from_me: number
+  timestamp: number
+}
+
+export interface ReactionUpsert {
+  targetMessageId: string
+  chatId: number
+  reactorJid: string
+  emoji: string
+  isFromMe: boolean
+  timestamp: number
+}
+
+// Stay well under SQLite's default SQLITE_MAX_VARIABLE_NUMBER (999 on older builds).
+const REACTION_QUERY_CHUNK_SIZE = 500
+
+// CRUD Operations for message reactions
+export const reactionOps = {
+  upsert: (slug: string, reaction: ReactionUpsert) => {
+    const stmt = getDatabase(slug).prepare(`
+      INSERT INTO message_reactions (target_message_id, chat_id, reactor_jid, emoji, is_from_me, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(target_message_id, reactor_jid) DO UPDATE SET
+        chat_id = excluded.chat_id,
+        emoji = excluded.emoji,
+        is_from_me = excluded.is_from_me,
+        timestamp = excluded.timestamp
+      WHERE excluded.timestamp >= message_reactions.timestamp
+    `)
+    return stmt.run(reaction.targetMessageId, reaction.chatId, reaction.reactorJid, reaction.emoji, reaction.isFromMe ? 1 : 0, reaction.timestamp)
+  },
+
+  remove: (slug: string, targetMessageId: string, reactorJid: string) => {
+    return getDatabase(slug).prepare('DELETE FROM message_reactions WHERE target_message_id = ? AND reactor_jid = ?').run(targetMessageId, reactorJid)
+  },
+
+  getByTargetMessageIds: (slug: string, ids: string[]): ReactionRow[] => {
+    if (ids.length === 0) return []
+    const db = getDatabase(slug)
+    const rows: ReactionRow[] = []
+    for (let i = 0; i < ids.length; i += REACTION_QUERY_CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + REACTION_QUERY_CHUNK_SIZE)
+      const placeholders = chunk.map(() => '?').join(', ')
+      rows.push(...(db.prepare(`SELECT * FROM message_reactions WHERE target_message_id IN (${placeholders}) ORDER BY timestamp ASC`).all(...chunk) as ReactionRow[]))
+    }
+    if (ids.length > REACTION_QUERY_CHUNK_SIZE) rows.sort((a, b) => a.timestamp - b.timestamp || a.id - b.id)
+    return rows
   }
 }
 
