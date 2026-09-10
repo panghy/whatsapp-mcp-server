@@ -34,6 +34,7 @@ export interface StructuredMessage {
   editedMessage?: { messageId?: string; originalText: string | null; newText: string; timestamp?: string }
   systemType?: string
   systemDetails?: Record<string, unknown>
+  reactions?: Array<{ emoji: string; sender: { name: string; phone: string | null; isMe: boolean }; timestamp: string }>
 }
 
 export interface ChatRef {
@@ -100,7 +101,12 @@ export const structuredMessageSchema = z.object({
     timestamp: z.string().optional()
   }).optional(),
   systemType: z.string().optional(),
-  systemDetails: z.record(z.unknown()).optional()
+  systemDetails: z.record(z.unknown()).optional(),
+  reactions: z.array(z.object({
+    emoji: z.string(),
+    sender: senderSchema,
+    timestamp: z.string()
+  })).optional()
 })
 
 export const chatRefSchema = z.object({
@@ -347,6 +353,14 @@ export function toStructuredMessage(
   }
   if (msg.systemType !== undefined) result.systemType = msg.systemType
   if (msg.details !== undefined) result.systemDetails = msg.details
+
+  if (msg.reactions && msg.reactions.length > 0) {
+    result.reactions = msg.reactions.map(r => ({
+      emoji: r.emoji,
+      sender: { name: r.sender.name, phone: r.sender.phone, isMe: r.isMe },
+      timestamp: r.timestamp
+    }))
+  }
 
   return result
 }

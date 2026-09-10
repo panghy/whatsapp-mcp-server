@@ -25,7 +25,7 @@ vi.mock('@whiskeysockets/baileys', () => ({
 
 // Imports happen after the mock is registered above.
 import Settings from 'electron-settings'
-import { initializeDatabase, closeAllDatabases, chatOps, messageOps, contactOps, settingOps, getDatabase } from './database'
+import { initializeDatabase, closeAllDatabases, chatOps, messageOps, contactOps, settingOps, reactionOps, getDatabase } from './database'
 import { addAccount, setMcpEnabled, accountDir } from './accounts'
 import { setManager, listManagers } from './whatsapp-manager'
 import {
@@ -920,6 +920,84 @@ describe('MCP Server', () => {
       const dayAgo = before - 24 * 60 * 60 * 1000
       expect(sinceTs).toBeGreaterThanOrEqual(dayAgo - 5000)
       expect(sinceTs).toBeLessThanOrEqual(dayAgo + 5000)
+    })
+  })
+
+  describe('Reactions in tool output', () => {
+    const CHAT_JID = 'react-chat@s.whatsapp.net'
+    const REACTOR_JID = '15551234567@s.whatsapp.net'
+    let chatId: number
+    let now: number
+
+    beforeEach(() => {
+      makeAccount(DEFAULT)
+      chatOps.insert(DEFAULT, CHAT_JID, 'dm', undefined, 'React Chat')
+      chatId = (chatOps.getByWhatsappJid(DEFAULT, CHAT_JID) as any).id
+      contactOps.insert(DEFAULT, REACTOR_JID, { name: 'Alice', phoneNumber: '+15551234567' })
+      now = Date.now()
+      messageOps.insert(DEFAULT, chatId, 'reacted-msg', now - 2000, 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'reacted-msg', timestamp: new Date(now - 2000).toISOString(),
+        text: 'hello', sender: { name: 'Sender', phone: '+123' }
+      }), false)
+      messageOps.insert(DEFAULT, chatId, 'plain-msg', now - 1000, 'sender@s.whatsapp.net', JSON.stringify({
+        type: 'message', messageId: 'plain-msg', timestamp: new Date(now - 1000).toISOString(),
+        text: 'no reactions here', sender: { name: 'Sender', phone: '+123' }
+      }), false)
+      reactionOps.upsert(DEFAULT, { targetMessageId: 'reacted-msg', chatId, reactorJid: REACTOR_JID, emoji: '👍', isFromMe: false, timestamp: now - 1500 })
+      reactionOps.upsert(DEFAULT, { targetMessageId: 'reacted-msg', chatId, reactorJid: 'me', emoji: '❤️', isFromMe: true, timestamp: now - 1400 })
+    })
+
+    function assertReactions(text: string, messages: any[], meLabel: string, meSender: { name: string; phone: string | null }) {
+      expect(text).toContain(`Sender:+123 > hello [reactions: 👍 Alice:+15551234567, ❤️ ${meLabel}]`)
+      expect(text).toContain('Sender:+123 > no reactions here\n')
+      expect(text).not.toContain('no reactions here [reactions')
+
+      const reacted = messages.find((m: any) => m.text === 'hello')
+      const plain = messages.find((m: any) => m.text === 'no reactions here')
+      expect(reacted.reactions).toEqual([
+        { emoji: '👍', sender: { name: 'Alice', phone: '+15551234567', isMe: false }, timestamp: new Date(now - 1500).toISOString() },
+        { emoji: '❤️', sender: { ...meSender, isMe: true }, timestamp: new Date(now - 1400).toISOString() }
+      ])
+      expect('reactions' in plain).toBe(false)
+    }
+
+    it('get_chat_history includes reactions in text and structured output', async () => {
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: CHAT_JID })
+      assertReactions(result.result.content[0].text + '\n', result.result.structuredContent.messages, '(me)', { name: '(me)', phone: null })
+    })
+
+    it('get_chat_history uses meIdentity for own reactions when configured', async () => {
+      settingOps.set(DEFAULT, 'user_display_name', 'Me')
+      settingOps.set(DEFAULT, 'user_phone', '+9876543210')
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: CHAT_JID })
+      assertReactions(result.result.content[0].text + '\n', result.result.structuredContent.messages, 'Me:+9876543210', { name: 'Me', phone: '+9876543210' })
+    })
+
+    it('get_recent_messages includes reactions in text and structured output', async () => {
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_recent_messages', { since: new Date(now - 10000).toISOString() })
+      const chat = result.result.structuredContent.chats.find((c: any) => c.chat.jid === CHAT_JID)
+      assertReactions(result.result.content[0].text, chat.messages, '(me)', { name: '(me)', phone: null })
+    })
+
+    it('get_unread_messages includes reactions in text and structured output', async () => {
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_unread_messages', { since: new Date(now - 10000).toISOString() })
+      const chat = result.result.structuredContent.chats.find((c: any) => c.chat.jid === CHAT_JID)
+      assertReactions(result.result.content[0].text, chat.messages, '(me)', { name: '(me)', phone: null })
+    })
+
+    it('leaves output byte-identical when no reactions are stored', async () => {
+      reactionOps.remove(DEFAULT, 'reacted-msg', REACTOR_JID)
+      reactionOps.remove(DEFAULT, 'reacted-msg', 'me')
+      await startMcpServer(testPort)
+      const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: CHAT_JID })
+      const text = result.result.content[0].text
+      expect(text).not.toContain('[reactions')
+      expect(text).toContain('Sender:+123 > hello\nSender:+123 > no reactions here')
+      for (const m of result.result.structuredContent.messages) expect('reactions' in m).toBe(false)
     })
   })
 

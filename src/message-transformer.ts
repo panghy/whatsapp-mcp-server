@@ -271,6 +271,11 @@ export interface TransformedMessage {
     timestamp?: string
   }
   editedBy?: { name: string; phone: string | null }
+  /**
+   * Reactions attached at read time by the MCP tool handlers (not persisted
+   * in `content_json`). Ordered by reaction timestamp ascending.
+   */
+  reactions?: Array<{ emoji: string; sender: { name: string; phone: string | null }; isMe: boolean; timestamp: string }>
 }
 
 export class MessageTransformer {

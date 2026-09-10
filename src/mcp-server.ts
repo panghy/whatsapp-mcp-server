@@ -5,7 +5,7 @@ import http from 'http'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { chatOps, messageOps, settingOps, contactOps, getDatabase } from './database'
+import { chatOps, messageOps, settingOps, contactOps, reactionOps, getDatabase } from './database'
 import { serializeCompact, MeIdentity } from './compact-serializer'
 import { TransformedMessage, extractPhoneFromJid, restoreBuffersInPlace } from './message-transformer'
 import {
@@ -218,6 +218,40 @@ function reResolveMentionsInText(slug: string, text: string): string {
 
     return match
   })
+}
+
+/**
+ * Batch-load stored reactions for the given messages and attach them as
+ * `reactions` (timestamp ASC). Only `message` / `unsupported_attachment`
+ * rows can carry reactions; messages without any are left untouched so the
+ * serialised output stays identical to before.
+ */
+function attachReactions(slug: string, transformed: TransformedMessage[], meIdentity?: MeIdentity): void {
+  const targets = transformed.filter(m => (m.type === 'message' || m.type === 'unsupported_attachment') && m.messageId)
+  if (targets.length === 0) return
+
+  const rows = reactionOps.getByTargetMessageIds(slug, targets.map(m => m.messageId))
+  if (rows.length === 0) return
+
+  const byTarget = new Map<string, NonNullable<TransformedMessage['reactions']>>()
+  for (const row of rows) {
+    const isMe = row.is_from_me === 1
+    let sender: { name: string; phone: string | null }
+    if (isMe) {
+      sender = meIdentity ?? { name: '(me)', phone: null }
+    } else {
+      const phone = extractPhoneFromJid(row.reactor_jid)
+      sender = resolveFromContacts(slug, row.reactor_jid, { name: phone || `Unknown_${row.reactor_jid}`, phone })
+    }
+    const list = byTarget.get(row.target_message_id) ?? []
+    list.push({ emoji: row.emoji, sender, isMe, timestamp: new Date(row.timestamp).toISOString() })
+    byTarget.set(row.target_message_id, list)
+  }
+
+  for (const m of targets) {
+    const list = byTarget.get(m.messageId)
+    if (list) m.reactions = list
+  }
 }
 
 /**
@@ -758,7 +792,7 @@ export function createMcpServer(slug: string): McpServer {
   server.registerTool(
     'get_chat_history',
     {
-      description: 'Get WhatsApp message history for a specific chat by JID. Returns messages in chronological order with optional time-based filtering.',
+      description: 'Get WhatsApp message history for a specific chat by JID. Returns messages in chronological order with optional time-based filtering. Emoji reactions on each message are included (compact text: trailing "[reactions: …]" annotation; structured: "reactions" array).',
       inputSchema: {
         jid: z.string().describe('WhatsApp JID of the chat (get this from search_chats)'),
         limit: z.number().optional().default(100).describe('Maximum number of messages to return'),
@@ -802,6 +836,7 @@ export function createMcpServer(slug: string): McpServer {
         }
         catch { return null }
       }).filter((m): m is TransformedMessage => m !== null).reverse()
+      attachReactions(slug, transformed, meIdentity)
 
       const output = serializeCompact(transformed, undefined, meIdentity)
       const chatRef: ChatRef = { jid: chat.whatsapp_jid, name: chat.name || chat.whatsapp_jid, type: chat.chat_type }
@@ -817,7 +852,7 @@ export function createMcpServer(slug: string): McpServer {
   server.registerTool(
     'get_recent_messages',
     {
-      description: 'Get recent WhatsApp messages across all chats since a given time. Useful for catching up on what happened in a time window. Results grouped by chat.',
+      description: 'Get recent WhatsApp messages across all chats since a given time. Useful for catching up on what happened in a time window. Results grouped by chat. Emoji reactions on each message are included (compact text: trailing "[reactions: …]" annotation; structured: "reactions" array).',
       inputSchema: {
         since: z.string().describe('ISO timestamp cutoff (e.g. "2024-01-15T00:00:00Z") - returns messages after this time'),
         limit: z.number().optional().default(200).describe('Maximum total messages to return'),
@@ -864,6 +899,7 @@ export function createMcpServer(slug: string): McpServer {
           }
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
+        attachReactions(slug, transformed, meIdentity)
         output += serializeCompact(transformed, undefined, meIdentity) + '\n'
         structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl })) })
       }
@@ -878,7 +914,7 @@ export function createMcpServer(slug: string): McpServer {
   server.registerTool(
     'get_unread_messages',
     {
-      description: 'Get unread WhatsApp messages across all chats since the last check. Tracks read state so subsequent calls only return new messages. Results grouped by chat.',
+      description: 'Get unread WhatsApp messages across all chats since the last check. Tracks read state so subsequent calls only return new messages. Results grouped by chat. Emoji reactions on each message are included (compact text: trailing "[reactions: …]" annotation; structured: "reactions" array).',
       inputSchema: {
         since: z.string().optional().describe('Optional ISO timestamp cutoff. If omitted, uses the last time this tool was called (or 24h ago if first call)'),
         includeMessageIds: z.boolean().optional().default(false).describe('Include WhatsApp message IDs (messageId, replyTo.messageId, deletedMessage.messageId, editedMessage.messageId) in structured output. Off by default since these IDs are not actionable without dedicated tools.')
@@ -930,6 +966,7 @@ export function createMcpServer(slug: string): McpServer {
           }
           catch { return null }
         }).filter((m): m is TransformedMessage => m !== null).reverse()
+        attachReactions(slug, transformed, meIdentity)
         body += serializeCompact(transformed, undefined, meIdentity) + '\n'
         structuredChats.push({ chat: group.meta, messages: transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl })) })
       }

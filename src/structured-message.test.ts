@@ -309,5 +309,40 @@ describe('toStructuredMessage', () => {
     const out = toStructuredMessage(input)
     expect(out.sender).toEqual({ name: 'Me', phone: '+1234567890', isMe: true })
   })
+
+  it('projects reactions with sender.isMe and validates against the schema', () => {
+    const input: TransformedMessage = {
+      type: 'message',
+      messageId: 'm-react',
+      timestamp: baseTimestamp,
+      sender: { name: 'Alice', phone: '+111' },
+      text: 'hello',
+      reactions: [
+        { emoji: '👍', sender: { name: 'Bob', phone: '+222' }, isMe: false, timestamp: '2024-01-01T00:01:00.000Z' },
+        { emoji: '❤️', sender: { name: '(me)', phone: null }, isMe: true, timestamp: '2024-01-01T00:02:00.000Z' }
+      ]
+    }
+    const out = toStructuredMessage(input)
+    expect(structuredMessageSchema.parse(out)).toEqual(out)
+    expect(out.reactions).toEqual([
+      { emoji: '👍', sender: { name: 'Bob', phone: '+222', isMe: false }, timestamp: '2024-01-01T00:01:00.000Z' },
+      { emoji: '❤️', sender: { name: '(me)', phone: null, isMe: true }, timestamp: '2024-01-01T00:02:00.000Z' }
+    ])
+  })
+
+  it('omits the reactions key when there are none', () => {
+    const base: TransformedMessage = {
+      type: 'message',
+      messageId: 'm-noreact',
+      timestamp: baseTimestamp,
+      sender: { name: 'Alice', phone: '+111' },
+      text: 'hello'
+    }
+    const withoutKey = toStructuredMessage(base)
+    const withEmpty = toStructuredMessage({ ...base, reactions: [] })
+    expect('reactions' in withoutKey).toBe(false)
+    expect('reactions' in withEmpty).toBe(false)
+    expect(withEmpty).toEqual(withoutKey)
+  })
 })
 

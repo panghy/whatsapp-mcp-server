@@ -137,6 +137,22 @@ function buildAnnotations(msg: TransformedMessage): string[] {
 }
 
 /**
+ * Build the trailing reactions annotation: `[reactions: 👍 Alice:+1555, ❤️ (me)]`.
+ * Own reactions follow the same identity rule as getSenderPrefix. Returns an
+ * empty string when the message has no reactions.
+ */
+function formatReactions(msg: TransformedMessage, meIdentity?: MeIdentity): string {
+  if (!msg.reactions || msg.reactions.length === 0) return ''
+  const entries = msg.reactions.map(r => {
+    const identity = r.isMe
+      ? (meIdentity ? formatSenderIdentity(meIdentity) : '(me)')
+      : formatSenderIdentity(r.sender)
+    return `${r.emoji} ${identity}`
+  })
+  return ` [reactions: ${entries.join(', ')}]`
+}
+
+/**
  * Render the per-kind tag for a media attachment. Voice notes follow the
  * `[Voice note · 12s]` form mandated by the spec; the other kinds use the
  * same dot-separator pattern with sensible labels. Returns `null` when no
@@ -175,7 +191,7 @@ function serializeMessage(msg: TransformedMessage, meIdentity?: MeIdentity): str
   // Annotations go before text, separated by space
   const annotationStr = annotations.length > 0 ? annotations.join(' ') + ' ' : ''
 
-  return `${prefix} > ${annotationStr}${text}`
+  return `${prefix} > ${annotationStr}${text}${formatReactions(msg, meIdentity)}`
 }
 
 /**
@@ -184,7 +200,7 @@ function serializeMessage(msg: TransformedMessage, meIdentity?: MeIdentity): str
 function serializeUnsupportedAttachment(msg: TransformedMessage, meIdentity?: MeIdentity): string {
   const prefix = getSenderPrefix(msg, meIdentity)
   const mimeType = msg.mimeType || 'unknown'
-  return `${prefix} > [unsupported: ${mimeType}]`
+  return `${prefix} > [unsupported: ${mimeType}]${formatReactions(msg, meIdentity)}`
 }
 
 /**
