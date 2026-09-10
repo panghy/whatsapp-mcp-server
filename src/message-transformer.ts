@@ -204,6 +204,16 @@ function stripDeviceSuffix(jid: string): string {
 }
 
 /**
+ * The JID under which the account's own reactions are stored: the socket's
+ * `user.id` with the device suffix stripped, or the literal `me` when the
+ * socket has no user yet.
+ */
+export function ownReactorJid(socket: any): string {
+  const ownId = socket?.user?.id
+  return ownId ? stripDeviceSuffix(ownId) : 'me'
+}
+
+/**
  * Extract phone number from WhatsApp JID.
  */
 export function extractPhoneFromJid(jid: string): string | null {
@@ -350,13 +360,9 @@ export class MessageTransformer {
       }
 
       const isFromMe = !!msg.key?.fromMe
-      let reactorJid: string
-      if (isFromMe) {
-        const ownId = this.socket?.user?.id
-        reactorJid = ownId ? stripDeviceSuffix(ownId) : 'me'
-      } else {
-        reactorJid = msg.key?.participant || msg.key?.remoteJid || 'unknown'
-      }
+      const reactorJid = isFromMe
+        ? ownReactorJid(this.socket)
+        : (msg.key?.participant || msg.key?.remoteJid || 'unknown')
 
       const senderMs = toNumberValue(reaction.senderTimestampMs)
       const timestamp = senderMs !== null && senderMs > 0 ? senderMs : extractTimestampMs(msg.messageTimestamp)

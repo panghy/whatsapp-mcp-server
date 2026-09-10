@@ -42,7 +42,9 @@ import {
   isValidMessageId,
   deriveExtension
 } from './mcp-server'
+import { reactToMessageOutputShape } from './structured-message'
 import { pathToFileURL } from 'url'
+import { z } from 'zod'
 
 const DEFAULT = 'default'
 
@@ -1921,6 +1923,261 @@ describe('MCP Server', () => {
       expect(sc.attachment).toBeDefined()
       expect(sc.attachment.kind).toBe('image')
       expect(sc.attachment.filename).toBe('pic.png')
+    })
+  })
+
+  describe('react_to_message Tool', () => {
+    const DM_JID = '15550001111@s.whatsapp.net'
+    const GROUP_JID = 'react-group@g.us'
+    const OTHER_SENDER = '15559998888@s.whatsapp.net'
+    const OWN_JID = '19990001234@s.whatsapp.net'
+    let dmChatId: number
+    let groupChatId: number
+
+    function insertMsg(chatId: number, messageId: string, senderJid: string, isFromMe: boolean, text: string) {
+      const ts = Date.now() - 5000
+      messageOps.insert(DEFAULT, chatId, messageId, ts, senderJid, JSON.stringify({
+        type: 'message', messageId, timestamp: new Date(ts).toISOString(), text,
+        sender: isFromMe ? { name: '(me)', phone: null } : { name: 'Other', phone: '+15559998888' },
+        isFromMe
+      }), false)
+    }
+
+    function connectedSocket(overrides: Record<string, any> = {}) {
+      const socket = {
+        user: { id: '19990001234:7@s.whatsapp.net' },
+        sendMessage: vi.fn().mockResolvedValue({}),
+        sendPresenceUpdate: vi.fn().mockResolvedValue(undefined),
+        ...overrides
+      }
+      setManager(DEFAULT, { socket } as any)
+      return socket
+    }
+
+    beforeEach(() => {
+      makeAccount(DEFAULT)
+      chatOps.insert(DEFAULT, DM_JID, 'dm', undefined, 'DM Chat')
+      chatOps.insert(DEFAULT, GROUP_JID, 'group', undefined, 'Group Chat')
+      dmChatId = (chatOps.getByWhatsappJid(DEFAULT, DM_JID) as any).id
+      groupChatId = (chatOps.getByWhatsappJid(DEFAULT, GROUP_JID) as any).id
+      insertMsg(dmChatId, 'dm-other', DM_JID, false, 'dm from other')
+      insertMsg(dmChatId, 'dm-own', OWN_JID, true, 'dm from me')
+      insertMsg(groupChatId, 'grp-other', OTHER_SENDER, false, 'group from other')
+      insertMsg(groupChatId, 'grp-own', OWN_JID, true, 'group from me')
+    })
+
+    it('reacting to another participant in a group sends a key with participant and fromMe:false', async () => {
+      const socket = connectedSocket()
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: GROUP_JID, messageId: 'grp-other', emoji: '👍' })
+      expect(result.result.isError).toBeFalsy()
+      expect(result.result.content[0].text).toBe(`Reacted 👍 to message grp-other in ${GROUP_JID}`)
+      expect(socket.sendMessage).toHaveBeenCalledTimes(1)
+      expect(socket.sendMessage).toHaveBeenCalledWith(GROUP_JID, {
+        react: { text: '👍', key: { remoteJid: GROUP_JID, id: 'grp-other', fromMe: false, participant: OTHER_SENDER } }
+      })
+      expect(result.result.structuredContent).toEqual({ ok: true, jid: GROUP_JID, messageId: 'grp-other', emoji: '👍', removed: false })
+    })
+
+    it('reacting in a DM sends a key without participant', async () => {
+      const socket = connectedSocket()
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '❤️' })
+      expect(result.result.isError).toBeFalsy()
+      const sent = socket.sendMessage.mock.calls[0]
+      expect(sent[0]).toBe(DM_JID)
+      expect(sent[1].react.text).toBe('❤️')
+      expect(sent[1].react.key).toEqual({ remoteJid: DM_JID, id: 'dm-other', fromMe: false })
+      expect('participant' in sent[1].react.key).toBe(false)
+    })
+
+    it('reacting to an own message sets fromMe:true and no participant, even in a group', async () => {
+      const socket = connectedSocket()
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: GROUP_JID, messageId: 'grp-own', emoji: '🔥' })
+      expect(result.result.isError).toBeFalsy()
+      const key = socket.sendMessage.mock.calls[0][1].react.key
+      expect(key).toEqual({ remoteJid: GROUP_JID, id: 'grp-own', fromMe: true })
+      expect('participant' in key).toBe(false)
+    })
+
+    it('re-sets presence to unavailable after a successful react', async () => {
+      const socket = connectedSocket()
+      await startMcpServer(testPort)
+
+      await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '👍' })
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledTimes(1)
+      expect(socket.sendPresenceUpdate).toHaveBeenCalledWith('unavailable')
+    })
+
+    it('mirrors the reaction locally so get_chat_history shows it as (me) without any incoming event', async () => {
+      connectedSocket()
+      await startMcpServer(testPort)
+
+      await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '👍' })
+
+      const rows = reactionOps.getByTargetMessageIds(DEFAULT, ['dm-other'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].reactor_jid).toBe(OWN_JID)
+      expect(rows[0].is_from_me).toBe(1)
+      expect(rows[0].chat_id).toBe(dmChatId)
+      expect(rows[0].emoji).toBe('👍')
+
+      const history = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: DM_JID })
+      expect(history.result.content[0].text).toContain('dm from other [reactions: 👍 (me)]')
+      const reacted = history.result.structuredContent.messages.find((m: any) => m.text === 'dm from other')
+      expect(reacted.reactions).toHaveLength(1)
+      expect(reacted.reactions[0].emoji).toBe('👍')
+      expect(reacted.reactions[0].sender).toEqual({ name: '(me)', phone: null, isMe: true })
+    })
+
+    it('mirrors the reaction with meIdentity when configured', async () => {
+      settingOps.set(DEFAULT, 'user_display_name', 'Me')
+      settingOps.set(DEFAULT, 'user_phone', '+19990001234')
+      connectedSocket()
+      await startMcpServer(testPort)
+
+      await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '👍' })
+      const history = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: DM_JID })
+      expect(history.result.content[0].text).toContain('dm from other [reactions: 👍 Me:+19990001234]')
+    })
+
+    it('a second react by the caller replaces the previous local reaction (exactly one row)', async () => {
+      connectedSocket()
+      await startMcpServer(testPort)
+
+      await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '👍' })
+      await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '😂' })
+      const rows = reactionOps.getByTargetMessageIds(DEFAULT, ['dm-other'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].emoji).toBe('😂')
+    })
+
+    it('empty emoji sends an empty react, removes the local row, and returns removed:true', async () => {
+      const socket = connectedSocket()
+      reactionOps.upsert(DEFAULT, { targetMessageId: 'dm-other', chatId: dmChatId, reactorJid: OWN_JID, emoji: '👍', isFromMe: true, timestamp: Date.now() - 1000 })
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '' })
+      expect(result.result.isError).toBeFalsy()
+      expect(result.result.content[0].text).toBe(`Removed reaction from message dm-other in ${DM_JID}`)
+      expect(socket.sendMessage).toHaveBeenCalledWith(DM_JID, {
+        react: { text: '', key: { remoteJid: DM_JID, id: 'dm-other', fromMe: false } }
+      })
+      expect(result.result.structuredContent).toEqual({ ok: true, jid: DM_JID, messageId: 'dm-other', emoji: '', removed: true })
+      expect(reactionOps.getByTargetMessageIds(DEFAULT, ['dm-other'])).toHaveLength(0)
+    })
+
+    it('falls back to reactor "me" when the socket has no user id', async () => {
+      connectedSocket({ user: undefined })
+      await startMcpServer(testPort)
+
+      await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '👍' })
+      const rows = reactionOps.getByTargetMessageIds(DEFAULT, ['dm-other'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].reactor_jid).toBe('me')
+      expect(rows[0].is_from_me).toBe(1)
+    })
+
+    it('returns chat_not_found for an unknown jid without calling sendMessage', async () => {
+      const socket = connectedSocket()
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: 'nobody@s.whatsapp.net', messageId: 'dm-other', emoji: '👍' })
+      expect(result.result.isError).toBe(true)
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(false)
+      expect(sc.errorKind).toBe('chat_not_found')
+      expect(sc.jid).toBe('nobody@s.whatsapp.net')
+      expect(sc.messageId).toBe('dm-other')
+      expect(sc.error).toBe(result.result.content[0].text)
+      expect(socket.sendMessage).not.toHaveBeenCalled()
+    })
+
+    it('returns message_not_found for an unknown message id without calling sendMessage', async () => {
+      const socket = connectedSocket()
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'does-not-exist', emoji: '👍' })
+      expect(result.result.isError).toBe(true)
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(false)
+      expect(sc.errorKind).toBe('message_not_found')
+      expect(socket.sendMessage).not.toHaveBeenCalled()
+    })
+
+    it('returns message_not_found when the message belongs to a different chat', async () => {
+      const socket = connectedSocket()
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'grp-other', emoji: '👍' })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.structuredContent.errorKind).toBe('message_not_found')
+      expect(socket.sendMessage).not.toHaveBeenCalled()
+    })
+
+    it('checks chat and message before connection: not_connected only when both exist', async () => {
+      await startMcpServer(testPort)
+
+      const missingChat = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: 'nobody@s.whatsapp.net', messageId: 'dm-other', emoji: '👍' })
+      expect(missingChat.result.structuredContent.errorKind).toBe('chat_not_found')
+
+      const missingMsg = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'nope', emoji: '👍' })
+      expect(missingMsg.result.structuredContent.errorKind).toBe('message_not_found')
+
+      const result = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '👍' })
+      expect(result.result.isError).toBe(true)
+      expect(result.result.content[0].text).toBe('WhatsApp is not connected')
+      const sc = result.result.structuredContent
+      expect(sc).toEqual({ ok: false, jid: DM_JID, messageId: 'dm-other', error: 'WhatsApp is not connected', errorKind: 'not_connected' })
+      expect(reactionOps.getByTargetMessageIds(DEFAULT, ['dm-other'])).toHaveLength(0)
+    })
+
+    it('returns send_failed when sendMessage throws and does not mirror locally', async () => {
+      connectedSocket({ sendMessage: vi.fn().mockRejectedValue(new Error('Network error')) })
+      await startMcpServer(testPort)
+
+      const result = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '👍' })
+      expect(result.result.isError).toBe(true)
+      const sc = result.result.structuredContent
+      expect(sc.ok).toBe(false)
+      expect(sc.errorKind).toBe('send_failed')
+      expect(sc.error).toBe('Failed to send reaction: Network error')
+      expect(result.result.content[0].text).toBe('Failed to send reaction: Network error')
+      expect(reactionOps.getByTargetMessageIds(DEFAULT, ['dm-other'])).toHaveLength(0)
+    })
+
+    it('structuredContent validates against reactToMessageOutputShape on success and failure', async () => {
+      const schema = z.object(reactToMessageOutputShape)
+      connectedSocket()
+      await startMcpServer(testPort)
+
+      const ok = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'dm-other', emoji: '👍' })
+      expect(schema.safeParse(ok.result.structuredContent).success).toBe(true)
+      const fail = await callMcpTool(testPort, '/mcp', 'react_to_message', { jid: DM_JID, messageId: 'nope', emoji: '👍' })
+      expect(schema.safeParse(fail.result.structuredContent).success).toBe(true)
+    })
+
+    it('includeMessageIds descriptions point at react_to_message instead of "not actionable"', async () => {
+      await startMcpServer(testPort)
+      const response = await makeRequest({
+        hostname: '127.0.0.1', port: testPort, path: '/mcp', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' }
+      }, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }))
+      const dataMatch = response.body.match(/data: (.+)\n/)
+      const tools = (dataMatch ? JSON.parse(dataMatch[1]) : JSON.parse(response.body)).result.tools
+      const names = tools.map((t: any) => t.name)
+      expect(names).toContain('react_to_message')
+      for (const name of ['get_chat_history', 'get_recent_messages', 'get_unread_messages']) {
+        const desc = tools.find((t: any) => t.name === name).inputSchema.properties.includeMessageIds.description
+        expect(desc).not.toContain('not actionable')
+        expect(desc).toContain('react_to_message')
+      }
+      const react = tools.find((t: any) => t.name === 'react_to_message')
+      expect(react.annotations).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: true })
     })
   })
 
