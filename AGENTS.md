@@ -46,6 +46,7 @@ semantic-release uses Angular preset with these release rules (from `.releaserc.
   - `APPLE_CERTIFICATE_PASSWORD`
   - `APPLE_ID`
   - `APPLE_PASSWORD`
+- **macOS signing: do NOT set `CSC_LINK` / `CSC_KEY_PASSWORD`** in the build step. The "Import macOS certificate" step already imports the `.p12` into `build.keychain`, makes it the default keychain, and sets the partition list, so electron-builder auto-discovers the signing identity. Passing `CSC_LINK` makes electron-builder import the certificate into its own temporary keychain, which fails on current macOS runners and leaves the app unsigned/un-notarized (see [electron-builder #10066](https://github.com/electron-userland/electron-builder/issues/10066)).
 
 ## Fixing a Broken Release
 
