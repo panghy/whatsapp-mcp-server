@@ -34,6 +34,7 @@ export interface StructuredMessage {
   editedMessage?: { messageId?: string; originalText: string | null; newText: string; timestamp?: string }
   systemType?: string
   systemDetails?: Record<string, unknown>
+  reactions?: Array<{ emoji: string; sender: { name: string; phone: string | null; isMe: boolean }; timestamp: string }>
 }
 
 export interface ChatRef {
@@ -100,7 +101,12 @@ export const structuredMessageSchema = z.object({
     timestamp: z.string().optional()
   }).optional(),
   systemType: z.string().optional(),
-  systemDetails: z.record(z.unknown()).optional()
+  systemDetails: z.record(z.unknown()).optional(),
+  reactions: z.array(z.object({
+    emoji: z.string(),
+    sender: senderSchema,
+    timestamp: z.string()
+  })).optional()
 })
 
 export const chatRefSchema = z.object({
@@ -213,6 +219,43 @@ export const sendMessageOutputShape = {
 }
 
 /**
+ * Wire shape for `react_to_message`. `ok: true` echoes the target and the
+ * emoji sent; `removed` is true when the caller passed an empty emoji to
+ * withdraw their reaction. On failure `ok: false` with a stable `errorKind`
+ * discriminator alongside the human-readable `error` string.
+ */
+export type ReactToMessageResult =
+  | {
+      ok: true
+      jid: string
+      messageId: string
+      emoji: string
+      removed: boolean
+    }
+  | {
+      ok: false
+      jid: string
+      messageId: string
+      error: string
+      errorKind: 'not_connected' | 'chat_not_found' | 'message_not_found' | 'send_failed'
+    }
+
+/**
+ * Raw shape suitable for `registerTool`'s `outputSchema` parameter. Follows
+ * the same flat-optional pattern as `sendMessageOutputShape`; consumers
+ * narrow via the `ok` discriminant.
+ */
+export const reactToMessageOutputShape = {
+  ok: z.boolean(),
+  jid: z.string(),
+  messageId: z.string(),
+  emoji: z.string().optional(),
+  removed: z.boolean().optional(),
+  error: z.string().optional(),
+  errorKind: z.enum(['not_connected', 'chat_not_found', 'message_not_found', 'send_failed']).optional()
+}
+
+/**
  * Wire shape for `get_message_media`. On success the tool returns one of three
  * shapes selected by the caller's `output` mode: an inline content block
  * (`returnedAs: 'inline'`), a host file path with zero base64
@@ -271,8 +314,8 @@ export const getMessageMediaOutputShape = {
  * `opts.includeMessageIds` (default `false`) controls whether the four
  * WhatsApp message-ID fields (top-level `messageId`, `replyTo.messageId`,
  * `deletedMessage.messageId`, `editedMessage.messageId`) are surfaced. They
- * are omitted by default since they are not actionable without dedicated
- * delete/edit/reply-by-ID tools.
+ * are omitted by default to keep responses compact; callers opt in when they
+ * need IDs for `react_to_message` or `get_message_media`.
  *
  * `opts.mediaBaseUrl` is the per-account prefix for the local `/media` HTTP
  * endpoint (e.g. `http://127.0.0.1:13491/media/default`). When provided and
@@ -347,6 +390,14 @@ export function toStructuredMessage(
   }
   if (msg.systemType !== undefined) result.systemType = msg.systemType
   if (msg.details !== undefined) result.systemDetails = msg.details
+
+  if (msg.reactions && msg.reactions.length > 0) {
+    result.reactions = msg.reactions.map(r => ({
+      emoji: r.emoji,
+      sender: { name: r.sender.name, phone: r.sender.phone, isMe: r.isMe },
+      timestamp: r.timestamp
+    }))
+  }
 
   return result
 }

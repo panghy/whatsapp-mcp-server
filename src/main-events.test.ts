@@ -50,7 +50,7 @@ vi.mock('electron-updater', () => {
 
 import Settings from 'electron-settings'
 import { addAccount } from './accounts'
-import { contactOps, logOps, closeAllDatabases, initializeDatabase } from './database'
+import { contactOps, logOps, messageOps, reactionOps, closeAllDatabases, initializeDatabase } from './database'
 import { resetSyncOrchestrators } from './sync-orchestrator'
 import { resetGroupMetadataFetchers } from './group-metadata-fetcher'
 
@@ -174,6 +174,107 @@ describe('main.ts realtime LID/PN harvesting', () => {
     expect(row).toBeTruthy()
     expect(row.name).toBe('Address Book')
     expect(row.push_name).toBe('Cryptic Push')
+  })
+
+  describe('reaction ingestion', () => {
+    const OTHER = '15559876543@s.whatsapp.net'
+    const nowSec = () => Math.floor(Date.now() / 1000)
+
+    function reactionMsg(id: string, targetId: string, text: string, opts: { fromMe?: boolean; remoteJid?: string; participant?: string } = {}) {
+      return {
+        key: { remoteJid: opts.remoteJid ?? OTHER, fromMe: opts.fromMe ?? false, id, participant: opts.participant },
+        messageTimestamp: nowSec(),
+        message: { reactionMessage: { key: { remoteJid: opts.remoteJid ?? OTHER, fromMe: false, id: targetId }, text, senderTimestampMs: Date.now() } },
+      }
+    }
+
+    it('messages.upsert with a reactionMessage stores one reaction row and no messages row', async () => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      await sock.fire({
+        'messages.upsert': {
+          type: 'notify',
+          messages: [{ key: { remoteJid: OTHER, fromMe: false, id: 'T1' }, messageTimestamp: nowSec(), message: { conversation: 'hi' } }],
+        },
+      })
+      const before = messageOps.getCount(SLUG)
+
+      await sock.fire({ 'messages.upsert': { type: 'notify', messages: [reactionMsg('R1', 'T1', '👍')] } })
+
+      expect(messageOps.getCount(SLUG)).toBe(before)
+      expect(messageOps.getByWhatsappMessageId(SLUG, 'R1')).toBeUndefined()
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['T1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ target_message_id: 'T1', reactor_jid: OTHER, emoji: '👍', is_from_me: 0 })
+    })
+
+    it('from-me reaction in a DM is stored under the own JID with is_from_me = 1', async () => {
+      const sock = buildFakeSocket()
+      sock.user = { id: '15551234567:3@s.whatsapp.net' }
+      registerHandlersForSlug(SLUG, sock)
+      await sock.fire({ 'messages.upsert': { type: 'notify', messages: [reactionMsg('R1', 'T1', '❤️', { fromMe: true })] } })
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['T1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ reactor_jid: PN, is_from_me: 1, emoji: '❤️' })
+    })
+
+    it('messaging-history.set with a reactionMessage in messages persists the reaction', async () => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      await sock.fire({
+        'messaging-history.set': {
+          chats: [], contacts: [], isLatest: false, syncType: 1, progress: 10,
+          messages: [reactionMsg('R1', 'T-history', '🔥')],
+        },
+      })
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['T-history'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].emoji).toBe('🔥')
+      expect(messageOps.getCount(SLUG)).toBe(0)
+    })
+
+    it('messaging-history.set persists reactions embedded in WebMessageInfo.reactions[] (round-tripped through Baileys)', async () => {
+      const { proto, processHistoryMessage } = await import('@whiskeysockets/baileys')
+      const GROUP = 'group-1@g.us'
+      const BOB = '15551112222@s.whatsapp.net'
+      const historySync = proto.HistorySync.fromObject({
+        syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
+        conversations: [{
+          id: GROUP,
+          messages: [{
+            message: {
+              key: { remoteJid: GROUP, fromMe: false, id: 'T-EMB', participant: OTHER },
+              messageTimestamp: 1700000000,
+              message: { conversation: 'target' },
+              reactions: [
+                { key: { remoteJid: GROUP, fromMe: false, id: 'R-1', participant: BOB }, text: '👍', senderTimestampMs: 1700000001000 },
+                { key: { remoteJid: GROUP, fromMe: true, id: 'R-2' }, text: '❤️', senderTimestampMs: 1700000002000 },
+              ],
+            },
+          }],
+        }],
+      })
+      const decoded = proto.HistorySync.decode(proto.HistorySync.encode(historySync).finish())
+      const processed = processHistoryMessage(decoded)
+      expect(processed.messages).toHaveLength(1)
+      expect(processed.messages[0].reactions).toHaveLength(2)
+
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      await sock.fire({
+        'messaging-history.set': {
+          chats: processed.chats, contacts: processed.contacts, messages: processed.messages,
+          isLatest: false, syncType: decoded.syncType, progress: 10,
+        },
+      })
+
+      expect(messageOps.getByWhatsappMessageId(SLUG, 'T-EMB')).toBeTruthy()
+      expect(messageOps.getCount(SLUG)).toBe(1)
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['T-EMB'])
+      expect(rows).toHaveLength(2)
+      expect(rows[0]).toMatchObject({ reactor_jid: BOB, emoji: '👍', is_from_me: 0, timestamp: 1700000001000 })
+      expect(rows[1]).toMatchObject({ reactor_jid: PN, emoji: '❤️', is_from_me: 1, timestamp: 1700000002000 })
+    })
   })
 
   describe('sync-health diagnostics logging', () => {

@@ -31,6 +31,7 @@ import {
   contactOps,
   settingOps,
   logOps,
+  reactionOps,
 } from './database'
 import { accountDbPath } from './accounts'
 
@@ -76,12 +77,13 @@ describe('Database Integration Tests', () => {
       expect(tableNames).toContain('settings')
       expect(tableNames).toContain('logs')
       expect(tableNames).toContain('schema_version')
+      expect(tableNames).toContain('message_reactions')
     })
 
     it('should apply all migrations', () => {
       const db = getDatabase(SLUG)
       const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
-      expect(version.version).toBe(8)
+      expect(version.version).toBe(9)
     })
 
     it('should return the same handle when initialized twice for the same slug', () => {
@@ -460,10 +462,10 @@ describe('Database Integration Tests', () => {
       // Apply migration 8 by opening through the production code path.
       initializeDatabase(EVO_SLUG)
 
-      // schema_version is now 8 (and only one row per version exists).
+      // schema_version is now current (and only one row per version exists).
       const db = getDatabase(EVO_SLUG)
       const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
-      expect(version.version).toBe(8)
+      expect(version.version).toBe(9)
 
       // The new columns are present.
       const postCols = contactColumnNames(EVO_SLUG)
@@ -492,7 +494,7 @@ describe('Database Integration Tests', () => {
       expect(updated.verified_name).toBeNull()
     })
 
-    it('is idempotent: re-running initializeDatabase keeps version=8 with no duplicate columns', () => {
+    it('is idempotent: re-running initializeDatabase keeps version=9 with no duplicate columns', () => {
       buildV7Database(accountDbPath(EVO_SLUG))
       initializeDatabase(EVO_SLUG)
 
@@ -506,21 +508,158 @@ describe('Database Integration Tests', () => {
 
       const db = getDatabase(EVO_SLUG)
       const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
-      expect(version.version).toBe(8)
+      expect(version.version).toBe(9)
 
       const colsAfter = contactColumnNames(EVO_SLUG).filter((n) => n === 'push_name' || n === 'verified_name')
       expect(colsAfter).toEqual(['push_name', 'verified_name'])
     })
 
-    it('fresh DB jumps straight to version=8 with both new columns present', () => {
+    it('fresh DB jumps straight to version=9 with both new columns present', () => {
       // No pre-stage: this is the "first launch" path.
       initializeDatabase('fresh-evo')
       const db = getDatabase('fresh-evo')
       const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
-      expect(version.version).toBe(8)
+      expect(version.version).toBe(9)
       const cols = (db.prepare('PRAGMA table_info(contacts)').all() as { name: string }[]).map((c) => c.name)
       expect(cols).toContain('push_name')
       expect(cols).toContain('verified_name')
+    })
+  })
+
+  describe('migration 9 (message_reactions table)', () => {
+    const EVO_SLUG = 'schema-evo-9'
+
+    function buildV8Database(dbPath: string): void {
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+      const db = new Database(dbPath)
+      db.pragma('journal_mode = WAL')
+      db.exec(`
+        CREATE TABLE schema_version (
+          version INTEGER PRIMARY KEY,
+          applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO schema_version (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8);
+      `)
+      db.close()
+    }
+
+    beforeEach(() => {
+      closeAllDatabases()
+      const accountsRoot = path.join(testDir, 'accounts')
+      if (fs.existsSync(accountsRoot)) fs.rmSync(accountsRoot, { recursive: true, force: true })
+    })
+
+    it('creates message_reactions with the expected columns and unique constraint on a fresh DB', () => {
+      initializeDatabase(EVO_SLUG)
+      const db = getDatabase(EVO_SLUG)
+      const cols = (db.prepare('PRAGMA table_info(message_reactions)').all() as { name: string }[]).map((c) => c.name)
+      expect(cols).toEqual(['id', 'target_message_id', 'chat_id', 'reactor_jid', 'emoji', 'is_from_me', 'timestamp'])
+
+      const indexes = (db.prepare('PRAGMA index_list(message_reactions)').all() as { name: string; unique: number }[])
+      expect(indexes.some((i) => i.unique === 1)).toBe(true)
+      expect(indexes.map((i) => i.name)).toContain('idx_message_reactions_target_message_id')
+
+      db.prepare('INSERT INTO message_reactions (target_message_id, chat_id, reactor_jid, emoji, timestamp) VALUES (?, ?, ?, ?, ?)')
+        .run('T1', 1, 'a@s.whatsapp.net', '👍', 1)
+      expect(() => {
+        db.prepare('INSERT INTO message_reactions (target_message_id, chat_id, reactor_jid, emoji, timestamp) VALUES (?, ?, ?, ?, ?)')
+          .run('T1', 1, 'a@s.whatsapp.net', '❤️', 2)
+      }).toThrow(/UNIQUE/)
+    })
+
+    it('upgrades an existing v8 DB to v9 and adds the table', () => {
+      buildV8Database(accountDbPath(EVO_SLUG))
+      initializeDatabase(EVO_SLUG)
+      const db = getDatabase(EVO_SLUG)
+      const version = db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number }
+      expect(version.version).toBe(9)
+      const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((t) => t.name)
+      expect(tables).toContain('message_reactions')
+    })
+  })
+
+  describe('reactionOps', () => {
+    const base = { targetMessageId: 'MSG-1', chatId: 1, reactorJid: 'alice@s.whatsapp.net', emoji: '👍', isFromMe: false, timestamp: 1000 }
+
+    it('upsert inserts a row and re-delivery is idempotent', () => {
+      reactionOps.upsert(SLUG, base)
+      reactionOps.upsert(SLUG, base)
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ target_message_id: 'MSG-1', chat_id: 1, reactor_jid: 'alice@s.whatsapp.net', emoji: '👍', is_from_me: 0, timestamp: 1000 })
+    })
+
+    it('upsert with a newer timestamp replaces the emoji', () => {
+      reactionOps.upsert(SLUG, base)
+      reactionOps.upsert(SLUG, { ...base, emoji: '❤️', timestamp: 2000 })
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].emoji).toBe('❤️')
+      expect(rows[0].timestamp).toBe(2000)
+    })
+
+    it('upsert with an older timestamp does not overwrite', () => {
+      reactionOps.upsert(SLUG, { ...base, emoji: '❤️', timestamp: 2000 })
+      reactionOps.upsert(SLUG, { ...base, emoji: '👍', timestamp: 1000 })
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].emoji).toBe('❤️')
+      expect(rows[0].timestamp).toBe(2000)
+    })
+
+    it('upsert with an equal timestamp overwrites', () => {
+      reactionOps.upsert(SLUG, base)
+      reactionOps.upsert(SLUG, { ...base, emoji: '😂' })
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])[0].emoji).toBe('😂')
+    })
+
+    it('keeps separate rows per reactor and stores is_from_me', () => {
+      reactionOps.upsert(SLUG, base)
+      reactionOps.upsert(SLUG, { ...base, reactorJid: 'me@s.whatsapp.net', emoji: '🔥', isFromMe: true, timestamp: 1500 })
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])
+      expect(rows).toHaveLength(2)
+      expect(rows.find((r) => r.reactor_jid === 'me@s.whatsapp.net')?.is_from_me).toBe(1)
+    })
+
+    it('remove deletes only that reactor\'s row', () => {
+      reactionOps.upsert(SLUG, base)
+      reactionOps.upsert(SLUG, { ...base, reactorJid: 'bob@s.whatsapp.net' })
+      reactionOps.remove(SLUG, 'MSG-1', 'alice@s.whatsapp.net')
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0].reactor_jid).toBe('bob@s.whatsapp.net')
+      expect(() => reactionOps.remove(SLUG, 'MSG-1', 'nobody@s.whatsapp.net')).not.toThrow()
+    })
+
+    it('remove with notAfterTimestamp leaves a newer row in place and deletes an older-or-equal one', () => {
+      reactionOps.upsert(SLUG, { ...base, timestamp: 200 })
+      reactionOps.remove(SLUG, 'MSG-1', 'alice@s.whatsapp.net', 100)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])).toHaveLength(1)
+      reactionOps.remove(SLUG, 'MSG-1', 'alice@s.whatsapp.net', 200)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])).toHaveLength(0)
+      reactionOps.upsert(SLUG, { ...base, timestamp: 200 })
+      reactionOps.remove(SLUG, 'MSG-1', 'alice@s.whatsapp.net', 300)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])).toHaveLength(0)
+    })
+
+    it('getByTargetMessageIds returns [] for empty input and orders by timestamp ASC', () => {
+      expect(reactionOps.getByTargetMessageIds(SLUG, [])).toEqual([])
+      reactionOps.upsert(SLUG, { ...base, targetMessageId: 'B', timestamp: 3000 })
+      reactionOps.upsert(SLUG, { ...base, targetMessageId: 'A', timestamp: 1000 })
+      reactionOps.upsert(SLUG, { ...base, targetMessageId: 'A', reactorJid: 'bob@s.whatsapp.net', timestamp: 2000 })
+      reactionOps.upsert(SLUG, { ...base, targetMessageId: 'C', timestamp: 500 })
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['A', 'B'])
+      expect(rows.map((r) => r.timestamp)).toEqual([1000, 2000, 3000])
+      expect(rows.map((r) => r.target_message_id)).toEqual(['A', 'A', 'B'])
+    })
+
+    it('getByTargetMessageIds handles more ids than the SQLite variable limit', () => {
+      const ids = Array.from({ length: 1200 }, (_, i) => `ID-${i}`)
+      for (const id of ids.slice(0, 1100)) {
+        reactionOps.upsert(SLUG, { ...base, targetMessageId: id, timestamp: 1 })
+      }
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ids)
+      expect(rows).toHaveLength(1100)
     })
   })
 

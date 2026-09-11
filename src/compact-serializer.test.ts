@@ -274,6 +274,61 @@ describe('serializeCompact', () => {
     })
 
   })
+
+  describe('reactions annotation', () => {
+    const alice = { name: 'Alice', phone: '+15551234567' }
+
+    it('should append [reactions: …] with entries in stored order', () => {
+      const msg = createMessage({
+        text: 'hello',
+        reactions: [
+          { emoji: '👍', sender: alice, isMe: false, timestamp: '2024-01-15T12:01:00.000Z' },
+          { emoji: '❤️', sender: { name: '(me)', phone: null }, isMe: true, timestamp: '2024-01-15T12:02:00.000Z' }
+        ]
+      })
+      const result = serializeCompact([msg])
+      expect(result).toContain('John:+1234567890 > hello [reactions: 👍 Alice:+15551234567, ❤️ (me)]')
+    })
+
+    it('should format own reactions with meIdentity when provided', () => {
+      const msg = createMessage({
+        text: 'hello',
+        reactions: [{ emoji: '❤️', sender: { name: 'Me', phone: '+9876543210' }, isMe: true, timestamp: '2024-01-15T12:02:00.000Z' }]
+      })
+      const meIdentity: MeIdentity = { name: 'Me', phone: '+9876543210' }
+      const result = serializeCompact([msg], undefined, meIdentity)
+      expect(result).toContain('hello [reactions: ❤️ Me:+9876543210]')
+    })
+
+    it('should place reactions after existing annotations and text', () => {
+      const msg = createMessage({
+        text: 'hello',
+        forwarded: true,
+        reactions: [{ emoji: '👍', sender: alice, isMe: false, timestamp: '2024-01-15T12:01:00.000Z' }]
+      })
+      const result = serializeCompact([msg])
+      expect(result).toContain('John:+1234567890 > [fwd] hello [reactions: 👍 Alice:+15551234567]')
+    })
+
+    it('should append reactions to unsupported_attachment lines', () => {
+      const msg = createMessage({
+        type: 'unsupported_attachment',
+        text: undefined,
+        mimeType: 'application/x-foo',
+        reactions: [{ emoji: '👍', sender: alice, isMe: false, timestamp: '2024-01-15T12:01:00.000Z' }]
+      })
+      const result = serializeCompact([msg])
+      expect(result).toContain('John:+1234567890 > [unsupported: application/x-foo] [reactions: 👍 Alice:+15551234567]')
+    })
+
+    it('should not emit an annotation when reactions are absent or empty', () => {
+      const plain = serializeCompact([createMessage({ text: 'hello' })])
+      const empty = serializeCompact([createMessage({ text: 'hello', reactions: [] })])
+      expect(plain).toBe(empty)
+      expect(plain).not.toContain('[reactions')
+      expect(plain).toContain('John:+1234567890 > hello')
+    })
+  })
 })
 
 describe('extractPhoneFromJid', () => {
