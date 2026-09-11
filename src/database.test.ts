@@ -631,6 +631,17 @@ describe('Database Integration Tests', () => {
       expect(() => reactionOps.remove(SLUG, 'MSG-1', 'nobody@s.whatsapp.net')).not.toThrow()
     })
 
+    it('remove with notAfterTimestamp leaves a newer row in place and deletes an older-or-equal one', () => {
+      reactionOps.upsert(SLUG, { ...base, timestamp: 200 })
+      reactionOps.remove(SLUG, 'MSG-1', 'alice@s.whatsapp.net', 100)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])).toHaveLength(1)
+      reactionOps.remove(SLUG, 'MSG-1', 'alice@s.whatsapp.net', 200)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])).toHaveLength(0)
+      reactionOps.upsert(SLUG, { ...base, timestamp: 200 })
+      reactionOps.remove(SLUG, 'MSG-1', 'alice@s.whatsapp.net', 300)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['MSG-1'])).toHaveLength(0)
+    })
+
     it('getByTargetMessageIds returns [] for empty input and orders by timestamp ASC', () => {
       expect(reactionOps.getByTargetMessageIds(SLUG, [])).toEqual([])
       reactionOps.upsert(SLUG, { ...base, targetMessageId: 'B', timestamp: 3000 })

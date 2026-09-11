@@ -396,8 +396,13 @@ export const reactionOps = {
     return stmt.run(reaction.targetMessageId, reaction.chatId, reaction.reactorJid, reaction.emoji, reaction.isFromMe ? 1 : 0, reaction.timestamp)
   },
 
-  remove: (slug: string, targetMessageId: string, reactorJid: string) => {
-    return getDatabase(slug).prepare('DELETE FROM message_reactions WHERE target_message_id = ? AND reactor_jid = ?').run(targetMessageId, reactorJid)
+  remove: (slug: string, targetMessageId: string, reactorJid: string, notAfterTimestamp?: number) => {
+    if (notAfterTimestamp === undefined) {
+      return getDatabase(slug).prepare('DELETE FROM message_reactions WHERE target_message_id = ? AND reactor_jid = ?').run(targetMessageId, reactorJid)
+    }
+    return getDatabase(slug)
+      .prepare('DELETE FROM message_reactions WHERE target_message_id = ? AND reactor_jid = ? AND timestamp <= ?')
+      .run(targetMessageId, reactorJid, notAfterTimestamp)
   },
 
   getByTargetMessageIds: (slug: string, ids: string[]): ReactionRow[] => {

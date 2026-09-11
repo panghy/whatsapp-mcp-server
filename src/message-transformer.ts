@@ -455,6 +455,8 @@ export class MessageTransformer {
    * LID↔PN pair on the reactor key, stores the reaction under the reactor's
    * canonical JID (own reactions under `ownReactorJid`), and clears rows the
    * same person left under an alias JID so at most one row per person remains.
+   * Removals are timestamp-guarded like upserts: a removal older than the
+   * stored reaction is ignored so out-of-order delivery cannot drop a newer one.
    */
   private persistReaction(input: {
     logPrefix: string
@@ -480,9 +482,9 @@ export class MessageTransformer {
 
     const emoji = input.text
     if (!emoji) {
-      reactionOps.remove(this.slug, targetMessageId, reactorJid)
-      for (const alias of aliases) reactionOps.remove(this.slug, targetMessageId, alias)
-      console.log(`${logPrefix} removed reaction by ${reactorJid} on ${targetMessageId}`)
+      reactionOps.remove(this.slug, targetMessageId, reactorJid, timestamp)
+      for (const alias of aliases) reactionOps.remove(this.slug, targetMessageId, alias, timestamp)
+      console.log(`${logPrefix} removed reaction by ${reactorJid} on ${targetMessageId} (not after ${timestamp})`)
     } else {
       reactionOps.upsert(this.slug, { targetMessageId, chatId, reactorJid, emoji, isFromMe, timestamp })
       for (const alias of aliases) reactionOps.remove(this.slug, targetMessageId, alias)

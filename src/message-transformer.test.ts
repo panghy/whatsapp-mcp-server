@@ -804,6 +804,21 @@ describe('Message Transformer Tests', () => {
       expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1'])).toHaveLength(0)
     })
 
+    it('ignores a stale removal (older timestamp than the stored reaction) but honours a newer one', async () => {
+      const chatId = createTestChat(GROUP_JID)
+      const transformer = new MessageTransformer(SLUG, socketWithUser)
+      const base = { remoteJid: GROUP_JID, participant: ALICE, targetId: 'target-1' }
+
+      await transformer.processMessage(reactionMsg({ ...base, id: 'r-1', text: '👍', senderTimestampMs: 200 }), chatId)
+      await transformer.processMessage(reactionMsg({ ...base, id: 'r-0', text: '', senderTimestampMs: 100 }), chatId)
+      let rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ reactor_jid: ALICE, emoji: '👍', timestamp: 200 })
+
+      await transformer.processMessage(reactionMsg({ ...base, id: 'r-2', text: '', senderTimestampMs: 300 }), chatId)
+      expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1'])).toHaveLength(0)
+    })
+
     it('stores a from-me reaction in a DM under the own JID (device suffix stripped) with is_from_me = 1', async () => {
       const chatId = createTestChat(DM_JID)
       const transformer = new MessageTransformer(SLUG, socketWithUser)
@@ -928,6 +943,25 @@ describe('Message Transformer Tests', () => {
         const rows = reactionOps.getByTargetMessageIds(SLUG, ['T-TS'])
         expect(rows).toHaveLength(1)
         expect(rows[0]).toMatchObject({ reactor_jid: DM_JID, emoji: '🔥', timestamp: 1700000000 * 1000 })
+      })
+
+      it('does not let a stale embedded removal delete a newer stored reaction', async () => {
+        const chatId = createTestChat(DM_JID)
+        const transformer = new MessageTransformer(SLUG, socketWithUser)
+        await transformer.processMessage(reactionMsg({ id: 'r-1', remoteJid: DM_JID, targetId: 'T-STALE', text: '👍', senderTimestampMs: 200 }), chatId)
+        await transformer.processMessage(historyMsg({
+          id: 'T-STALE', remoteJid: DM_JID, messageTimestamp: 1,
+          reactions: [{ key: { remoteJid: DM_JID, fromMe: false, id: 'R-1' }, text: '', senderTimestampMs: 100 }],
+        }), chatId)
+        const rows = reactionOps.getByTargetMessageIds(SLUG, ['T-STALE'])
+        expect(rows).toHaveLength(1)
+        expect(rows[0]).toMatchObject({ reactor_jid: DM_JID, emoji: '👍', timestamp: 200 })
+
+        await transformer.processMessage(historyMsg({
+          id: 'T-STALE', remoteJid: DM_JID, messageTimestamp: 1,
+          reactions: [{ key: { remoteJid: DM_JID, fromMe: false, id: 'R-2' }, text: '', senderTimestampMs: 300 }],
+        }), chatId)
+        expect(reactionOps.getByTargetMessageIds(SLUG, ['T-STALE'])).toHaveLength(0)
       })
 
       it('does not treat a message with an empty reactions array differently', async () => {
