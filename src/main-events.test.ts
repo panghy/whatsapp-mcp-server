@@ -232,6 +232,49 @@ describe('main.ts realtime LID/PN harvesting', () => {
       expect(rows[0].emoji).toBe('🔥')
       expect(messageOps.getCount(SLUG)).toBe(0)
     })
+
+    it('messaging-history.set persists reactions embedded in WebMessageInfo.reactions[] (round-tripped through Baileys)', async () => {
+      const { proto, processHistoryMessage } = await import('@whiskeysockets/baileys')
+      const GROUP = 'group-1@g.us'
+      const BOB = '15551112222@s.whatsapp.net'
+      const historySync = proto.HistorySync.fromObject({
+        syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
+        conversations: [{
+          id: GROUP,
+          messages: [{
+            message: {
+              key: { remoteJid: GROUP, fromMe: false, id: 'T-EMB', participant: OTHER },
+              messageTimestamp: 1700000000,
+              message: { conversation: 'target' },
+              reactions: [
+                { key: { remoteJid: GROUP, fromMe: false, id: 'R-1', participant: BOB }, text: '👍', senderTimestampMs: 1700000001000 },
+                { key: { remoteJid: GROUP, fromMe: true, id: 'R-2' }, text: '❤️', senderTimestampMs: 1700000002000 },
+              ],
+            },
+          }],
+        }],
+      })
+      const decoded = proto.HistorySync.decode(proto.HistorySync.encode(historySync).finish())
+      const processed = processHistoryMessage(decoded)
+      expect(processed.messages).toHaveLength(1)
+      expect(processed.messages[0].reactions).toHaveLength(2)
+
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      await sock.fire({
+        'messaging-history.set': {
+          chats: processed.chats, contacts: processed.contacts, messages: processed.messages,
+          isLatest: false, syncType: decoded.syncType, progress: 10,
+        },
+      })
+
+      expect(messageOps.getByWhatsappMessageId(SLUG, 'T-EMB')).toBeTruthy()
+      expect(messageOps.getCount(SLUG)).toBe(1)
+      const rows = reactionOps.getByTargetMessageIds(SLUG, ['T-EMB'])
+      expect(rows).toHaveLength(2)
+      expect(rows[0]).toMatchObject({ reactor_jid: BOB, emoji: '👍', is_from_me: 0, timestamp: 1700000001000 })
+      expect(rows[1]).toMatchObject({ reactor_jid: PN, emoji: '❤️', is_from_me: 1, timestamp: 1700000002000 })
+    })
   })
 
   describe('sync-health diagnostics logging', () => {

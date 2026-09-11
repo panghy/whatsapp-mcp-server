@@ -1,8 +1,9 @@
-import { messageOps, logOps, chatOps, settingOps, reactionOps } from './database'
+import { messageOps, logOps, chatOps, settingOps, reactionOps, contactOps } from './database'
 import path from 'path'
 import fs from 'fs'
 import { accountDir } from './accounts'
 import type { MeIdentity } from './compact-serializer'
+import { isLidJid, isPnJid, recordLidPnFromMessageKey } from './lid-pn-mapper'
 
 // Dynamic imports for ESM modules
 let proto: any
@@ -213,6 +214,50 @@ export function ownReactorJid(socket: any): string {
   return ownId ? stripDeviceSuffix(ownId) : 'me'
 }
 
+/** Build a PN JID from a stored `contacts.phone_number` (`+digits`), or null. */
+function pnJidFromPhone(phone: string | null | undefined): string | null {
+  if (!phone) return null
+  const digits = phone.replace(/^\+/, '')
+  return /^\d+$/.test(digits) ? `${digits}@s.whatsapp.net` : null
+}
+
+/**
+ * Canonical identity of a remote reactor. `reactorJid` is the JID the reaction
+ * is stored under (the PN form whenever it is known); `aliases` are the other
+ * JIDs the same person may have reacted under earlier, whose rows must be
+ * removed so at most one row per person remains.
+ */
+function resolveReactorIdentity(slug: string, key: any): { reactorJid: string; aliases: string[] } {
+  const useParticipant = !!key?.participant
+  const raw = stripDeviceSuffix(key?.participant || key?.remoteJid || 'unknown')
+  const altRaw = useParticipant ? key?.participantAlt : key?.remoteJidAlt
+  const alt = altRaw ? stripDeviceSuffix(altRaw) : null
+
+  if (isLidJid(raw)) {
+    let pn: string | null = isPnJid(alt) ? alt : null
+    if (!pn) {
+      const lidRow = contactOps.getByJid(slug, raw) as any
+      pn = pnJidFromPhone(lidRow?.phone_number)
+    }
+    if (!pn) {
+      const pnRow = contactOps.getByLid(slug, raw) as any
+      if (isPnJid(pnRow?.jid)) pn = pnRow.jid
+    }
+    return pn ? { reactorJid: pn, aliases: [raw] } : { reactorJid: raw, aliases: [] }
+  }
+
+  if (isPnJid(raw)) {
+    let lid: string | null = isLidJid(alt) ? alt : null
+    if (!lid) {
+      const pnRow = contactOps.getByJid(slug, raw) as any
+      if (isLidJid(pnRow?.lid)) lid = pnRow.lid
+    }
+    return { reactorJid: raw, aliases: lid ? [lid] : [] }
+  }
+
+  return { reactorJid: raw, aliases: [] }
+}
+
 /**
  * Extract phone number from WhatsApp JID.
  */
@@ -339,6 +384,12 @@ export class MessageTransformer {
         messageOps.insert(this.slug, chatId, msgId, timestamp, senderJid, contentJson, hasAttachment)
         chatOps.updateLastActivity(this.slug, chatId, new Date(timestamp).toISOString())
       }
+
+      // History sync carries a message's current reactions inline as
+      // `WebMessageInfo.reactions[]` (each entry keyed by the *reactor*).
+      if (msg.key?.id && Array.isArray(msg.reactions) && msg.reactions.length > 0) {
+        this.processEmbeddedReactions(msg, chatId)
+      }
     } catch (error) {
       console.error(`[processMessage] Error processing message:`, error)
       logOps.insert(this.slug, 'error', 'transformer', `Failed to process message`, JSON.stringify({ error: String(error) }))
@@ -358,26 +409,84 @@ export class MessageTransformer {
         console.log(`[processReaction] msgId=${msg.key?.id} reaction without target key id, skipping`)
         return
       }
-
-      const isFromMe = !!msg.key?.fromMe
-      const reactorJid = isFromMe
-        ? ownReactorJid(this.socket)
-        : (msg.key?.participant || msg.key?.remoteJid || 'unknown')
-
-      const senderMs = toNumberValue(reaction.senderTimestampMs)
-      const timestamp = senderMs !== null && senderMs > 0 ? senderMs : extractTimestampMs(msg.messageTimestamp)
-
-      const emoji = reaction.text
-      if (!emoji) {
-        reactionOps.remove(this.slug, targetMessageId, reactorJid)
-        console.log(`[processReaction] msgId=${msg.key?.id} removed reaction by ${reactorJid} on ${targetMessageId}`)
-      } else {
-        reactionOps.upsert(this.slug, { targetMessageId, chatId, reactorJid, emoji, isFromMe, timestamp })
-        console.log(`[processReaction] msgId=${msg.key?.id} stored reaction ${emoji} by ${reactorJid} on ${targetMessageId}`)
-      }
+      this.persistReaction({
+        logPrefix: `[processReaction] msgId=${msg.key?.id}`,
+        targetMessageId,
+        chatId,
+        reactorKey: msg.key,
+        text: reaction.text,
+        senderTimestampMs: reaction.senderTimestampMs,
+        fallbackTimestampMs: extractTimestampMs(msg.messageTimestamp),
+      })
     } catch (error) {
       console.error(`[processReaction] Error processing reaction:`, error)
       logOps.insert(this.slug, 'error', 'transformer', 'Failed to process reaction', JSON.stringify({ error: String(error) }))
+    }
+  }
+
+  /**
+   * Persist the reactions embedded in a history-sync `WebMessageInfo`. The
+   * target is the outer message; each entry's `key` identifies the reactor.
+   */
+  private processEmbeddedReactions(msg: any, chatId: number): void {
+    const targetMessageId = msg.key.id
+    const fallbackTimestampMs = extractTimestampMs(msg.messageTimestamp)
+    for (const reaction of msg.reactions) {
+      try {
+        if (!reaction?.key) continue
+        this.persistReaction({
+          logPrefix: `[processMessage] msgId=${targetMessageId} embedded`,
+          targetMessageId,
+          chatId,
+          reactorKey: reaction.key,
+          text: reaction.text,
+          senderTimestampMs: reaction.senderTimestampMs,
+          fallbackTimestampMs,
+        })
+      } catch (error) {
+        console.error(`[processMessage] Error processing embedded reaction:`, error)
+        logOps.insert(this.slug, 'error', 'transformer', 'Failed to process embedded reaction', JSON.stringify({ error: String(error) }))
+      }
+    }
+  }
+
+  /**
+   * Shared write path for standalone and embedded reactions. Learns any
+   * LID↔PN pair on the reactor key, stores the reaction under the reactor's
+   * canonical JID (own reactions under `ownReactorJid`), and clears rows the
+   * same person left under an alias JID so at most one row per person remains.
+   */
+  private persistReaction(input: {
+    logPrefix: string
+    targetMessageId: string
+    chatId: number
+    reactorKey: any
+    text: string | null | undefined
+    senderTimestampMs: any
+    fallbackTimestampMs: number
+  }): void {
+    const { logPrefix, targetMessageId, chatId, reactorKey } = input
+
+    try { recordLidPnFromMessageKey(this.slug, reactorKey) }
+    catch (error) { console.error(`${logPrefix} failed to record LID/PN from reaction key:`, error) }
+
+    const isFromMe = !!reactorKey?.fromMe
+    const { reactorJid, aliases } = isFromMe
+      ? { reactorJid: ownReactorJid(this.socket), aliases: [] as string[] }
+      : resolveReactorIdentity(this.slug, reactorKey)
+
+    const senderMs = toNumberValue(input.senderTimestampMs)
+    const timestamp = senderMs !== null && senderMs > 0 ? senderMs : input.fallbackTimestampMs
+
+    const emoji = input.text
+    if (!emoji) {
+      reactionOps.remove(this.slug, targetMessageId, reactorJid)
+      for (const alias of aliases) reactionOps.remove(this.slug, targetMessageId, alias)
+      console.log(`${logPrefix} removed reaction by ${reactorJid} on ${targetMessageId}`)
+    } else {
+      reactionOps.upsert(this.slug, { targetMessageId, chatId, reactorJid, emoji, isFromMe, timestamp })
+      for (const alias of aliases) reactionOps.remove(this.slug, targetMessageId, alias)
+      console.log(`${logPrefix} stored reaction ${emoji} by ${reactorJid} on ${targetMessageId}`)
     }
   }
 
