@@ -570,6 +570,13 @@ export const contactOps = {
     ).get(phone, normalized, `+${normalized}`)
   },
 
+  getAllByPhone: (slug: string, phone: string) => {
+    const normalized = phone.startsWith('+') ? phone.slice(1) : phone
+    return getDatabase(slug).prepare(
+      "SELECT * FROM contacts WHERE phone_number = ? OR phone_number = ? OR phone_number = ?"
+    ).all(phone, normalized, `+${normalized}`)
+  },
+
   getAll: (slug: string) => {
     return getDatabase(slug).prepare('SELECT * FROM contacts').all()
   },

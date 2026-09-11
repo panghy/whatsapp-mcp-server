@@ -1078,6 +1078,97 @@ describe('Message Transformer Tests', () => {
         expect(rows[0]).toMatchObject({ reactor_jid: ALICE_LID, emoji: '👍' })
       })
 
+      describe('reconciles canonical + alias rows by timestamp once a mapping becomes known', () => {
+        const cases = [
+          { label: 'group', chatJid: GROUP_JID, pn: ALICE, lid: ALICE_LID, altField: 'participantAlt' as const },
+          { label: 'DM', chatJid: DM_JID, pn: DM_JID, lid: DM_LID, altField: 'remoteJidAlt' as const },
+        ]
+        function msgFor(c: typeof cases[number], id: string, reactor: string, text: string, ts: number, alt?: string) {
+          const m = c.label === 'group'
+            ? reactionMsg({ id, remoteJid: c.chatJid, participant: reactor, targetId: 'target-1', text, senderTimestampMs: ts })
+            : reactionMsg({ id, remoteJid: reactor, targetId: 'target-1', text, senderTimestampMs: ts })
+          if (alt) (m.key as any)[c.altField] = alt
+          return m
+        }
+
+        for (const c of cases) {
+          it(`${c.label}: a stale event carrying the alt keeps the newer unmapped-LID reaction, not the older PN one`, async () => {
+            const chatId = createTestChat(c.chatJid)
+            const transformer = new MessageTransformer(SLUG, socketWithUser)
+
+            await transformer.processMessage(msgFor(c, 'r-1', c.pn, '👍', 100), chatId)
+            await transformer.processMessage(msgFor(c, 'r-2', c.lid, '❤️', 200), chatId)
+            let rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+            expect(rows.map((r) => r.reactor_jid).sort()).toEqual([c.pn, c.lid].sort())
+
+            await transformer.processMessage(msgFor(c, 'r-3', c.lid, '😂', 150, c.pn), chatId)
+            rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+            expect(rows).toHaveLength(1)
+            expect(rows[0]).toMatchObject({ reactor_jid: c.pn, emoji: '❤️', timestamp: 200, is_from_me: 0 })
+
+            await transformer.processMessage(msgFor(c, 'r-4', c.lid, '', 300, c.pn), chatId)
+            expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1'])).toHaveLength(0)
+          })
+
+          it(`${c.label}: a stale removal carrying the alt collapses to the newest reaction instead of deleting it`, async () => {
+            const chatId = createTestChat(c.chatJid)
+            const transformer = new MessageTransformer(SLUG, socketWithUser)
+
+            await transformer.processMessage(msgFor(c, 'r-1', c.pn, '👍', 100), chatId)
+            await transformer.processMessage(msgFor(c, 'r-2', c.lid, '❤️', 200), chatId)
+            await transformer.processMessage(msgFor(c, 'r-3', c.lid, '', 50, c.pn), chatId)
+
+            const rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+            expect(rows).toHaveLength(1)
+            expect(rows[0]).toMatchObject({ reactor_jid: c.pn, emoji: '❤️', timestamp: 200 })
+          })
+
+          it(`${c.label}: a newer event carrying the alt wins over both older rows`, async () => {
+            const chatId = createTestChat(c.chatJid)
+            const transformer = new MessageTransformer(SLUG, socketWithUser)
+
+            await transformer.processMessage(msgFor(c, 'r-1', c.pn, '👍', 100), chatId)
+            await transformer.processMessage(msgFor(c, 'r-2', c.lid, '❤️', 200), chatId)
+            await transformer.processMessage(msgFor(c, 'r-3', c.pn, '🔥', 300, c.lid), chatId)
+
+            const rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+            expect(rows).toHaveLength(1)
+            expect(rows[0]).toMatchObject({ reactor_jid: c.pn, emoji: '🔥', timestamp: 300 })
+          })
+
+          it(`${c.label}: a PN event without alt reverse-resolves a LID-rooted contacts row by phone number`, async () => {
+            const chatId = createTestChat(c.chatJid)
+            const transformer = new MessageTransformer(SLUG, socketWithUser)
+            const phone = '+' + c.pn.split('@')[0]
+
+            await transformer.processMessage(msgFor(c, 'r-1', c.lid, '👍', 100), chatId)
+            expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1'])[0].reactor_jid).toBe(c.lid)
+
+            contactOps.insert(SLUG, c.lid, { phoneNumber: phone })
+            expect((contactOps.getByJid(SLUG, c.pn) as any)?.lid ?? null).toBeNull()
+
+            await transformer.processMessage(msgFor(c, 'r-2', c.pn, '❤️', 200), chatId)
+            let rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+            expect(rows).toHaveLength(1)
+            expect(rows[0]).toMatchObject({ reactor_jid: c.pn, emoji: '❤️', timestamp: 200 })
+
+            await transformer.processMessage(msgFor(c, 'r-3', c.pn, '', 300), chatId)
+            expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1'])).toHaveLength(0)
+          })
+
+          it(`${c.label}: a PN removal without alt also clears a LID row known only via a LID-rooted contacts row`, async () => {
+            const chatId = createTestChat(c.chatJid)
+            const transformer = new MessageTransformer(SLUG, socketWithUser)
+            const phone = '+' + c.pn.split('@')[0]
+
+            await transformer.processMessage(msgFor(c, 'r-1', c.lid, '👍', 100), chatId)
+            contactOps.insert(SLUG, c.lid, { phoneNumber: phone })
+            await transformer.processMessage(msgFor(c, 'r-2', c.pn, '', 200), chatId)
+            expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1'])).toHaveLength(0)
+          })
+        }
+      })
+
       it('learns the LID↔PN pair from the reaction key into contacts', async () => {
         const chatId = createTestChat(GROUP_JID)
         const transformer = new MessageTransformer(SLUG, socketWithUser)

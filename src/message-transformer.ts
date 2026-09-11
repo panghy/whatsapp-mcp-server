@@ -1,4 +1,4 @@
-import { messageOps, logOps, chatOps, settingOps, reactionOps, contactOps } from './database'
+import { messageOps, logOps, chatOps, settingOps, reactionOps, contactOps, type ReactionRow } from './database'
 import path from 'path'
 import fs from 'fs'
 import { accountDir } from './accounts'
@@ -247,12 +247,14 @@ function resolveReactorIdentity(slug: string, key: any): { reactorJid: string; a
   }
 
   if (isPnJid(raw)) {
-    let lid: string | null = isLidJid(alt) ? alt : null
-    if (!lid) {
-      const pnRow = contactOps.getByJid(slug, raw) as any
-      if (isLidJid(pnRow?.lid)) lid = pnRow.lid
+    const lids = new Set<string>()
+    if (isLidJid(alt)) lids.add(alt as string)
+    const pnRow = contactOps.getByJid(slug, raw) as any
+    if (isLidJid(pnRow?.lid)) lids.add(pnRow.lid)
+    for (const row of contactOps.getAllByPhone(slug, `+${raw.split('@')[0]}`) as any[]) {
+      if (isLidJid(row?.jid)) lids.add(row.jid)
     }
-    return { reactorJid: raw, aliases: lid ? [lid] : [] }
+    return { reactorJid: raw, aliases: [...lids] }
   }
 
   return { reactorJid: raw, aliases: [] }
@@ -452,11 +454,13 @@ export class MessageTransformer {
 
   /**
    * Shared write path for standalone and embedded reactions. Learns any
-   * LID↔PN pair on the reactor key, stores the reaction under the reactor's
-   * canonical JID (own reactions under `ownReactorJid`), and clears rows the
-   * same person left under an alias JID so at most one row per person remains.
-   * Removals are timestamp-guarded like upserts: a removal older than the
-   * stored reaction is ignored so out-of-order delivery cannot drop a newer one.
+   * LID↔PN pair on the reactor key, then reconciles the incoming event with
+   * the rows the same person already has under the canonical JID (own
+   * reactions use `ownReactorJid`) or any alias JID: the newest reaction by
+   * timestamp wins, is written under the canonical JID, and every other row
+   * is deleted, so out-of-order delivery can neither resurrect a stale
+   * reaction nor leave duplicates. A removal only wins when it is at least as
+   * new as the newest stored reaction.
    */
   private persistReaction(input: {
     logPrefix: string
@@ -480,15 +484,31 @@ export class MessageTransformer {
     const senderMs = toNumberValue(input.senderTimestampMs)
     const timestamp = senderMs !== null && senderMs > 0 ? senderMs : input.fallbackTimestampMs
 
+    const ownJids = new Set([reactorJid, ...aliases])
+    const existing = (reactionOps.getByTargetMessageIds(this.slug, [targetMessageId]) as ReactionRow[])
+      .filter((row) => ownJids.has(row.reactor_jid))
+    let newest: ReactionRow | undefined
+    for (const row of existing) {
+      if (!newest || row.timestamp > newest.timestamp || (row.timestamp === newest.timestamp && row.reactor_jid === reactorJid)) newest = row
+    }
+
     const emoji = input.text
-    if (!emoji) {
-      reactionOps.remove(this.slug, targetMessageId, reactorJid, timestamp)
-      for (const alias of aliases) reactionOps.remove(this.slug, targetMessageId, alias, timestamp)
-      console.log(`${logPrefix} removed reaction by ${reactorJid} on ${targetMessageId} (not after ${timestamp})`)
+    const incomingWins = !newest || timestamp >= newest.timestamp
+    if (incomingWins && !emoji) {
+      for (const jid of ownJids) reactionOps.remove(this.slug, targetMessageId, jid)
+      console.log(`${logPrefix} removed reaction by ${reactorJid} on ${targetMessageId}`)
+      return
+    }
+
+    const winner = incomingWins
+      ? { emoji: emoji as string, timestamp }
+      : { emoji: newest!.emoji, timestamp: newest!.timestamp }
+    reactionOps.upsert(this.slug, { targetMessageId, chatId, reactorJid, emoji: winner.emoji, isFromMe, timestamp: winner.timestamp })
+    for (const alias of aliases) reactionOps.remove(this.slug, targetMessageId, alias)
+    if (incomingWins) {
+      console.log(`${logPrefix} stored reaction ${winner.emoji} by ${reactorJid} on ${targetMessageId}`)
     } else {
-      reactionOps.upsert(this.slug, { targetMessageId, chatId, reactorJid, emoji, isFromMe, timestamp })
-      for (const alias of aliases) reactionOps.remove(this.slug, targetMessageId, alias)
-      console.log(`${logPrefix} stored reaction ${emoji} by ${reactorJid} on ${targetMessageId}`)
+      console.log(`${logPrefix} ignored stale ${emoji ? 'reaction' : 'removal'} by ${reactorJid} on ${targetMessageId}; kept ${winner.emoji} @ ${winner.timestamp}`)
     }
   }
 
