@@ -1110,6 +1110,18 @@ describe('Message Transformer Tests', () => {
             expect(reactionOps.getByTargetMessageIds(SLUG, ['target-1'])).toHaveLength(0)
           })
 
+          it(`${c.label}: an unmapped-LID reaction followed by an older PN reaction carrying the LID alt keeps the LID one under the PN`, async () => {
+            const chatId = createTestChat(c.chatJid)
+            const transformer = new MessageTransformer(SLUG, socketWithUser)
+
+            await transformer.processMessage(msgFor(c, 'r-1', c.lid, '❤️', 200), chatId)
+            await transformer.processMessage(msgFor(c, 'r-2', c.pn, '👍', 100, c.lid), chatId)
+
+            const rows = reactionOps.getByTargetMessageIds(SLUG, ['target-1'])
+            expect(rows).toHaveLength(1)
+            expect(rows[0]).toMatchObject({ reactor_jid: c.pn, emoji: '❤️', timestamp: 200 })
+          })
+
           it(`${c.label}: a stale removal carrying the alt collapses to the newest reaction instead of deleting it`, async () => {
             const chatId = createTestChat(c.chatJid)
             const transformer = new MessageTransformer(SLUG, socketWithUser)
