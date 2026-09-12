@@ -16,7 +16,7 @@
 Two trigger methods:
 
 1. **Manual (preferred)**: Go to GitHub Actions → "Release" workflow → "Run workflow". Optionally provide a tag (e.g. `v1.2.3`) to rebuild a specific version, or leave empty to let semantic-release auto-determine version.
-2. **Rebuild existing tag**: Use the workflow_dispatch with a specific tag input (e.g. `v1.2.3`) to rebuild and re-upload artifacts for an existing release.
+2. **Rebuild existing tag**: Use the workflow_dispatch with a specific tag input (e.g. `v1.2.3`) to rebuild and re-upload artifacts for an existing release. When a tag is given, the semantic-release job is skipped so the rebuild cannot create a new, asset-less release.
 
 **IMPORTANT**: Do NOT add push-to-main triggers — this caused race conditions in the past where two parallel runs (push + tag) uploaded conflicting assets with mismatched SHA512 checksums, breaking the auto-updater.
 
@@ -58,14 +58,20 @@ If a release has mismatched assets (e.g. SHA512 in `latest-mac.yml` doesn't matc
    ```
    Repeat for each asset.
 
-2. Trigger a clean rebuild:
+2. If the release was published more than 2 hours ago, mark it as a draft first:
+   ```bash
+   gh release edit vX.Y.Z --repo panghy/whatsapp-mcp-server --draft
+   ```
+   electron-builder refuses to upload to an older published release (log: `GitHub release not created reason=existing release published more than 2 hours ago`). The `publish-release` job un-drafts it again after the builds complete.
+
+3. Trigger a clean rebuild:
    ```bash
    gh workflow run release.yml --repo panghy/whatsapp-mcp-server -f tag=vX.Y.Z
    ```
 
-3. Wait for all 3 platform builds to complete.
+4. Wait for all 3 platform builds to complete.
 
-4. Verify checksums match: download `latest-mac.yml` and compare the `size`/`sha512` with the actual zip asset size on the release.
+5. Verify checksums match: download `latest-mac.yml` and compare the `size`/`sha512` with the actual zip asset size on the release.
 
 ## CI Workflow
 
