@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   semantic-release:
-    if: startsWith(github.ref, 'refs/heads/')
+    if: startsWith(github.ref, 'refs/heads/') && inputs.tag == ''
     runs-on: ubuntu-latest
     outputs:
       new-release-published: ${{ steps.semantic.outputs.new-release-published }}
