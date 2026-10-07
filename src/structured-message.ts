@@ -118,7 +118,11 @@ export const chatRefSchema = z.object({
 /** Raw shape suitable for `registerTool`'s `outputSchema` parameter. */
 export const chatHistoryOutputShape = {
   chat: chatRefSchema,
-  messages: z.array(structuredMessageSchema)
+  messages: z.array(structuredMessageSchema),
+  // Failed reads are explicit tool errors, never successful partial history.
+  errorKind: z.literal('history_read_failed').optional(),
+  error: z.string().optional(),
+  stage: z.enum(['read', 'transform', 'reactions', 'serialize', 'validate']).optional()
 }
 
 /** Raw shape suitable for `registerTool`'s `outputSchema` parameter. */

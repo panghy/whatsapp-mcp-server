@@ -1,6 +1,8 @@
 import { vi, describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import fs from 'fs'
 import http from 'http'
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 
 // Create a unique temp directory - hoisted so the electron mock can see it.
 const testDir = vi.hoisted(() => {
@@ -42,7 +44,7 @@ import {
   isValidMessageId,
   deriveExtension
 } from './mcp-server'
-import { reactToMessageOutputShape } from './structured-message'
+import { chatHistoryOutputShape, reactToMessageOutputShape } from './structured-message'
 import { pathToFileURL } from 'url'
 import { z } from 'zod'
 
@@ -53,18 +55,23 @@ function makeRequest(options: http.RequestOptions, body?: string): Promise<{ sta
     const req = http.request(options, (res) => {
       const chunks: Buffer[] = []
       res.on('data', chunk => chunks.push(chunk))
+      res.on('error', reject)
       res.on('end', () => resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString() }))
     })
+    const deadline = setTimeout(() => req.destroy(new Error('HTTP request exceeded 2 second deadline')), 2000)
+    req.on('close', () => clearTimeout(deadline))
     req.on('error', reject)
     if (body) req.write(body)
     req.end()
   })
 }
 
-async function callMcpTool(port: number, mcpPath: string, toolName: string, args: Record<string, unknown>): Promise<any> {
+let nextRequestId = 0
+
+async function callMcpTool(port: number, mcpPath: string, toolName: string, args: Record<string, unknown>, requestId: string | number = ++nextRequestId): Promise<any> {
   const jsonRpcRequest = {
     jsonrpc: '2.0',
-    id: Date.now() + Math.floor(Math.random() * 1000),
+    id: requestId,
     method: 'tools/call',
     params: { name: toolName, arguments: args }
   }
@@ -79,9 +86,25 @@ async function callMcpTool(port: number, mcpPath: string, toolName: string, args
     }
   }, JSON.stringify(jsonRpcRequest))
 
-  const dataMatch = response.body.match(/data: (.+)\n/)
-  if (dataMatch) return JSON.parse(dataMatch[1])
-  return JSON.parse(response.body)
+  expect(response.status).toBe(200)
+  let responses: any[]
+  if (response.body.trimStart().startsWith('{')) {
+    responses = [JSON.parse(response.body)]
+  } else {
+    // Parse complete SSE events, including multi-line data, rather than taking
+    // the first data line (which can miss errors, duplicate IDs, or truncation).
+    const events = response.body.replace(/\r\n/g, '\n').split('\n\n')
+    expect(events.pop()).toBe('')
+    responses = events.flatMap(event => {
+      const data = event.split('\n').filter(line => line.startsWith('data:'))
+        .map(line => line.slice(5).replace(/^ /, '')).join('\n')
+      return data ? [JSON.parse(data)] : []
+    })
+  }
+  const replies = responses.filter(message => 'result' in message || 'error' in message)
+  expect(replies).toHaveLength(1)
+  expect(replies[0]).toMatchObject({ jsonrpc: '2.0', id: requestId })
+  return replies[0]
 }
 
 /**
@@ -786,6 +809,174 @@ describe('MCP Server', () => {
       await startMcpServer(testPort)
       const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'empty-chat@s.whatsapp.net' })
       expect(result.result.content[0].text).toBe('(no messages)')
+    })
+  })
+
+  describe('history response regressions', () => {
+    const jid = 'synthetic-history@g.us'
+    const timestamp = Date.parse('2026-10-02T18:31:00.000Z')
+    const validMessage = {
+      type: 'message', messageId: 'synthetic-message', timestamp: new Date(timestamp).toISOString(),
+      text: 'Synthetic body', sender: { name: 'Synthetic Sender', phone: null }
+    }
+
+    function seedHistory(slug = DEFAULT, content = JSON.stringify(validMessage)): void {
+      makeAccount(slug)
+      chatOps.insert(slug, jid, 'group', undefined, `Synthetic ${slug}`)
+      const chat = chatOps.getByWhatsappJid(slug, jid) as any
+      messageOps.insert(slug, chat.id, 'synthetic-message', timestamp, 'synthetic@s.whatsapp.net', content)
+    }
+
+    afterEach(() => vi.restoreAllMocks())
+
+    it('preserves IDs, filtering, and chronological output on repeated reads', async () => {
+      seedHistory()
+      const chat = chatOps.getByWhatsappJid(DEFAULT, jid) as any
+      messageOps.insert(DEFAULT, chat.id, 'synthetic-newer', timestamp + 1000, 'synthetic@s.whatsapp.net',
+        JSON.stringify({ ...validMessage, messageId: 'synthetic-newer', timestamp: new Date(timestamp + 1000).toISOString() }))
+      await startMcpServer(testPort)
+      for (const requestId of [0, 'history-repeat', 42]) {
+        const response = await callMcpTool(testPort, '/mcp', 'get_chat_history', {
+          jid, since: '2026-10-02T18:30:00.000Z', limit: 16, includeMessageIds: true
+        }, requestId)
+        expect(response.result.isError).not.toBe(true)
+        expect(response.result.structuredContent.messages.map((m: any) => [m.messageId, m.timestamp])).toEqual([
+          ['synthetic-message', new Date(timestamp).toISOString()],
+          ['synthetic-newer', new Date(timestamp + 1000).toISOString()]
+        ])
+      }
+      const filtered = await callMcpTool(testPort, '/mcp', 'get_chat_history', {
+        jid, since: new Date(timestamp + 1000).toISOString(), limit: 128, includeMessageIds: true
+      })
+      expect(filtered.result.structuredContent.messages.map((m: any) => m.messageId)).toEqual(['synthetic-newer'])
+    })
+
+    it.each([
+      ['same account, distinct IDs', DEFAULT, 'second-history'],
+      ['same account, reused ID', DEFAULT, 'first-history'],
+      ['different accounts, reused ID', 'work', 'first-history']
+    ])('finishes overlapping histories: %s', async (_name, secondSlug, secondId) => {
+      seedHistory()
+      const secondJid = secondSlug === DEFAULT ? 'synthetic-second@g.us' : jid
+      if (secondSlug !== DEFAULT) {
+        seedHistory(secondSlug)
+      } else {
+        chatOps.insert(DEFAULT, secondJid, 'group', undefined, 'Synthetic second chat')
+        const chat = chatOps.getByWhatsappJid(DEFAULT, secondJid) as any
+        messageOps.insert(DEFAULT, chat.id, 'synthetic-second-message', timestamp, 'synthetic@s.whatsapp.net',
+          JSON.stringify({ ...validMessage, messageId: 'synthetic-second-message', text: 'Different synthetic body' }))
+      }
+      await startMcpServer(testPort)
+      let release!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      let held = false
+      const originalSend = StreamableHTTPServerTransport.prototype.send
+      vi.spyOn(StreamableHTTPServerTransport.prototype, 'send').mockImplementation(async function (this: StreamableHTTPServerTransport, message, options) {
+        if (!held && 'id' in message && message.id === 'first-history') {
+          held = true
+          await gate
+        }
+        return originalSend.call(this, message, options)
+      })
+      const first = callMcpTool(testPort, '/mcp', 'get_chat_history', { jid, includeMessageIds: true }, 'first-history')
+      // Observe rejections immediately even when the second request fails first.
+      const firstSettled = Promise.allSettled([first])
+      try {
+        await vi.waitFor(() => expect(held).toBe(true))
+        const second = await callMcpTool(testPort, `/mcp/${secondSlug}`, 'get_chat_history', { jid: secondJid, includeMessageIds: true }, secondId)
+        expect(second.result.structuredContent.chat.jid).toBe(secondJid)
+        expect(second.result.structuredContent.chat.name).toBe(secondSlug === DEFAULT ? 'Synthetic second chat' : `Synthetic ${secondSlug}`)
+        expect(second.result.structuredContent.messages[0].messageId).toBe(secondSlug === DEFAULT ? 'synthetic-second-message' : 'synthetic-message')
+      } finally {
+        release()
+        await firstSettled
+      }
+      const response = await first
+      expect(response.result.structuredContent.chat.name).toBe(`Synthetic ${DEFAULT}`)
+      expect(response.result.structuredContent.messages[0].messageId).toBe('synthetic-message')
+      // Closing either connection must not poison the next request.
+      const after = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid })
+      expect(after.result.isError).not.toBe(true)
+    })
+
+    it('returns a matching JSON-RPC error for connection setup failures and can retry', async () => {
+      seedHistory()
+      const diagnostics = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      vi.spyOn(McpServer.prototype, 'connect').mockRejectedValueOnce(new Error('PRIVATE_SYNTHETIC_BODY'))
+      await startMcpServer(testPort)
+      const failed = await makeRequest({
+        hostname: '127.0.0.1', port: testPort, path: '/mcp', method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }
+      }, JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name: 'get_chat_history', arguments: { jid } } }))
+      expect(failed.status).toBe(500)
+      expect(JSON.parse(failed.body)).toEqual({ jsonrpc: '2.0', id: 0, error: { code: -32603, message: 'Internal server error' } })
+      expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('PRIVATE_SYNTHETIC_BODY')
+      const retry = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid })
+      expect(retry.result.isError).not.toBe(true)
+    })
+
+    it('reports database failures without echoing exception details', async () => {
+      seedHistory()
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      vi.spyOn(messageOps, 'getByChatId').mockImplementationOnce(() => { throw new Error('PRIVATE_SYNTHETIC_BODY') })
+      await startMcpServer(testPort)
+      const response = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid })
+      expect(response.result.isError).toBe(true)
+      expect(response.result.structuredContent).toMatchObject({ errorKind: 'history_read_failed', stage: 'read' })
+      expect(JSON.stringify(response)).not.toContain('PRIVATE_SYNTHETIC_BODY')
+    })
+
+    it('reports invalid stored reaction timestamps as an explicit history error', async () => {
+      seedHistory()
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const chat = chatOps.getByWhatsappJid(DEFAULT, jid) as any
+      reactionOps.upsert(DEFAULT, {
+        targetMessageId: 'synthetic-message', chatId: chat.id,
+        reactorJid: 'synthetic@s.whatsapp.net', emoji: '👍', isFromMe: false, timestamp: 1e20
+      })
+      await startMcpServer(testPort)
+      const response = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid })
+      expect(response.result.isError).toBe(true)
+      expect(response.result.structuredContent).toMatchObject({ errorKind: 'history_read_failed', stage: 'reactions' })
+    })
+
+    it('returns a matching error when stored system details exceed JSON serialization depth', async () => {
+      // JSON.parse accepts deeper nesting than JSON.stringify. The number-change
+      // compact formatter only reads the named fields, leaving nested details for
+      // structured output and the eventual transport encoder.
+      const content = '{"type":"system","messageId":"deep-system","timestamp":"2026-10-02T18:31:00.000Z",' +
+        '"systemType":"number_change","details":{"userName":"Synthetic","nested":' +
+        '{"nested":'.repeat(10000) + '0' + '}'.repeat(10000) + '}}'
+      seedHistory(DEFAULT, content)
+      await startMcpServer(testPort)
+      const response = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid }, 'deep-history')
+      expect(response.result.isError).toBe(true)
+      expect(response.result.structuredContent).toMatchObject({ errorKind: 'history_read_failed', stage: 'serialize' })
+    })
+
+    it.each([
+      ['invalid JSON', '{"text":"PRIVATE_SYNTHETIC_BODY",', 'transform'],
+      ['null message', 'null', 'transform'],
+      ['invalid sender', JSON.stringify({ ...validMessage, sender: { name: { private: 'PRIVATE_SYNTHETIC_BODY' }, phone: null } }), 'transform'],
+      ['invalid edit text', JSON.stringify({ ...validMessage, type: 'message_edited', editedMessage: { originalText: null, newText: { private: 'PRIVATE_SYNTHETIC_BODY' } } }), 'serialize'],
+      ['invalid output type', JSON.stringify({ ...validMessage, type: 'PRIVATE_SYNTHETIC_BODY' }), 'validate']
+    ])('returns an explicit body-free error for %s and leaves other chats readable', async (_name, content, stage) => {
+      seedHistory(DEFAULT, content)
+      chatOps.insert(DEFAULT, 'healthy@g.us', 'group', undefined, 'Healthy synthetic chat')
+      const diagnostics = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      await startMcpServer(testPort)
+      const response = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid, includeMessageIds: true }, 'bad-history')
+      expect(response.result.isError).toBe(true)
+      expect(response.result.structuredContent).toMatchObject({
+        errorKind: 'history_read_failed', stage
+      })
+      expect(z.object(chatHistoryOutputShape).safeParse(response.result.structuredContent).success).toBe(true)
+      expect(diagnostics).toHaveBeenCalledWith('[MCP] get_chat_history failed', { stage, rowId: stage === 'transform' ? 1 : undefined })
+      expect(JSON.stringify(response)).not.toContain('PRIVATE_SYNTHETIC_BODY')
+      expect(JSON.stringify(diagnostics.mock.calls)).not.toContain('PRIVATE_SYNTHETIC_BODY')
+      const healthy = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'healthy@g.us' }, 'healthy-history')
+      expect(healthy.result.isError).not.toBe(true)
+      expect(healthy.result.structuredContent.messages).toEqual([])
     })
   })
 
@@ -1557,7 +1748,7 @@ describe('MCP Server', () => {
   describe('Malformed Message Handling', () => {
     beforeEach(() => { makeAccount(DEFAULT) })
 
-    it('skips messages with invalid JSON content', async () => {
+    it('reports corrupt history instead of silently returning only the valid rows', async () => {
       chatOps.insert(DEFAULT, 'malformed-chat@s.whatsapp.net', 'dm', undefined, 'Malformed Chat')
       const chat = chatOps.getByWhatsappJid(DEFAULT, 'malformed-chat@s.whatsapp.net') as any
       const now = Date.now()
@@ -1569,16 +1760,17 @@ describe('MCP Server', () => {
       await startMcpServer(testPort)
 
       const result = await callMcpTool(testPort, '/mcp', 'get_chat_history', { jid: 'malformed-chat@s.whatsapp.net' })
-      expect(result.result.content[0].text).toContain('VALID_MESSAGE')
+      expect(result.result.isError).toBe(true)
+      expect(result.result.structuredContent).toMatchObject({ errorKind: 'history_read_failed', stage: 'transform', messages: [] })
     })
   })
 
   describe('refreshAccount', () => {
-    it('evicts the cached McpServer so a re-enabled account resumes serving', async () => {
+    it('allows a re-enabled account to resume serving', async () => {
       makeAccount(DEFAULT)
       await startMcpServer(testPort)
 
-      // Seed + warm the cache.
+      // Read before disabling the account.
       chatOps.insert(DEFAULT, 'before@s.whatsapp.net', 'dm', undefined, 'Before')
       await callMcpTool(testPort, '/mcp', 'search_chats', { query: 'Before' })
 
@@ -2211,7 +2403,9 @@ describe('MCP Server', () => {
           res.on('data', (c) => chunks.push(c))
           res.on('end', () => resolve({ status: res.statusCode || 0, headers: res.headers, body: Buffer.concat(chunks) }))
         })
-        req.on('error', reject)
+        const deadline = setTimeout(() => req.destroy(new Error('HTTP request exceeded 2 second deadline')), 2000)
+    req.on('close', () => clearTimeout(deadline))
+    req.on('error', reject)
         req.end()
       })
     }
@@ -2640,7 +2834,9 @@ describe('MCP Server', () => {
           res.on('data', (c) => chunks.push(c))
           res.on('end', () => resolve({ status: res.statusCode || 0, headers: res.headers, body: Buffer.concat(chunks) }))
         })
-        req.on('error', reject)
+        const deadline = setTimeout(() => req.destroy(new Error('HTTP request exceeded 2 second deadline')), 2000)
+    req.on('close', () => clearTimeout(deadline))
+    req.on('error', reject)
         req.end()
       })
     }
