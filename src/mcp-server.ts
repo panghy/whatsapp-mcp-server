@@ -291,6 +291,7 @@ function resolveAllIdentities(
   // Repair only previews matching the old 50-unit prefix of their retained
   // full text. Custom previews and persisted message bodies remain untouched.
   if (parsed.replyTo && typeof parsed.replyTo.fullText === 'string'
+    && typeof parsed.replyTo.preview === 'string'
     && parsed.replyTo.preview.length === 50
     && parsed.replyTo.preview === parsed.replyTo.fullText.substring(0, 50)) {
     parsed.replyTo.preview = truncateReplyPreview(parsed.replyTo.fullText, 50)

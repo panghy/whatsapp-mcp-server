@@ -1775,6 +1775,36 @@ describe('MCP Server', () => {
   describe('Malformed Message Handling', () => {
     beforeEach(() => { makeAccount(DEFAULT) })
 
+    it.each(['get_recent_messages', 'get_unread_messages', 'get_chat_history'].flatMap(tool =>
+      ['missing', 'null'].map(previewShape => ({ tool, previewShape }))
+    ))('returns a matching error for a $previewShape reply preview in $tool', async ({ tool, previewShape }) => {
+      const jid = 'malformed-preview@s.whatsapp.net'
+      chatOps.insert(DEFAULT, jid, 'dm', undefined, 'Malformed Preview')
+      const chat = chatOps.getByWhatsappJid(DEFAULT, jid) as { id: number }
+      const now = Date.now()
+      const content = JSON.stringify({
+        type: 'message', messageId: 'malformed-preview', timestamp: new Date(now).toISOString(),
+        text: 'Unchanged reply body 😀', sender: { name: 'Synthetic', phone: null },
+        replyTo: {
+          messageId: 'absent-original', senderName: 'Quoted', senderPhone: null,
+          fullText: 'Original body', ...(previewShape === 'null' ? { preview: null } : {})
+        }
+      })
+      messageOps.insert(DEFAULT, chat.id, 'malformed-preview', now, jid, content, false)
+      await startTestServer()
+
+      const args = tool === 'get_chat_history' ? { jid } : { since: new Date(now - 1000).toISOString() }
+      const response = await callMcpTool(testPort, '/mcp', tool, args, `${tool}-${previewShape}`)
+      // An invalid existing preview must remain an explicit failure, not a
+      // successful empty read caused by the new repair throwing during resolution.
+      expect(response.result.isError).toBe(true)
+      if (tool === 'get_chat_history') {
+        expect(response.result.structuredContent).toMatchObject({ errorKind: 'history_read_failed', messages: [] })
+      }
+      expect((messageOps.getByWhatsappMessageId(DEFAULT, 'malformed-preview') as { content_json: string }).content_json)
+        .toBe(content)
+    })
+
     it('reports corrupt history instead of silently returning only the valid rows', async () => {
       chatOps.insert(DEFAULT, 'malformed-chat@s.whatsapp.net', 'dm', undefined, 'Malformed Chat')
       const chat = chatOps.getByWhatsappJid(DEFAULT, 'malformed-chat@s.whatsapp.net') as any
