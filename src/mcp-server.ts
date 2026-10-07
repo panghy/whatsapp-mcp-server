@@ -38,8 +38,7 @@ async function loadDownloadMediaMessage(): Promise<typeof downloadMediaMessageFn
   return downloadMediaMessageFn
 }
 
-// Per-account MCP server registry. Lazy-initialized on first request.
-const mcpServers = new Map<string, McpServer>()
+const chatHistoryOutputSchema = z.object(chatHistoryOutputShape)
 
 // Active transports keyed by "<slug>::<sessionId-or-unique-id>" so concurrent
 // requests across slugs cannot collide and per-account teardown is possible.
@@ -804,49 +803,74 @@ export function createMcpServer(slug: string): McpServer {
       outputSchema: chatHistoryOutputShape,
       annotations: { readOnlyHint: true }
     },
-    async ({ jid, limit, since, includeMessageIds }: { jid: string; limit: number; since?: string; includeMessageIds: boolean }) => {
-      const chat = chatOps.getByWhatsappJid(slug, jid) as any
-      const missingChatStructured = { chat: { jid, name: jid, type: 'unknown' }, messages: [] as StructuredMessage[] }
-      if (!chat) {
-        return {
-          content: [{ type: 'text', text: `Chat not found: ${jid}` }],
-          isError: true,
-          structuredContent: missingChatStructured
+    async ({ jid, limit, since, includeMessageIds }: { jid: string; limit: number; since?: string; includeMessageIds: boolean }, extra) => {
+      let stage: 'read' | 'transform' | 'reactions' | 'serialize' | 'validate' = 'read'
+      let rowId: number | undefined
+      try {
+        const chat = chatOps.getByWhatsappJid(slug, jid) as any
+        const missingChatStructured = { chat: { jid, name: jid, type: 'unknown' }, messages: [] as StructuredMessage[] }
+        if (!chat) {
+          return {
+            content: [{ type: 'text', text: `Chat not found: ${jid}` }],
+            isError: true,
+            structuredContent: missingChatStructured
+          }
         }
-      }
-      if (!chat.enabled) {
-        return {
-          content: [{ type: 'text', text: `Chat is disabled: ${jid}` }],
-          isError: true,
-          structuredContent: missingChatStructured
+        if (!chat.enabled) {
+          return {
+            content: [{ type: 'text', text: `Chat is disabled: ${jid}` }],
+            isError: true,
+            structuredContent: missingChatStructured
+          }
         }
-      }
 
-      let messages = messageOps.getByChatId(slug, chat.id, limit || 100) as any[]
+        let messages = messageOps.getByChatId(slug, chat.id, limit || 100) as any[]
 
-      if (since) {
-        const sinceTs = new Date(since).getTime()
-        messages = messages.filter((m: any) => m.timestamp >= sinceTs)
-      }
+        if (since) {
+          const sinceTs = new Date(since).getTime()
+          messages = messages.filter((m: any) => m.timestamp >= sinceTs)
+        }
 
-      const meIdentity = getMeIdentity(slug)
+        const meIdentity = getMeIdentity(slug)
 
-      const transformed = messages.map((m: any) => {
-        try {
+        stage = 'transform'
+        const transformed = messages.map((m: any) => {
+          rowId = m.id
           const parsed = JSON.parse(m.content_json) as TransformedMessage
           return resolveAllIdentities(slug, m, parsed, meIdentity)
-        }
-        catch { return null }
-      }).filter((m): m is TransformedMessage => m !== null).reverse()
-      attachReactions(slug, transformed, meIdentity)
+        }).reverse()
+        rowId = undefined
+        stage = 'reactions'
+        attachReactions(slug, transformed, meIdentity)
 
-      const output = serializeCompact(transformed, undefined, meIdentity)
-      const chatRef: ChatRef = { jid: chat.whatsapp_jid, name: chat.name || chat.whatsapp_jid, type: chat.chat_type }
-      const mediaBaseUrl = buildMediaBaseUrl(slug)
-      const structuredMessages: StructuredMessage[] = transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl }))
-      return {
-        content: [{ type: 'text', text: output || '(no messages)' }],
-        structuredContent: { chat: chatRef, messages: structuredMessages }
+        stage = 'serialize'
+        const output = serializeCompact(transformed, undefined, meIdentity)
+        const chatRef: ChatRef = { jid: chat.whatsapp_jid, name: chat.name || chat.whatsapp_jid, type: chat.chat_type }
+        const mediaBaseUrl = buildMediaBaseUrl(slug)
+        const structuredMessages: StructuredMessage[] = transformed.map(m => toStructuredMessage(m, { includeMessageIds, mediaBaseUrl }))
+        const result = {
+          content: [{ type: 'text' as const, text: output || '(no messages)' }],
+          structuredContent: { chat: chatRef, messages: structuredMessages }
+        }
+        stage = 'validate'
+        chatHistoryOutputSchema.parse(result.structuredContent)
+        stage = 'serialize'
+        // The SDK can close SSE without a response if encoding throws. Check the
+        // full envelope here, while failures can still become a tool error.
+        JSON.stringify({ jsonrpc: '2.0', id: extra.requestId, result })
+        return result
+      } catch {
+        // Never log exception text: JSON/Zod errors may contain message bodies.
+        console.warn('[MCP] get_chat_history failed', { stage, rowId })
+        const error = `Unable to read chat history during ${stage}. Check server diagnostics and stored message data; retry with a narrower time range.`
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: error }],
+          structuredContent: {
+            chat: { jid, name: jid, type: 'unknown' }, messages: [],
+            errorKind: 'history_read_failed' as const, error, stage
+          }
+        }
       }
     }
   )
@@ -1288,24 +1312,10 @@ export function createMcpServer(slug: string): McpServer {
 }
 
 /**
- * Lazy-init and return the McpServer for a given slug.
- */
-function getOrCreateMcpServer(slug: string): McpServer {
-  let server = mcpServers.get(slug)
-  if (!server) {
-    server = createMcpServer(slug)
-    mcpServers.set(slug, server)
-  }
-  return server
-}
-
-/**
- * Evict any cached McpServer + active transports for a slug. Call this when
- * the account's enabled flag flips or the account is removed so the next
- * request will re-check the account registry.
+ * Close active requests for an account when it is disabled or removed.
+ * Every new request re-checks the account registry and gets its own server.
  */
 export function refreshAccount(slug: string): void {
-  mcpServers.delete(slug)
   const prefix = `${slug}::`
   for (const [key, transport] of activeTransports) {
     if (key.startsWith(prefix)) {
@@ -1442,14 +1452,19 @@ async function handleMcpRequest(
   }
   const body = Buffer.concat(chunks).toString()
 
+  let parsedBody: any
+  try {
+    parsedBody = body ? JSON.parse(body) : undefined
+  } catch {
+    sendJson(res, 400, { error: 'Invalid JSON' })
+    return
+  }
+
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
-
-  // Key by slug + a monotonic id; stateless transports have no sessionId.
-  const transportKey = `${slug}::${transport.sessionId ?? `req-${++transportCounter}`}`
+  // A stateless request owns its protocol state as well as its transport. A
+  // cached McpServer rejects overlapping connections (including repeated IDs).
+  const transportKey = `${slug}::req-${++transportCounter}`
   activeTransports.set(transportKey, transport)
-
-  const server = getOrCreateMcpServer(slug)
-  await server.connect(transport)
 
   const cleanup = () => {
     activeTransports.delete(transportKey)
@@ -1458,10 +1473,18 @@ async function handleMcpRequest(
   res.on('close', cleanup)
 
   try {
-    const parsedBody = body ? JSON.parse(body) : undefined
+    const server = createMcpServer(slug)
+    await server.connect(transport)
     await transport.handleRequest(req, res, parsedBody)
   } catch {
-    sendJson(res, 400, { error: 'Invalid JSON' })
+    console.warn('[MCP] Request setup or transport failed')
+    if (!res.headersSent) {
+      const id = typeof parsedBody?.id === 'string' || typeof parsedBody?.id === 'number' ? parsedBody.id : null
+      sendJson(res, 500, { jsonrpc: '2.0', id, error: { code: -32603, message: 'Internal server error' } })
+    } else {
+      res.end()
+    }
+    cleanup()
   }
 }
 
@@ -1571,7 +1594,6 @@ export async function stopMcpServer(): Promise<void> {
       transport.close().catch(() => { /* ignore */ })
     }
     activeTransports.clear()
-    mcpServers.clear()
 
     httpServer!.close(() => {
       httpServer = null

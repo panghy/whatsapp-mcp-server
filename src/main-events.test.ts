@@ -1,5 +1,6 @@
-import { vi, describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
+import { vi, describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import fs from 'fs'
+import http from 'http'
 
 const { testDir } = vi.hoisted(() => {
   const p = require('path')
@@ -50,7 +51,8 @@ vi.mock('electron-updater', () => {
 
 import Settings from 'electron-settings'
 import { addAccount } from './accounts'
-import { contactOps, logOps, messageOps, reactionOps, closeAllDatabases, initializeDatabase } from './database'
+import { chatOps, contactOps, logOps, messageOps, reactionOps, closeAllDatabases, initializeDatabase } from './database'
+import { startMcpServer, stopMcpServer } from './mcp-server'
 import { resetSyncOrchestrators } from './sync-orchestrator'
 import { resetGroupMetadataFetchers } from './group-metadata-fetcher'
 
@@ -110,6 +112,173 @@ describe('main.ts realtime LID/PN harvesting', () => {
     closeAllDatabases()
     Settings.reset()
     if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true })
+  })
+
+  describe('full message text preservation', () => {
+    const jid = '15550001111@s.whatsapp.net'
+    const phone = '+15550001111'
+    const timestamp = 1790965860
+    // Synthetic only. Distinct tails expose prefix-only comparisons; Unicode
+    // covers surrogate pairs, ZWJ emoji, combining marks, and literal escapes.
+    function longBody(label: string) {
+      const lines = [
+        `${label}：${'完整中文訊息測試'.repeat(20)}`,
+        '繁體與简体文字 👩🏽‍💻 🧪 𠮷 e\u0301 café "引號" \\n \\路徑\t'.repeat(240),
+        '第二段保留 CRLF',
+        '第三段保留 CR',
+        '',
+        `${label}：最後一個字。終 🏁`
+      ]
+      return {
+        text: `${lines[0]}\n${lines[1]}\r\n${lines[2]}\r${lines[3]}\n\n${lines[5]}`,
+        compact: lines.join('\\n')
+      }
+    }
+
+    function storedMessage(id: string) {
+      const row = messageOps.getByWhatsappMessageId(SLUG, id) as { content_json: string }
+      expect(row).toBeTruthy()
+      return JSON.parse(row.content_json)
+    }
+
+    function incoming(id: string, message: Record<string, unknown>, offset = 0) {
+      return { key: { remoteJid: jid, id, fromMe: false }, messageTimestamp: timestamp + offset, message }
+    }
+
+    let port: number
+    beforeEach(async () => {
+      // Let the OS choose a free port; observe the real server without mocking
+      // its behavior or racing other suites for a randomly selected port.
+      const createServer = vi.spyOn(http, 'createServer')
+      try {
+        await startMcpServer(0)
+        port = createServer.mock.results[0].value.address().port
+      } finally {
+        createServer.mockRestore()
+      }
+    })
+    afterEach(async () => { await stopMcpServer() })
+
+    async function history(includeMessageIds = true) {
+      // Force the history read to use persisted SQLite content after reopening.
+      closeAllDatabases()
+      initializeDatabase(SLUG)
+      const response = await fetch(`http://127.0.0.1:${port}/mcp/${SLUG}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 'full-text-history', method: 'tools/call',
+          params: { name: 'get_chat_history', arguments: { jid, includeMessageIds, limit: 128 } }
+        }),
+        signal: AbortSignal.timeout(2000)
+      })
+      expect(response.status).toBe(200)
+      const body = await response.text()
+      const events = body.replace(/\r\n/g, '\n').split('\n\n')
+      expect(events.pop()).toBe('')
+      const replies = events.flatMap(event => {
+        const data = event.split('\n').filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).replace(/^ /, '')).join('\n')
+        return data ? [JSON.parse(data)] : []
+      })
+      expect(replies).toHaveLength(1)
+      expect(replies[0]).toMatchObject({ jsonrpc: '2.0', id: 'full-text-history' })
+      expect(replies[0].error).toBeUndefined()
+      expect(replies[0].result.isError).not.toBe(true)
+      return replies[0].result
+    }
+
+    it.each(['messages.upsert', 'messaging-history.set'])('preserves complete bodies from %s through storage and HTTP', async event => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      const bodies = [longBody('普通文字'), longBody('延伸文字'), longBody('限時文字')]
+      const messages = [
+        incoming('long-conversation', { conversation: bodies[0].text }),
+        incoming('long-extended', { extendedTextMessage: { text: bodies[1].text } }, 1),
+        incoming('long-ephemeral', { ephemeralMessage: { message: { extendedTextMessage: { text: bodies[2].text } } } }, 2)
+      ]
+      if (event === 'messaging-history.set') {
+        const { proto, processHistoryMessage } = await import('@whiskeysockets/baileys')
+        const sync = proto.HistorySync.fromObject({
+          syncType: proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
+          conversations: [{ id: jid, messages: messages.map(message => ({ message })) }]
+        })
+        const decoded = proto.HistorySync.decode(proto.HistorySync.encode(sync).finish())
+        const processed = processHistoryMessage(decoded)
+        await sock.fire({ [event]: { ...processed, isLatest: false, syncType: decoded.syncType } })
+      } else {
+        await sock.fire({ [event]: { type: 'notify', messages } })
+      }
+
+      expect(messageOps.getCount(SLUG)).toBe(3)
+      for (const [index, message] of messages.entries()) {
+        expect(storedMessage(message.key.id).text).toBe(bodies[index].text)
+      }
+      for (const includeIds of [false, true]) {
+        const result = await history(includeIds)
+        expect(result.structuredContent.messages.map((message: any) => message.text)).toEqual(bodies.map(body => body.text))
+        expect(result.structuredContent.messages.map((message: any) => message.messageId))
+          .toEqual(messages.map(message => includeIds ? message.key.id : undefined))
+        expect(result.content[0].text.split('\n').slice(1)).toEqual(bodies.map(body => `${phone} > ${body.compact}`))
+      }
+    })
+
+    it.each(['conversation', 'extendedTextMessage', 'editedMessage'])('preserves full original and replacement text for %s edits', async variant => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      const original = longBody('修改之前')
+      const replacement = longBody('修改之後')
+      const message = incoming('long-edit-target', { conversation: original.text })
+      await sock.fire({ 'messages.upsert': { type: 'notify', messages: [message] } })
+      expect(storedMessage(message.key.id).text).toBe(original.text)
+
+      const edit = variant === 'conversation' ? { conversation: replacement.text }
+        : variant === 'extendedTextMessage' ? { extendedTextMessage: { text: replacement.text } }
+          : { editedMessage: { message: { extendedTextMessage: { text: replacement.text } } } }
+      await sock.fire({ 'messages.update': [{ key: message.key, update: { message: edit } }] })
+      expect(storedMessage(message.key.id).text).toBe(replacement.text)
+      const chat = chatOps.getByWhatsappJid(SLUG, jid) as { id: number }
+      const rows = messageOps.getByChatId(SLUG, chat.id, 10) as { content_json: string }[]
+      expect(rows).toHaveLength(2)
+      const storedEdit = rows.map(row => JSON.parse(row.content_json)).find(row => row.type === 'message_edited')
+      expect(storedEdit.editedMessage).toMatchObject({ originalText: original.text, newText: replacement.text })
+
+      const result = await history()
+      expect(result.structuredContent.messages).toHaveLength(2)
+      expect(result.structuredContent.messages[0]).toMatchObject({ messageId: message.key.id, text: replacement.text })
+      expect(result.structuredContent.messages[1].editedMessage).toMatchObject({
+        messageId: message.key.id, originalText: original.text, newText: replacement.text
+      })
+      const compactLines = result.content[0].text.split('\n')
+      expect(compactLines).toContain(`${phone} > ${replacement.compact}`)
+      expect(compactLines).toContain(`[edited] "${original.compact}" → "${replacement.compact}" (by ${phone})`)
+    })
+
+    it('shortens only reply previews while retaining both full bodies', async () => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      const original = longBody('被引用的原文')
+      const reply = longBody('完整回覆內容')
+      await sock.fire({ 'messages.upsert': { type: 'notify', messages: [
+        incoming('long-quoted', { conversation: original.text }),
+        incoming('long-reply', { extendedTextMessage: { text: reply.text, contextInfo: { stanzaId: 'long-quoted' } } }, 1)
+      ] } })
+      expect(storedMessage('long-quoted').text).toBe(original.text)
+      expect(storedMessage('long-reply')).toMatchObject({ text: reply.text, replyToMessageId: 'long-quoted' })
+
+      const result = await history()
+      expect(result.structuredContent.messages.map((message: any) => message.text)).toEqual([original.text, reply.text])
+      expect(result.structuredContent.messages[1].replyTo).toMatchObject({
+        messageId: 'long-quoted', preview: original.text.substring(0, 50)
+      })
+      expect(result.content[0].text.split('\n').slice(1)).toEqual([
+        `${phone} > ${original.compact}`,
+        `${phone} > [re ${phone}: "${original.text.substring(0, 20)}..."] ${reply.compact}`
+      ])
+      // Read-time preview construction must not replace the persisted body.
+      expect(storedMessage('long-quoted').text).toBe(original.text)
+      expect(storedMessage('long-reply').text).toBe(reply.text)
+    })
   })
 
   it('persists rows from contacts.upsert', async () => {
