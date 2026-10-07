@@ -204,6 +204,28 @@ describe('serializeCompact', () => {
       expect(result).toContain('This is a very long ...')
     })
 
+    it.each([
+      ['pair before boundary', 'a'.repeat(18) + '😀tail', 'a'.repeat(18) + '😀...'],
+      ['pair across boundary', 'a'.repeat(19) + '😀tail', 'a'.repeat(19) + '...'],
+      ['pair after boundary', 'a'.repeat(20) + '😀tail', 'a'.repeat(20) + '...'],
+      ['supplementary CJK across boundary', '字'.repeat(19) + '𠮷tail', '字'.repeat(19) + '...'],
+      ['exact Unicode budget', 'a'.repeat(18) + '😀', 'a'.repeat(18) + '😀'],
+      ['exact ASCII budget', 'a'.repeat(20), 'a'.repeat(20)],
+      ['ASCII overflow', 'a'.repeat(21), 'a'.repeat(20) + '...'],
+      ['short preview', '😀', '😀'],
+      ['empty preview', '', '']
+    ])('keeps compact reply previews well-formed: %s', (_label, preview, expected) => {
+      const msg = createMessage({
+        text: 'Unchanged reply 😀',
+        replyTo: { messageId: 'orig-1', senderName: 'Bob', senderPhone: null, fullText: preview, preview }
+      })
+      const result = serializeCompact([msg])
+      // In Unicode mode, valid pairs match as a code point, not a lone surrogate.
+      expect(result).not.toMatch(/[\uD800-\uDFFF]/u)
+      expect(result).toContain(`[re Bob: "${expected}"] Unchanged reply 😀`)
+      expect(msg.replyTo!.preview).toBe(preview)
+    })
+
     it('should render voice notes as [Voice note · 12s]', () => {
       const msg = createMessage({
         text: '[Attachment: voice]',

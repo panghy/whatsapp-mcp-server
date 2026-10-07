@@ -1,4 +1,5 @@
 import { TransformedMessage } from './message-transformer'
+import { truncateReplyPreview } from './reply-preview'
 
 /**
  * Default timestamp gap threshold: 1 hour in milliseconds.
@@ -121,9 +122,9 @@ function buildAnnotations(msg: TransformedMessage): string[] {
   }
 
   if (msg.replyTo) {
-    // Truncate preview to ~20 chars with ellipsis
+    // Keep the 20-code-unit budget, without splitting a surrogate pair.
     const preview = msg.replyTo.preview.length > 20
-      ? msg.replyTo.preview.substring(0, 20) + '...'
+      ? truncateReplyPreview(msg.replyTo.preview, 20) + '...'
       : msg.replyTo.preview
     const replyIdentity = formatReplySenderIdentity(msg.replyTo.senderName, msg.replyTo.senderPhone)
     if (replyIdentity) {

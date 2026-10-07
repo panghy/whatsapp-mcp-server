@@ -7,6 +7,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { chatOps, messageOps, settingOps, contactOps, reactionOps, getDatabase } from './database'
 import { serializeCompact, MeIdentity } from './compact-serializer'
+import { truncateReplyPreview } from './reply-preview'
 import { TransformedMessage, extractPhoneFromJid, restoreBuffersInPlace, ownReactorJid } from './message-transformer'
 import {
   toStructuredMessage,
@@ -287,6 +288,15 @@ function resolveAllIdentities(
     }
   }
 
+  // Repair only previews matching the old 50-unit prefix of their retained
+  // full text. Custom previews and persisted message bodies remain untouched.
+  if (parsed.replyTo && typeof parsed.replyTo.fullText === 'string'
+    && typeof parsed.replyTo.preview === 'string'
+    && parsed.replyTo.preview.length === 50
+    && parsed.replyTo.preview === parsed.replyTo.fullText.substring(0, 50)) {
+    parsed.replyTo.preview = truncateReplyPreview(parsed.replyTo.fullText, 50)
+  }
+
   if (parsed.replyTo && parsed.replyTo.messageId) {
     const originalMsg = messageOps.getByWhatsappMessageId(slug, parsed.replyTo.messageId) as any
     if (originalMsg) {
@@ -311,7 +321,7 @@ function resolveAllIdentities(
           senderName: resolved.name,
           senderPhone: resolved.phone,
           fullText,
-          preview: fullText.substring(0, 50)
+          preview: truncateReplyPreview(fullText, 50)
         }
       } catch { /* skip corrupt content */ }
     }

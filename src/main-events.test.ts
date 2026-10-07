@@ -185,6 +185,11 @@ describe('main.ts realtime LID/PN harvesting', () => {
       expect(replies[0]).toMatchObject({ jsonrpc: '2.0', id: 'full-text-history' })
       expect(replies[0].error).toBeUndefined()
       expect(replies[0].result.isError).not.toBe(true)
+      function expectWellFormedStrings(value: unknown): void {
+        if (typeof value === 'string') expect(value).not.toMatch(/[\uD800-\uDFFF]/u)
+        else if (value && typeof value === 'object') Object.values(value).forEach(expectWellFormedStrings)
+      }
+      expectWellFormedStrings(replies[0])
       return replies[0].result
     }
 
@@ -254,6 +259,54 @@ describe('main.ts realtime LID/PN harvesting', () => {
       expect(compactLines).toContain(`[edited] "${original.compact}" → "${replacement.compact}" (by ${phone})`)
     })
 
+    it.each([18, 19, 20, 48, 49, 50].flatMap(prefixLength =>
+      ['😀', '𠮷'].map(character => ({ prefixLength, character }))
+    ))('preserves Unicode at preview boundaries: $prefixLength + $character', async ({ prefixLength, character }) => {
+      const sock = buildFakeSocket()
+      registerHandlersForSlug(SLUG, sock)
+      const prefix = 'a'.repeat(prefixLength)
+      const original = prefix + character + 'z'.repeat(60)
+      const reply = 'Complete reply 🧪 終'
+      await sock.fire({ 'messages.upsert': { type: 'notify', messages: [
+        incoming('unicode-original', { conversation: original }),
+        incoming('unicode-reply', { extendedTextMessage: { text: reply, contextInfo: { stanzaId: 'unicode-original' } } }, 1)
+      ] } })
+      const result = await history()
+      const expected50 = prefixLength === 49 ? prefix
+        : prefixLength >= 50 ? 'a'.repeat(50)
+          : prefix + character + 'z'.repeat(50 - prefixLength - 2)
+      const expected20 = prefixLength === 19 ? prefix
+        : prefixLength >= 20 ? 'a'.repeat(20) : prefix + character
+      expect(result.structuredContent.messages.map((message: any) => [message.messageId, message.text]))
+        .toEqual([['unicode-original', original], ['unicode-reply', reply]])
+      expect(result.structuredContent.messages[1].replyTo).toMatchObject({ messageId: 'unicode-original', preview: expected50 })
+      expect(result.content[0].text.split('\n').slice(1)).toEqual([
+        `${phone} > ${original}`, `${phone} > [re ${phone}: "${expected20}..."] ${reply}`
+      ])
+      expect(storedMessage('unicode-original').text).toBe(original)
+      expect(storedMessage('unicode-reply')).toMatchObject({ text: reply, replyToMessageId: 'unicode-original' })
+    })
+
+    it.each(['legacy split', 'complete pair', 'custom preview'])(
+      'handles a populated %s without changing stored content', async variant => {
+        const sock = buildFakeSocket()
+        registerHandlersForSlug(SLUG, sock)
+        const fullText = 'a'.repeat(49) + '😀tail'
+        const preview = variant === 'legacy split' ? 'a'.repeat(49) + '\uD83D'
+          : variant === 'complete pair' ? 'a'.repeat(48) + '😀' : 'Custom preview 🧪'
+        await sock.fire({ 'messages.upsert': { type: 'notify', messages: [incoming('populated-reply', { conversation: 'Reply body 😀' })] } })
+        const stored = storedMessage('populated-reply')
+        stored.replyTo = { messageId: 'absent-original', senderName: 'Quoted', senderPhone: null, fullText, preview }
+        messageOps.updateContentJson(SLUG, 'populated-reply', JSON.stringify(stored))
+        const result = await history()
+        expect(result.structuredContent.messages[0]).toMatchObject({
+          messageId: 'populated-reply', text: stored.text,
+          replyTo: { messageId: 'absent-original', preview: variant === 'legacy split' ? 'a'.repeat(49) : preview }
+        })
+        expect(storedMessage('populated-reply')).toEqual(stored)
+      }
+    )
+
     it('shortens only reply previews while retaining both full bodies', async () => {
       const sock = buildFakeSocket()
       registerHandlersForSlug(SLUG, sock)
@@ -269,11 +322,11 @@ describe('main.ts realtime LID/PN harvesting', () => {
       const result = await history()
       expect(result.structuredContent.messages.map((message: any) => message.text)).toEqual([original.text, reply.text])
       expect(result.structuredContent.messages[1].replyTo).toMatchObject({
-        messageId: 'long-quoted', preview: original.text.substring(0, 50)
+        messageId: 'long-quoted', preview: '被引用的原文：' + '完整中文訊息測試'.repeat(5) + '完整中'
       })
       expect(result.content[0].text.split('\n').slice(1)).toEqual([
         `${phone} > ${original.compact}`,
-        `${phone} > [re ${phone}: "${original.text.substring(0, 20)}..."] ${reply.compact}`
+        `${phone} > [re ${phone}: "被引用的原文：完整中文訊息測試完整中文訊..."] ${reply.compact}`
       ])
       // Read-time preview construction must not replace the persisted body.
       expect(storedMessage('long-quoted').text).toBe(original.text)
